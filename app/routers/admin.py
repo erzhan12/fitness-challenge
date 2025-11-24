@@ -7,6 +7,7 @@ router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
+
 async def verify_admin_key(key: str = Security(api_key_header)):
     if not key:
         raise HTTPException(status_code=403, detail="Missing API Key")
@@ -16,12 +17,12 @@ async def verify_admin_key(key: str = Security(api_key_header)):
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return token
 
+
 @router.post("/daily-reminder")
 async def trigger_daily_reminders(token: str = Depends(verify_admin_key)):
     """
-    Triggers the daily reminder check. 
+    Triggers the daily reminder check.
     Intended to be called by cron/n8n.
     """
     await check_daily_reminders()
     return {"status": "triggered"}
-

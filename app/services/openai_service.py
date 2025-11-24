@@ -1,22 +1,44 @@
 import json
+import logging
 from typing import List, Dict, Any
 from openai import OpenAI
 from app.config import settings
 from app.models import ParseResult, ExerciseType
 
-client = OpenAI(api_key=settings.OPENAI_API_KEY)
+logger = logging.getLogger(__name__)
+
+# OpenRouter requires HTTP-Referer header (optional but recommended)
+# Also add X-Title for better tracking
+default_headers = {}
+if "openrouter.ai" in settings.LLM_BASE_URL.lower():
+    default_headers = {
+        "HTTP-Referer": "https://github.com/yourusername/fitness-challenge",  # Optional: your app URL
+        "X-Title": "Fitness Challenge Bot",  # Optional: your app name
+    }
+    logger.info("Detected OpenRouter, adding required headers")
+
+client = OpenAI(
+    base_url=settings.LLM_BASE_URL,
+    api_key=settings.LLM_API_KEY,
+    default_headers=default_headers if default_headers else None,
+)
+
+logger.info(
+    f"Initialized OpenAI client with base_url: {settings.LLM_BASE_URL}, model: {settings.LLM_MODEL}"
+)
+
 
 def parse_workout_message(text: str, exercise_types: List[ExerciseType]) -> ParseResult:
     """
     Uses OpenAI to parse the user's message into structured exercise data.
     """
-    
+
     # Prepare list of valid exercises for the prompt
     exercises_info = [
         f"{et.name} (aliases: {', '.join(et.aliases or [])}, unit: {et.unit})"
         for et in exercise_types
     ]
-    
+
     system_prompt = f"""
     You are a fitness log parser. Extract exercise data from natural language text.
     
@@ -47,59 +69,88 @@ def parse_workout_message(text: str, exercise_types: List[ExerciseType]) -> Pars
       "error_reason": "string (friendly reply if no exercises found, else null)"
     }}
     """
-    
+
     try:
+        logger.debug(
+            f"Calling LLM API with model: {settings.LLM_MODEL}, base_url: {settings.LLM_BASE_URL}"
+        )
+        logger.debug(f"User input: {text[:100]}...")  # Log first 100 chars
+
         response = client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
+            model=settings.LLM_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
+                {"role": "user", "content": text},
             ],
             response_format={"type": "json_object"},
-            temperature=0
+            temperature=0,
         )
-        
+
         content = response.choices[0].message.content
+        logger.debug(
+            f"LLM response received: {content[:200]}..."
+        )  # Log first 200 chars
         data = json.loads(content)
         return ParseResult(**data)
-        
+
     except Exception as e:
+        error_msg = str(e)
+        logger.error(f"LLM API error: {type(e).__name__}: {error_msg}", exc_info=True)
+
+        # Provide more helpful error messages
+        if "404" in error_msg or "No endpoints found" in error_msg:
+            logger.error(
+                f"Model '{settings.LLM_MODEL}' not found. Check your LLM_MODEL setting."
+            )
+            logger.error(f"Current model: {settings.LLM_MODEL}")
+            logger.error(f"Current base_url: {settings.LLM_BASE_URL}")
+            user_friendly_msg = f"AI service unavailable. Please check model configuration (model: {settings.LLM_MODEL})."
+        else:
+            user_friendly_msg = f"AI parsing failed: {error_msg[:100]}"
+
         # Fallback for API errors
-        return ParseResult(entries=[], is_valid=False, error_reason=f"AI parsing failed: {str(e)}")
+        return ParseResult(entries=[], is_valid=False, error_reason=user_friendly_msg)
+
 
 def generate_motivational_response(exercise_name: str, stats: Dict[str, Any]) -> str:
     """
     Generates a short, witty, exercise-aware comment.
     stats includes: today_total, target_total, day_number, status ('ahead', 'behind', 'on_track'), streak
     """
-    
+
     system_prompt = """
     You are a sarcastic but kind fitness coach bot.
     Generate a VERY SHORT (1-2 sentences max) witty comment based on the user's progress.
     Tone: Playful, slightly judging but encouraging.
     """
-    
+
     user_content = f"""
     Exercise: {exercise_name}
-    Status: {stats.get('status')}
-    Today's Count: {stats.get('today_total')}
-    Challenge Day: {stats.get('day_number')}
-    Streak: {stats.get('streak')}
+    Status: {stats.get("status")}
+    Today's Count: {stats.get("today_total")}
+    Challenge Day: {stats.get("day_number")}
+    Streak: {stats.get("streak")}
     
     Write a one-liner.
     """
-    
+
     try:
+        logger.debug(f"Generating motivational response for {exercise_name}")
         response = client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
+            model=settings.LLM_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
+                {"role": "user", "content": user_content},
             ],
             temperature=0.7,
-            max_tokens=60
+            max_tokens=60,
         )
-        return response.choices[0].message.content.strip()
-    except:
+        result = response.choices[0].message.content.strip()
+        logger.debug(f"Generated response: {result}")
+        return result
+    except Exception as e:
+        logger.error(
+            f"Error generating motivational response: {type(e).__name__}: {str(e)}",
+            exc_info=True,
+        )
         return "Keep crushing it! 💪"
-
