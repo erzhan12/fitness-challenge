@@ -1,0 +1,102 @@
+name: Deploy to DigitalOcean
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          target: production
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to DigitalOcean Droplet
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DO_SSH_HOST }}
+          username: ${{ secrets.DO_SSH_USER }}
+          key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
+          # We pass secrets as environment variables to the script block
+          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_SECRET_TOKEN,LLM_API_KEY,LLM_BASE_URL,LLM_MODEL,SUPABASE_URL,SUPABASE_KEY,ADMIN_API_KEY,TARGET_CHAT_ID,TZ
+          script: |
+            # Log in to GHCR on the server
+            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # Pull the latest image
+            docker pull ghcr.io/${{ github.repository }}:latest
+
+            # Stop and remove existing container
+            docker stop fitness-challenge || true
+            docker rm fitness-challenge || true
+
+            # Run new container
+            # We use the injected environment variables directly
+            docker run -d \
+              --name fitness-challenge \
+              --restart unless-stopped \
+              -p 8000:8000 \
+              -e TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN \
+              -e TELEGRAM_SECRET_TOKEN=$TELEGRAM_SECRET_TOKEN \
+              -e LLM_API_KEY=$LLM_API_KEY \
+              -e LLM_BASE_URL=$LLM_BASE_URL \
+              -e LLM_MODEL=$LLM_MODEL \
+              -e SUPABASE_URL=$SUPABASE_URL \
+              -e SUPABASE_KEY=$SUPABASE_KEY \
+              -e ADMIN_API_KEY=$ADMIN_API_KEY \
+              -e TARGET_CHAT_ID=$TARGET_CHAT_ID \
+              -e TZ=$TZ \
+              ghcr.io/${{ github.repository }}:latest
+            
+            # Prune old images to save space
+            docker image prune -f
+        env:
+          # Map GitHub Secrets to environment variables for the ssh-action
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_SECRET_TOKEN: ${{ secrets.TELEGRAM_SECRET_TOKEN }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+          TARGET_CHAT_ID: ${{ secrets.TARGET_CHAT_ID }}
+          TZ: "Asia/Almaty" # Can be overridden by secret if needed, but hardcoded default here for safety
