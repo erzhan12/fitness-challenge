@@ -36,25 +36,34 @@ RUN TELEGRAM_BOT_TOKEN=test_token \
 # STAGE 2: Production
 FROM python:3.12-slim-bookworm AS production
 
-# Create a non-root user
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+# Copy uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 WORKDIR /app
 
-# Copy the virtual environment from builder
-COPY --from=builder /app/.venv /app/.venv
+# Copy dependency definitions
+COPY pyproject.toml uv.lock ./
 
 # Copy application code
 COPY ./app ./app
 
-# Add virtualenv to PATH
-ENV PATH="/app/.venv/bin:$PATH"
+# Install only production dependencies (no test extras)
+RUN uv sync --frozen --no-dev
+
+# Create a non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Change ownership of /app to appuser
+RUN chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
 
+# Add virtualenv to PATH
+ENV PATH="/app/.venv/bin:$PATH"
+
 # Expose port (8001 to avoid conflicts with other services)
 EXPOSE 8001
 
-# Run application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# Run application using uv run
+CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]

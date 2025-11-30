@@ -10,7 +10,7 @@ Usage:
 """
 
 import sys
-import requests
+import httpx
 from pathlib import Path
 
 # Add project root to path
@@ -36,21 +36,22 @@ def test_webhook_endpoint(base_url="http://localhost:8000"):
     print("Test 1: GET request (should return 400 or 405)")
     print("-" * 60)
     try:
-        response = requests.get(webhook_url, timeout=5)
-        status_code = response.status_code
+        with httpx.Client(timeout=5.0) as client:
+            response = client.get(webhook_url)
+            status_code = response.status_code
 
-        if status_code in [400, 405]:
-            print(f"✅ PASS - Got expected {status_code} response")
-            print(f"   Response: {response.text[:100]}")
-        else:
-            print(f"⚠️ UNEXPECTED - Got {status_code} instead of 400/405")
-            print(f"   Response: {response.text[:100]}")
-    except requests.exceptions.ConnectionError:
+            if status_code in [400, 405]:
+                print(f"✅ PASS - Got expected {status_code} response")
+                print(f"   Response: {response.text[:100]}")
+            else:
+                print(f"⚠️ UNEXPECTED - Got {status_code} instead of 400/405")
+                print(f"   Response: {response.text[:100]}")
+    except httpx.ConnectError:
         print("❌ FAIL - Connection refused")
         print("   Is the server running?")
         print("   Start with: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload")
         return False
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         print("❌ FAIL - Request timeout")
         return False
     except Exception as e:
@@ -63,20 +64,20 @@ def test_webhook_endpoint(base_url="http://localhost:8000"):
     print("Test 2: POST request with invalid JSON (should return 400)")
     print("-" * 60)
     try:
-        response = requests.post(
-            webhook_url,
-            data="invalid json",
-            headers={"Content-Type": "application/json"},
-            timeout=5,
-        )
-        status_code = response.status_code
+        with httpx.Client(timeout=5.0) as client:
+            response = client.post(
+                webhook_url,
+                content="invalid json",
+                headers={"Content-Type": "application/json"},
+            )
+            status_code = response.status_code
 
-        if status_code == 400:
-            print("✅ PASS - Got expected 400 response")
-            print(f"   Response: {response.text[:100]}")
-        else:
-            print(f"⚠️ UNEXPECTED - Got {status_code} instead of 400")
-            print(f"   Response: {response.text[:100]}")
+            if status_code == 400:
+                print("✅ PASS - Got expected 400 response")
+                print(f"   Response: {response.text[:100]}")
+            else:
+                print(f"⚠️ UNEXPECTED - Got {status_code} instead of 400")
+                print(f"   Response: {response.text[:100]}")
     except Exception as e:
         print(f"❌ FAIL - Unexpected error: {e}")
         return False
@@ -109,16 +110,17 @@ def test_webhook_endpoint(base_url="http://localhost:8000"):
             },
         }
 
-        response = requests.post(webhook_url, json=test_update, timeout=5)
-        status_code = response.status_code
+        with httpx.Client(timeout=5.0) as client:
+            response = client.post(webhook_url, json=test_update)
+            status_code = response.status_code
 
-        if status_code == 200:
-            print("✅ PASS - Got 200 OK response")
-            print(f"   Response: {response.text}")
-            print("   Note: Bot will process this update if user exists in DB")
-        else:
-            print(f"⚠️ UNEXPECTED - Got {status_code} instead of 200")
-            print(f"   Response: {response.text[:100]}")
+            if status_code == 200:
+                print("✅ PASS - Got 200 OK response")
+                print(f"   Response: {response.text}")
+                print("   Note: Bot will process this update if user exists in DB")
+            else:
+                print(f"⚠️ UNEXPECTED - Got {status_code} instead of 200")
+                print(f"   Response: {response.text[:100]}")
     except Exception as e:
         print(f"❌ FAIL - Unexpected error: {e}")
         return False
@@ -140,23 +142,24 @@ def test_ngrok_tunnel():
     try:
         # Query ngrok API for tunnels
         ngrok_api = "http://127.0.0.1:4040/api/tunnels"
-        response = requests.get(ngrok_api, timeout=2)
+        with httpx.Client(timeout=2.0) as client:
+            response = client.get(ngrok_api)
 
-        if response.status_code == 200:
-            data = response.json()
-            tunnels = data.get("tunnels", [])
+            if response.status_code == 200:
+                data = response.json()
+                tunnels = data.get("tunnels", [])
 
-            if tunnels:
-                for tunnel in tunnels:
-                    public_url = tunnel.get("public_url", "")
-                    if public_url.startswith("https://"):
-                        print(f"✅ Found ngrok tunnel: {public_url}")
-                        return public_url
+                if tunnels:
+                    for tunnel in tunnels:
+                        public_url = tunnel.get("public_url", "")
+                        if public_url.startswith("https://"):
+                            print(f"✅ Found ngrok tunnel: {public_url}")
+                            return public_url
 
         print("⚠️ ngrok not detected (is it running?)")
         return None
 
-    except requests.exceptions.ConnectionError:
+    except httpx.ConnectError:
         print("⚠️ ngrok API not accessible (is ngrok running?)")
         return None
     except Exception as e:
