@@ -36,6 +36,9 @@ RUN TELEGRAM_BOT_TOKEN=test_token \
 # STAGE 2: Production
 FROM python:3.12-slim-bookworm AS production
 
+# Install system dependencies if needed (e.g. git for some pip packages)
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
 # Copy uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
@@ -44,11 +47,12 @@ WORKDIR /app
 # Copy dependency definitions
 COPY pyproject.toml uv.lock ./
 
-# Copy application code
+# Copy application code (needed for uv sync to install the project)
 COPY ./app ./app
 
 # Install only production dependencies (no test extras)
-RUN uv sync --frozen --no-dev
+# uv sync will install the project itself since pyproject.toml is present
+RUN uv sync --frozen
 
 # Create a non-root user
 RUN groupadd -r appuser && useradd -r -g appuser appuser
@@ -65,5 +69,5 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Expose port (8001 to avoid conflicts with other services)
 EXPOSE 8001
 
-# Run application using uv run
-CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# Run application using Python from venv directly
+CMD ["/app/.venv/bin/python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
