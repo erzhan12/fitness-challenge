@@ -24,7 +24,7 @@ ENV/
 Thumbs.db
 
 # Dependencies
-uv.lock
+# uv.lock - committed for reproducible Docker builds
 
 # Logs
 *.log
