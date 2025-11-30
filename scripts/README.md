@@ -183,7 +183,7 @@ Happy coding! 🚀
 
 ---
 
-### 3. `test_webhook.py` - Webhook Endpoint Tester
+### 3. `check_webhook.py` - Webhook Endpoint Tester
 
 A utility script to verify that your webhook endpoint is accessible and responding correctly.
 
@@ -191,10 +191,10 @@ A utility script to verify that your webhook endpoint is accessible and respondi
 
 ```bash
 # Test localhost endpoint
-uv run python scripts/test_webhook.py
+uv run python scripts/check_webhook.py
 
 # Test specific URL (e.g., ngrok)
-uv run python scripts/test_webhook.py https://abc123.ngrok-free.app
+uv run python scripts/check_webhook.py https://abc123.ngrok-free.app
 
 # The script automatically detects and tests ngrok if running
 ```

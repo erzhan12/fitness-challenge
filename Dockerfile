@@ -31,7 +31,7 @@ RUN TELEGRAM_BOT_TOKEN=test_token \
     SUPABASE_URL=https://test.supabase.co \
     SUPABASE_KEY=test_supabase_key \
     ADMIN_API_KEY=test_admin_key \
-    uv run pytest
+    uv run pytest tests/ -v
 
 # STAGE 2: Production
 FROM python:3.12-slim-bookworm AS production

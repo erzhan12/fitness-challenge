@@ -5,8 +5,8 @@ This script sends a test request to the webhook endpoint to verify
 it's accessible and responding correctly.
 
 Usage:
-    python scripts/test_webhook.py                          # Test localhost
-    python scripts/test_webhook.py https://your-ngrok-url   # Test ngrok URL
+    python scripts/check_webhook.py                          # Test localhost
+    python scripts/check_webhook.py https://your-ngrok-url   # Test ngrok URL
 """
 
 import sys
@@ -194,10 +194,10 @@ def main():
                 test_webhook_endpoint(ngrok_url)
 
     print("\nℹ️ Usage:")
-    print("  Test localhost:      python scripts/test_webhook.py")
-    print("  Test specific URL:   python scripts/test_webhook.py https://your-url.com")
+    print("  Test localhost:      python scripts/check_webhook.py")
+    print("  Test specific URL:   python scripts/check_webhook.py https://your-url.com")
     print(
-        "  Test ngrok:          python scripts/test_webhook.py https://abc123.ngrok-free.app"
+        "  Test ngrok:          python scripts/check_webhook.py https://abc123.ngrok-free.app"
     )
     print("\nNote: FastAPI webhook endpoint is at /telegram/webhook")
     print()
