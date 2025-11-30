@@ -14,11 +14,11 @@ ENV UV_LINK_MODE=copy
 # Copy dependency definitions
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies (including dev/test deps)
-RUN uv sync --frozen --no-install-project --extra test
-
-# Copy application code
+# Copy application code (needed for uv sync to install the project)
 COPY . .
+
+# Install dependencies and project (including test deps)
+RUN uv sync --frozen --extra test
 
 # Run tests
 # If tests fail, the build fails.
