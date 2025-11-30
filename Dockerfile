@@ -15,14 +15,23 @@ ENV UV_LINK_MODE=copy
 COPY pyproject.toml uv.lock ./
 
 # Install dependencies (including dev/test deps)
-RUN uv sync --frozen --no-install-project
+RUN uv sync --frozen --no-install-project --extra test
 
 # Copy application code
 COPY . .
 
 # Run tests
 # If tests fail, the build fails.
-RUN uv run pytest
+# Set dummy environment variables for tests (actual values not needed as tests mock dependencies)
+RUN TELEGRAM_BOT_TOKEN=test_token \
+    TELEGRAM_SECRET_TOKEN=test_secret_token \
+    LLM_API_KEY=test_llm_key \
+    LLM_BASE_URL=https://api.test.com/v1 \
+    LLM_MODEL=test-model \
+    SUPABASE_URL=https://test.supabase.co \
+    SUPABASE_KEY=test_supabase_key \
+    ADMIN_API_KEY=test_admin_key \
+    uv run pytest
 
 # STAGE 2: Production
 FROM python:3.12-slim-bookworm AS production
