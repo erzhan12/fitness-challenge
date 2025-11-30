@@ -28,3 +28,7 @@ uv.lock
 
 # Logs
 *.log
+
+# Some manuals and prompts for local development
+DEPLOYMENT_PROMPT.md
+SUBDOMAIN_PORT_CONFIG.md

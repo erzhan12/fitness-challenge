@@ -34,7 +34,7 @@ Build and run the production image locally:
 docker build --target production -t fitness-challenge .
 
 # Run (passing local .env)
-docker run --env-file .env -p 8000:8000 fitness-challenge
+docker run --env-file .env -p 8001:8001 fitness-challenge
 ```
 
 ### 3. Server Provisioning (DigitalOcean)
@@ -48,37 +48,44 @@ apt update && apt upgrade -y
 [ -f /var/run/reboot-required ] && reboot
 ```
 
-**Step 2: Create Deployment User**
-Create a secure user `deploy` for GitHub Actions to use:
+**Step 2: Verify Deployment User**
+Since you already have a `deploy` user, verify it has the necessary permissions:
 ```bash
-# Create user
-adduser deploy
-# (Follow prompts, set a strong password)
+# Check if user exists
+id deploy
 
-# Add to docker and sudo groups
-usermod -aG docker deploy
-usermod -aG sudo deploy
+# Verify user is in docker group (required)
+groups deploy | grep docker || echo "⚠️  User not in docker group"
 
-# Setup SSH directory
-mkdir -p /home/deploy/.ssh
-cp ~/.ssh/authorized_keys /home/deploy/.ssh/
-chown -R deploy:deploy /home/deploy/.ssh
-chmod 700 /home/deploy/.ssh
-chmod 600 /home/deploy/.ssh/authorized_keys
+# If not in docker group, add it:
+sudo usermod -aG docker deploy
+
+# Verify user is in sudo group (optional, but useful)
+groups deploy | grep sudo || echo "⚠️  User not in sudo group"
+
+# If not in sudo group and you need it:
+sudo usermod -aG sudo deploy
 ```
 
-**Step 3: Generate SSH Key for GitHub Actions**
-Run this **as the `deploy` user** (`su - deploy`):
-```bash
-# Generate key
-ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/github_actions -N ""
+**Note:** You can use the same `deploy` user for both apps. Docker containers provide isolation, so user-level separation is not necessary.
 
-# Authorize it
-cat ~/.ssh/github_actions.pub >> ~/.ssh/authorized_keys
+**Step 3: Generate SSH Key for GitHub Actions (if not already done)**
+If you already have a GitHub Actions SSH key set up, you can reuse it. Otherwise, run this **as the `deploy` user**:
+```bash
+# Check if key already exists
+ls -la ~/.ssh/github_actions* || echo "Key not found, generating new one..."
+
+# Generate key (only if it doesn't exist)
+if [ ! -f ~/.ssh/github_actions ]; then
+    ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/github_actions -N ""
+    cat ~/.ssh/github_actions.pub >> ~/.ssh/authorized_keys
+fi
 
 # View Private Key (Copy this for DO_SSH_PRIVATE_KEY in GitHub Secrets)
 cat ~/.ssh/github_actions
 ```
+
+**If you already have a GitHub Actions key:** You can reuse the same `DO_SSH_PRIVATE_KEY` secret for both repositories.
 
 **Step 4: Configure Firewall (UFW)**
 Back as root (or with sudo):
@@ -86,6 +93,7 @@ Back as root (or with sudo):
 ufw allow 22/tcp   # SSH
 ufw allow 80/tcp   # HTTP
 ufw allow 443/tcp  # HTTPS
+# Note: Port 8001 doesn't need to be exposed - Caddy will proxy to it internally
 ufw enable
 ```
 
@@ -110,22 +118,69 @@ apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
 ```
 
 **Step 6: Install & Configure Caddy**
+
+**⚠️ Important:** If you have another app on this server, **DO NOT replace** the Caddyfile. Instead, **append** your configuration.
+
 ```bash
-# Install
+# Install (skip if already installed)
 apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 apt update && apt install caddy
 
-# Configure (/etc/caddy/Caddyfile)
-# Replace contents with:
-# fitnesschallenge.habitreward.org {
-#     reverse_proxy localhost:8000
-# }
+# Backup existing Caddyfile (if it exists)
+sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.backup.$(date +%Y%m%d) 2>/dev/null || true
 
-# Apply
-systemctl reload caddy
+# Edit Caddyfile
+sudo nano /etc/caddy/Caddyfile
 ```
+
+**If Caddy is NEW (no other apps):**
+Replace contents with:
+```
+fitnesschallenge.habitreward.org {
+    reverse_proxy localhost:8001
+}
+```
+
+**If Caddy EXISTS (other apps running):**
+**APPEND** this to the existing file (don't replace!):
+```
+fitnesschallenge.habitreward.org {
+    reverse_proxy localhost:8001
+}
+```
+
+**Example of combined Caddyfile:**
+```
+# Existing app (keep this!)
+habitreward.org {
+    reverse_proxy localhost:8000
+}
+
+# Your new fitness challenge app (add this)
+fitnesschallenge.habitreward.org {
+    reverse_proxy localhost:8001
+}
+```
+
+```bash
+# Validate configuration
+sudo caddy validate --config /etc/caddy/Caddyfile
+
+# Apply configuration
+sudo systemctl reload caddy
+
+# Verify Caddy is running
+sudo systemctl status caddy
+```
+
+**Note:** Port 8001 is only accessible from localhost (via Caddy). It doesn't need to be exposed in the firewall.
+
+**⚠️ Conflict Prevention:** Before deploying, check:
+- Port availability: `sudo lsof -i :8001`
+- Container name: `docker ps -a | grep fitness-challenge`
+- See `CONFLICT_PREVENTION.md` for detailed conflict avoidance guide
 
 ### 4. DNS Setup (Namecheap)
 
@@ -151,9 +206,11 @@ curl -F "url=https://fitnesschallenge.habitreward.org/telegram/webhook" \
 The workflow `.github/workflows/deploy.yml` runs on push to `main`.
 
 **Required GitHub Secrets:**
-*   `DO_SSH_HOST`: Droplet IP address.
-*   `DO_SSH_USER`: `deploy`
-*   `DO_SSH_PRIVATE_KEY`: The content of `~/.ssh/github_actions` (private key) you generated in Step 3.
+*   `SERVER_HOST`: Droplet IP address (e.g., `206.189.40.240`).
+*   `SSH_USER`: SSH username (e.g., `deploy`).
+*   `SSH_PRIVATE_KEY`: The content of `~/.ssh/github_actions` (private key) you generated in Step 3.
+*   `DEPLOY_PATH`: Deployment path on the server (e.g., `/home/deploy/fitness-challenge`).
+*   `GITHUB_TOKEN`: GitHub Personal Access Token for GHCR authentication (optional, uses built-in token if not set).
 *   `TELEGRAM_BOT_TOKEN`
 *   `TELEGRAM_SECRET_TOKEN`
 *   `LLM_API_KEY`

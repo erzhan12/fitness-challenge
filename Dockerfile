@@ -44,8 +44,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Switch to non-root user
 USER appuser
 
-# Expose port
-EXPOSE 8000
+# Expose port (8001 to avoid conflicts with other services)
+EXPOSE 8001
 
 # Run application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]

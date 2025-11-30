@@ -49,17 +49,38 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create deployment directory
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            DEPLOY_PATH=${DEPLOY_PATH:-/home/deploy/fitness-challenge}
+            mkdir -p $DEPLOY_PATH
+            mkdir -p $DEPLOY_PATH/logs
+            echo "Deployment directory created at: $DEPLOY_PATH"
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+
       - name: Deploy to DigitalOcean Droplet
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.DO_SSH_HOST }}
-          username: ${{ secrets.DO_SSH_USER }}
-          key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           # We pass secrets as environment variables to the script block
-          envs: TELEGRAM_BOT_TOKEN,TELEGRAM_SECRET_TOKEN,LLM_API_KEY,LLM_BASE_URL,LLM_MODEL,SUPABASE_URL,SUPABASE_KEY,ADMIN_API_KEY,TARGET_CHAT_ID,TZ
+          envs: GITHUB_TOKEN,TELEGRAM_BOT_TOKEN,TELEGRAM_SECRET_TOKEN,LLM_API_KEY,LLM_BASE_URL,LLM_MODEL,SUPABASE_URL,SUPABASE_KEY,ADMIN_API_KEY,TARGET_CHAT_ID,TZ,DEPLOY_PATH
           script: |
+            # Set deploy path (default if not provided)
+            DEPLOY_PATH=${DEPLOY_PATH:-/home/deploy/fitness-challenge}
+            cd $DEPLOY_PATH || exit 1
+            
             # Log in to GHCR on the server
-            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            echo $GITHUB_TOKEN | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
             # Pull the latest image
             docker pull ghcr.io/${{ github.repository }}:latest
@@ -73,7 +94,7 @@ jobs:
             docker run -d \
               --name fitness-challenge \
               --restart unless-stopped \
-              -p 8000:8000 \
+              -p 8001:8001 \
               -e TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN \
               -e TELEGRAM_SECRET_TOKEN=$TELEGRAM_SECRET_TOKEN \
               -e LLM_API_KEY=$LLM_API_KEY \
@@ -86,10 +107,19 @@ jobs:
               -e TZ=$TZ \
               ghcr.io/${{ github.repository }}:latest
             
+            # Wait for container to start
+            echo "Waiting for container to start..."
+            sleep 5
+            
+            # Show container status
+            echo "Container Status:"
+            docker ps | grep fitness-challenge || echo "Container not found!"
+            
             # Prune old images to save space
             docker image prune -f
         env:
           # Map GitHub Secrets to environment variables for the ssh-action
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_SECRET_TOKEN: ${{ secrets.TELEGRAM_SECRET_TOKEN }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
@@ -100,3 +130,64 @@ jobs:
           ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
           TARGET_CHAT_ID: ${{ secrets.TARGET_CHAT_ID }}
           TZ: "Asia/Almaty" # Can be overridden by secret if needed, but hardcoded default here for safety
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+
+      - name: Verify deployment
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            DEPLOY_PATH=${DEPLOY_PATH:-/home/deploy/fitness-challenge}
+            
+            echo "Checking container logs:"
+            docker logs fitness-challenge --tail=30 || echo "Container logs not available"
+            
+            echo "Checking container status:"
+            docker ps -a | grep fitness-challenge || echo "Container not found"
+            
+            echo "Checking if container is healthy:"
+            if docker ps | grep -q fitness-challenge; then
+              echo "✅ Container is running"
+              # Check if port is listening
+              if docker port fitness-challenge | grep -q 8001; then
+                echo "✅ Port 8001 is mapped correctly"
+              else
+                echo "⚠️ Port 8001 mapping issue"
+              fi
+            else
+              echo "❌ Container is not running"
+              exit 1
+            fi
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+
+  health-check:
+    name: Health Check (HTTPS)
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Wait for services to stabilize
+        run: sleep 30
+
+      - name: Check HTTPS endpoint
+        run: |
+          echo "Testing HTTPS endpoint..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://fitnesschallenge.habitreward.org/ || echo "000")
+          
+          if [ "$STATUS" == "200" ] || [ "$STATUS" == "404" ] || [ "$STATUS" == "405" ]; then
+            echo "✅ HTTPS is working! (HTTP $STATUS)"
+          else
+            echo "⚠️ Warning: Unexpected HTTP status: $STATUS"
+            echo "This might be normal on first deployment (SSL cert provisioning)"
+            # Don't fail the workflow - Caddy might still be provisioning cert
+          fi
+
+      - name: Check SSL certificate
+        run: |
+          echo "Checking SSL certificate..."
+          echo | openssl s_client -servername fitnesschallenge.habitreward.org -connect fitnesschallenge.habitreward.org:443 2>/dev/null | \
+            openssl x509 -noout -dates || echo "SSL cert not ready yet (will be provisioned automatically)"
