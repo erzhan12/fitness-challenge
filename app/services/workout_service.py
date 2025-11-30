@@ -220,19 +220,21 @@ def get_exercise_stats_and_message(
 async def get_recent_logs(chat_id: int, limit: int = 5) -> str:
     """Get recent log entries for the user."""
     sb = get_supabase()
-    
+
     # Get recent logs with exercise type info
     res = (
         sb.table("exercise_logs")
-        .select("id, exercise_type_id, count, date, timestamp, raw_message, exercise_types(display_name, emoji)")
+        .select(
+            "id, exercise_type_id, count, date, timestamp, raw_message, exercise_types(display_name, emoji)"
+        )
         .order("timestamp", desc=True)
         .limit(limit)
         .execute()
     )
-    
+
     if not res.data:
         return "No logs found."
-    
+
     lines = ["📋 <b>Recent Logs:</b>\n"]
     for log in res.data:
         ex_info = log.get("exercise_types", {})
@@ -242,29 +244,29 @@ async def get_recent_logs(chat_id: int, limit: int = 5) -> str:
         count = log["count"]
         log_id = log["id"]
         timestamp = log.get("timestamp", "")
-        
+
         # Format timestamp if available
         time_str = ""
         if timestamp:
             try:
-                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
                 time_str = dt.strftime("%H:%M")
-            except:
+            except (ValueError, AttributeError):
                 pass
-        
+
         lines.append(
             f"{emoji} <b>{ex_name}</b>: {count} • {log_date} {time_str}\n"
-            f"   ID: <code>{log_id}</code> • \"{log.get('raw_message', '')[:30]}...\""
+            f'   ID: <code>{log_id}</code> • "{log.get("raw_message", "")[:30]}..."'
         )
-    
-    lines.append(f"\n💡 Use <code>/delete &lt;id&gt;</code> to remove a log")
+
+    lines.append("\n💡 Use <code>/delete &lt;id&gt;</code> to remove a log")
     return "\n".join(lines)
 
 
 async def delete_log_entry(log_id: int, chat_id: int) -> str:
     """Delete a log entry and update related stats."""
     sb = get_supabase()
-    
+
     # Get the log entry first
     log_res = (
         sb.table("exercise_logs")
@@ -272,15 +274,15 @@ async def delete_log_entry(log_id: int, chat_id: int) -> str:
         .eq("id", log_id)
         .execute()
     )
-    
+
     if not log_res.data:
         return f"❌ Log entry {log_id} not found."
-    
+
     log_entry = log_res.data[0]
     exercise_type_id = log_entry["exercise_type_id"]
     count_to_remove = log_entry["count"]
     log_date = log_entry["date"]
-    
+
     # Get exercise type info for response
     ex_res = (
         sb.table("exercise_types")
@@ -288,19 +290,16 @@ async def delete_log_entry(log_id: int, chat_id: int) -> str:
         .eq("id", exercise_type_id)
         .execute()
     )
-    ex_info = ex_res.data[0] if ex_res.data else {"display_name": "Exercise", "emoji": "🏋️"}
-    
-    # Delete the log entry
-    delete_res = (
-        sb.table("exercise_logs")
-        .delete()
-        .eq("id", log_id)
-        .execute()
+    ex_info = (
+        ex_res.data[0] if ex_res.data else {"display_name": "Exercise", "emoji": "🏋️"}
     )
-    
+
+    # Delete the log entry
+    delete_res = sb.table("exercise_logs").delete().eq("id", log_id).execute()
+
     if not delete_res.data:
         return f"❌ Failed to delete log entry {log_id}."
-    
+
     # Update user_stats: subtract the count
     stats_res = (
         sb.table("user_stats")
@@ -308,11 +307,11 @@ async def delete_log_entry(log_id: int, chat_id: int) -> str:
         .eq("exercise_type_id", exercise_type_id)
         .execute()
     )
-    
+
     if stats_res.data:
         curr_stats = stats_res.data[0]
         new_all_time = max(0, curr_stats["all_time_total"] - count_to_remove)
-        
+
         # Update last_logged_date if this was the last log
         # Check if there are any logs after this date
         later_logs = (
@@ -324,7 +323,7 @@ async def delete_log_entry(log_id: int, chat_id: int) -> str:
             .limit(1)
             .execute()
         )
-        
+
         new_last_date = log_date
         if later_logs.data:
             new_last_date = later_logs.data[0]["date"]
@@ -355,13 +354,13 @@ async def delete_log_entry(log_id: int, chat_id: int) -> str:
                     new_last_date = prev_logs.data[0]["date"]
                 else:
                     new_last_date = None
-        
+
         update_data = {"all_time_total": new_all_time}
         if new_last_date:
             update_data["last_logged_date"] = new_last_date
-        
+
         sb.table("user_stats").update(update_data).eq("id", curr_stats["id"]).execute()
-    
+
     return (
         f"✅ Deleted log entry {log_id}\n"
         f"{ex_info['emoji']} <b>{ex_info['display_name']}</b>: -{count_to_remove}\n"
@@ -372,7 +371,7 @@ async def delete_log_entry(log_id: int, chat_id: int) -> str:
 async def undo_last_log(chat_id: int) -> str:
     """Undo the most recent log entry."""
     sb = get_supabase()
-    
+
     # Get the most recent log
     res = (
         sb.table("exercise_logs")
@@ -381,10 +380,10 @@ async def undo_last_log(chat_id: int) -> str:
         .limit(1)
         .execute()
     )
-    
+
     if not res.data:
         return "❌ No logs found to undo."
-    
+
     log_id = res.data[0]["id"]
     return await delete_log_entry(log_id, chat_id)
 
@@ -410,13 +409,13 @@ async def process_incoming_message(text: str, chat_id: int):
         )
         await send_telegram_message(chat_id, welcome_message)
         return
-    
+
     # Handle /undo command
     if text_lower == "/undo":
         result = await undo_last_log(chat_id)
         await send_telegram_message(chat_id, result)
         return
-    
+
     # Handle /recent command
     if text_lower.startswith("/recent"):
         parts = text_lower.split()
@@ -430,27 +429,25 @@ async def process_incoming_message(text: str, chat_id: int):
         result = await get_recent_logs(chat_id, limit)
         await send_telegram_message(chat_id, result)
         return
-    
+
     # Handle /delete command
     if text_lower.startswith("/delete"):
         parts = text_lower.split()
         if len(parts) < 2:
             await send_telegram_message(
-                chat_id, 
+                chat_id,
                 "❌ Usage: <code>/delete &lt;log_id&gt;</code>\n"
-                "Use <code>/recent</code> to see log IDs."
+                "Use <code>/recent</code> to see log IDs.",
             )
             return
-        
+
         try:
             log_id = int(parts[1])
             result = await delete_log_entry(log_id, chat_id)
             await send_telegram_message(chat_id, result)
         except ValueError:
             await send_telegram_message(
-                chat_id, 
-                f"❌ Invalid log ID: {parts[1]}\n"
-                "Log ID must be a number."
+                chat_id, f"❌ Invalid log ID: {parts[1]}\nLog ID must be a number."
             )
         return
 

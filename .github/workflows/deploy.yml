@@ -10,7 +10,35 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        
+      - name: Set up Python
+        run: uv python install
+        
+      - name: Install dependencies with test extras
+        run: uv sync --extra test
+        
+      - name: Run tests
+        env:
+          # Dummy values for testing - actual values not needed for unit tests
+          TELEGRAM_BOT_TOKEN: test_token
+          TELEGRAM_SECRET_TOKEN: test_secret_token
+          LLM_API_KEY: test_llm_key
+          LLM_BASE_URL: https://api.test.com/v1
+          LLM_MODEL: test-model
+          SUPABASE_URL: https://test.supabase.co
+          SUPABASE_KEY: test_supabase_key
+          ADMIN_API_KEY: test_admin_key
+        run: uv run pytest tests/ -v
+
   build-and-push:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read

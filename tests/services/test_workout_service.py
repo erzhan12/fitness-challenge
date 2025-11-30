@@ -2,8 +2,7 @@
 
 import pytest
 import math
-from unittest.mock import Mock, AsyncMock, patch
-from datetime import datetime, date
+from unittest.mock import Mock, patch
 from app.services.workout_service import (
     calculate_expected_progress,
     calculate_status_and_deficit,
@@ -217,7 +216,7 @@ class TestGetRecentLogs:
         mock_sb = Mock()
         mock_table = Mock()
         mock_query = Mock()
-        
+
         mock_logs_data = [
             {
                 "id": 1,
@@ -226,10 +225,7 @@ class TestGetRecentLogs:
                 "date": "2024-01-15",
                 "timestamp": "2024-01-15T10:30:00+00:00",
                 "raw_message": "20 pushups",
-                "exercise_types": {
-                    "display_name": "Pushups",
-                    "emoji": "💪"
-                }
+                "exercise_types": {"display_name": "Pushups", "emoji": "💪"},
             },
             {
                 "id": 2,
@@ -238,13 +234,10 @@ class TestGetRecentLogs:
                 "date": "2024-01-15",
                 "timestamp": "2024-01-15T11:00:00+00:00",
                 "raw_message": "30 squats",
-                "exercise_types": {
-                    "display_name": "Squats",
-                    "emoji": "🏋️"
-                }
-            }
+                "exercise_types": {"display_name": "Squats", "emoji": "🏋️"},
+            },
         ]
-        
+
         mock_response = Mock()
         mock_response.data = mock_logs_data
         mock_query.execute.return_value = mock_response
@@ -253,9 +246,9 @@ class TestGetRecentLogs:
         mock_table.select.return_value = mock_query
         mock_sb.table.return_value = mock_table
         mock_get_supabase.return_value = mock_sb
-        
+
         result = await get_recent_logs(12345, limit=5)
-        
+
         assert "Recent Logs" in result
         assert "Pushups" in result
         assert "Squats" in result
@@ -272,7 +265,7 @@ class TestGetRecentLogs:
         mock_sb = Mock()
         mock_table = Mock()
         mock_query = Mock()
-        
+
         mock_response = Mock()
         mock_response.data = []
         mock_query.execute.return_value = mock_response
@@ -281,9 +274,9 @@ class TestGetRecentLogs:
         mock_table.select.return_value = mock_query
         mock_sb.table.return_value = mock_table
         mock_get_supabase.return_value = mock_sb
-        
+
         result = await get_recent_logs(12345)
-        
+
         assert result == "No logs found."
 
     @pytest.mark.asyncio
@@ -293,7 +286,7 @@ class TestGetRecentLogs:
         mock_sb = Mock()
         mock_table = Mock()
         mock_query = Mock()
-        
+
         mock_response = Mock()
         mock_response.data = [
             {
@@ -303,7 +296,7 @@ class TestGetRecentLogs:
                 "date": "2024-01-15",
                 "timestamp": "2024-01-15T10:00:00+00:00",
                 "raw_message": "test",
-                "exercise_types": {"display_name": "Test", "emoji": "🏋️"}
+                "exercise_types": {"display_name": "Test", "emoji": "🏋️"},
             }
             for i in range(10)
         ]
@@ -313,9 +306,9 @@ class TestGetRecentLogs:
         mock_table.select.return_value = mock_query
         mock_sb.table.return_value = mock_table
         mock_get_supabase.return_value = mock_sb
-        
+
         await get_recent_logs(12345, limit=3)
-        
+
         # Verify limit was called with 3
         mock_query.limit.assert_called_with(3)
 
@@ -344,10 +337,7 @@ class TestDeleteLogEntry:
     async def test_delete_log_entry_success(self, mock_get_supabase):
         """Test successful deletion of a log entry."""
         mock_sb = Mock()
-        
-        # Track execute calls to return different responses
-        execute_calls = []
-        
+
         def create_query_chain(response_data):
             """Create a query chain that returns the given response."""
             query = Mock()
@@ -363,10 +353,18 @@ class TestDeleteLogEntry:
             query.delete.return_value = query
             query.update.return_value = query
             return query
-        
+
         # Responses in order of execution
         responses = [
-            [{"id": 123, "exercise_type_id": 1, "count": 20, "challenge_id": None, "date": "2024-01-15"}],  # Get log
+            [
+                {
+                    "id": 123,
+                    "exercise_type_id": 1,
+                    "count": 20,
+                    "challenge_id": None,
+                    "date": "2024-01-15",
+                }
+            ],  # Get log
             [{"display_name": "Pushups", "emoji": "💪"}],  # Get exercise type
             [{"id": 123}],  # Delete response
             [{"id": 1, "exercise_type_id": 1, "all_time_total": 100}],  # Get stats
@@ -374,37 +372,37 @@ class TestDeleteLogEntry:
             [],  # Same date logs (empty)
             [{"date": "2024-01-14"}],  # Previous logs
         ]
-        
+
         query_index = [0]
-        
+
         def execute_side_effect():
             idx = query_index[0]
             query_index[0] += 1
             response = Mock()
             response.data = responses[idx] if idx < len(responses) else []
             return response
-        
+
         # Create tables
         mock_log_table = Mock()
         mock_ex_table = Mock()
         mock_stats_table = Mock()
-        
+
         # Setup query chains - all return same query object but execute returns different data
         log_query = create_query_chain([])
         log_query.execute.side_effect = execute_side_effect
-        
+
         ex_query = create_query_chain([])
         ex_query.execute.side_effect = execute_side_effect
-        
+
         stats_query = create_query_chain([])
         stats_query.execute.side_effect = execute_side_effect
-        
+
         mock_log_table.select.return_value = log_query
         mock_log_table.delete.return_value = log_query
         mock_ex_table.select.return_value = ex_query
         mock_stats_table.select.return_value = stats_query
         mock_stats_table.update.return_value = stats_query
-        
+
         def table_side_effect(table_name):
             if table_name == "exercise_logs":
                 return mock_log_table
@@ -413,12 +411,12 @@ class TestDeleteLogEntry:
             elif table_name == "user_stats":
                 return mock_stats_table
             return Mock()
-        
+
         mock_sb.table.side_effect = table_side_effect
         mock_get_supabase.return_value = mock_sb
-        
+
         result = await delete_log_entry(123, 12345)
-        
+
         assert "Deleted log entry 123" in result
         assert "Pushups" in result
         assert "-20" in result
@@ -431,7 +429,7 @@ class TestDeleteLogEntry:
         mock_sb = Mock()
         mock_table = Mock()
         mock_query = Mock()
-        
+
         mock_response = Mock()
         mock_response.data = []
         mock_query.execute.return_value = mock_response
@@ -439,9 +437,9 @@ class TestDeleteLogEntry:
         mock_table.select.return_value = mock_query
         mock_sb.table.return_value = mock_table
         mock_get_supabase.return_value = mock_sb
-        
+
         result = await delete_log_entry(999, 12345)
-        
+
         assert "not found" in result
         assert "999" in result
 
@@ -450,13 +448,21 @@ class TestDeleteLogEntry:
     async def test_delete_log_entry_updates_stats(self, mock_get_supabase):
         """Test that user_stats are updated correctly when deleting."""
         mock_sb = Mock()
-        
+
         # Track execute calls
         query_index = [0]
-        
+
         # Responses in order: log, ex_type, delete, stats, later, same_date, prev
         responses = [
-            [{"id": 123, "exercise_type_id": 1, "count": 20, "challenge_id": None, "date": "2024-01-15"}],
+            [
+                {
+                    "id": 123,
+                    "exercise_type_id": 1,
+                    "count": 20,
+                    "challenge_id": None,
+                    "date": "2024-01-15",
+                }
+            ],
             [{"display_name": "Pushups", "emoji": "💪"}],
             [{"id": 123}],
             [{"id": 1, "exercise_type_id": 1, "all_time_total": 100}],
@@ -464,14 +470,14 @@ class TestDeleteLogEntry:
             [],
             [{"date": "2024-01-14"}],
         ]
-        
+
         def execute_side_effect():
             idx = query_index[0]
             query_index[0] += 1
             response = Mock()
             response.data = responses[idx] if idx < len(responses) else []
             return response
-        
+
         # Create query chains
         def create_query():
             query = Mock()
@@ -485,21 +491,21 @@ class TestDeleteLogEntry:
             query.delete.return_value = query
             query.update.return_value = query
             return query
-        
+
         mock_log_table = Mock()
         mock_ex_table = Mock()
         mock_stats_table = Mock()
-        
+
         log_query = create_query()
         ex_query = create_query()
         stats_query = create_query()
-        
+
         mock_log_table.select.return_value = log_query
         mock_log_table.delete.return_value = log_query
         mock_ex_table.select.return_value = ex_query
         mock_stats_table.select.return_value = stats_query
         mock_stats_table.update.return_value = stats_query
-        
+
         def table_side_effect(table_name):
             if table_name == "exercise_logs":
                 return mock_log_table
@@ -508,12 +514,12 @@ class TestDeleteLogEntry:
             elif table_name == "user_stats":
                 return mock_stats_table
             return Mock()
-        
+
         mock_sb.table.side_effect = table_side_effect
         mock_get_supabase.return_value = mock_sb
-        
+
         await delete_log_entry(123, 12345)
-        
+
         # Verify update was called on user_stats
         assert mock_stats_table.update.called
 
@@ -524,12 +530,14 @@ class TestUndoLastLog:
     @pytest.mark.asyncio
     @patch("app.services.workout_service.get_supabase")
     @patch("app.services.workout_service.delete_log_entry")
-    async def test_undo_last_log_success(self, mock_delete_log_entry, mock_get_supabase):
+    async def test_undo_last_log_success(
+        self, mock_delete_log_entry, mock_get_supabase
+    ):
         """Test successful undo of last log."""
         mock_sb = Mock()
         mock_table = Mock()
         mock_query = Mock()
-        
+
         mock_response = Mock()
         mock_response.data = [{"id": 123}]
         mock_query.execute.return_value = mock_response
@@ -538,11 +546,11 @@ class TestUndoLastLog:
         mock_table.select.return_value = mock_query
         mock_sb.table.return_value = mock_table
         mock_get_supabase.return_value = mock_sb
-        
+
         mock_delete_log_entry.return_value = "✅ Deleted log entry 123"
-        
+
         result = await undo_last_log(12345)
-        
+
         assert "Deleted log entry 123" in result
         mock_delete_log_entry.assert_called_once_with(123, 12345)
 
@@ -553,7 +561,7 @@ class TestUndoLastLog:
         mock_sb = Mock()
         mock_table = Mock()
         mock_query = Mock()
-        
+
         mock_response = Mock()
         mock_response.data = []
         mock_query.execute.return_value = mock_response
@@ -562,7 +570,7 @@ class TestUndoLastLog:
         mock_table.select.return_value = mock_query
         mock_sb.table.return_value = mock_table
         mock_get_supabase.return_value = mock_sb
-        
+
         result = await undo_last_log(12345)
-        
+
         assert "No logs found to undo" in result
