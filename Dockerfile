@@ -49,6 +49,7 @@ COPY pyproject.toml uv.lock ./
 
 # Copy application code (needed for uv sync to install the project)
 COPY ./app ./app
+COPY ./src ./src
 
 # Install only production dependencies (no test extras)
 # uv sync will install the project itself since pyproject.toml is present
