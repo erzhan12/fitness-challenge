@@ -28,9 +28,14 @@ logger.info(
 )
 
 
-def parse_workout_message(text: str, exercise_types: List[ExerciseType]) -> ParseResult:
+def parse_workout_message(text: str, exercise_types: List[ExerciseType], default_exercise_name: str = "pushups") -> ParseResult:
     """
     Uses OpenAI to parse the user's message into structured exercise data.
+
+    Args:
+        text: The user's workout message
+        exercise_types: List of valid exercise types
+        default_exercise_name: Exercise to default to when user only provides a number (default: "pushups")
     """
 
     # Prepare list of valid exercises for the prompt
@@ -41,12 +46,12 @@ def parse_workout_message(text: str, exercise_types: List[ExerciseType]) -> Pars
 
     system_prompt = f"""
     You are a fitness log parser. Extract exercise data from natural language text.
-    
+
     Constraint: You ONLY accept these exercise types:
     {json.dumps(exercises_info, indent=2)}
-    
+
     Rules:
-    1. If the user provides a number without an exercise name, default to 'pushups'.
+    1. If the user provides a number without an exercise name, default to '{default_exercise_name}'.
     2. For time-based exercises (like plank), 'count' should be the display value (e.g. minutes), and 'duration_seconds' must be the total seconds.
        - If user says "2 min plank", count=2, duration_seconds=120.
        - If user says "90 sec plank", count=1 (rounded min is okay for display) or 1.5, duration_seconds=90.

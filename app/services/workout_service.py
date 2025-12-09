@@ -417,10 +417,16 @@ async def process_incoming_message(text: str, chat_id: int):
 
     # 1. Get Definitions (filtered by active challenges)
     sb = get_supabase()
+    today_local = datetime.now(TZ).date()
 
-    # Fetch active challenges
+    # Fetch active challenges within current date range
     challenges_res = (
-        sb.table("exercise_challenges").select("*").eq("is_active", True).execute()
+        sb.table("exercise_challenges")
+        .select("*")
+        .eq("is_active", True)
+        .lte("start_date", today_local.isoformat())
+        .gte("end_date", today_local.isoformat())
+        .execute()
     )
     challenges_data = challenges_res.data
 
@@ -457,8 +463,19 @@ async def process_incoming_message(text: str, chat_id: int):
             if tid not in challenge_map:
                 challenge_map[tid] = c
 
+    # Determine default exercise based on active challenges
+    if len(challenges_data) == 1:
+        single_challenge = challenges_data[0]
+        default_etype = next(
+            (et for et in exercise_types if et.id == single_challenge["exercise_type_id"]),
+            None
+        )
+        default_exercise_name = default_etype.name if default_etype else "pushups"
+    else:
+        default_exercise_name = "pushups"
+
     # 2. Parse
-    parsed_result = parse_workout_message(text, exercise_types)
+    parsed_result = parse_workout_message(text, exercise_types, default_exercise_name)
 
     if not parsed_result.is_valid:
         await send_telegram_message(
@@ -466,8 +483,6 @@ async def process_incoming_message(text: str, chat_id: int):
         )
         return
 
-    sb = get_supabase()
-    today_local = datetime.now(TZ).date()
     response_map = {}
     witty_comments = []
     updated_exercise_ids = set()
