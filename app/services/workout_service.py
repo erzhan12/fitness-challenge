@@ -1,5 +1,4 @@
 import logging
-import math
 from datetime import datetime, date
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -16,6 +15,7 @@ from app.services.openai_service import (
 )
 from app.services.telegram_client import send_telegram_message
 from app.config import settings
+from src.api.services import compute_exercise_stats
 
 logger = logging.getLogger(__name__)
 TZ = ZoneInfo(settings.TZ)
@@ -126,64 +126,25 @@ def get_exercise_stats_and_message(
     today_local: date,
     added_count: int = 0,
 ) -> Tuple[str, Dict[str, Any]]:
-    # 1. Params
-    challenge_id = None
-    day_number = 1
-    total_days = 30
-    target_total = 1000
-    daily_target = 33
-
-    if challenge:
-        challenge_id = challenge["id"]
-        start_date = date.fromisoformat(challenge["start_date"])
-        end_date = date.fromisoformat(challenge["end_date"])
-        day_number = (today_local - start_date).days + 1
-        total_days = (end_date - start_date).days + 1
-        target_total = challenge["target_total"]
-        daily_target = challenge.get("daily_target")
-
-    # 2. Query Cumulative
-    query = sb.table("exercise_logs").select("count").eq("exercise_type_id", etype.id)
-    if challenge_id is not None:
-        query = query.eq("challenge_id", challenge_id)
-    else:
-        query = query.is_("challenge_id", "null")
-
-    logs_res = query.execute()
-    current_total = sum(r["count"] for r in logs_res.data)
-    new_cumulative = current_total + added_count
-
-    # 3. Status and deficit calculation
-    status, deficit = calculate_status_and_deficit(
-        new_cumulative, target_total, day_number, total_days, daily_target
+    """Get stats and format HTML message using the shared stats helper.
+    
+    This now calls compute_exercise_stats from src.api.services to ensure
+    consistent business logic between Telegram and REST API.
+    """
+    # Use the shared stats helper
+    stats_out = compute_exercise_stats(
+        exercise_type_id=etype.id,
+        target_date=today_local,
+        added_count=added_count,
     )
-
-    # 4. Catch-up calculation
-    catch_up_reps = 0
-    if status == "behind" and deficit > 0:
-        catch_up_reps = math.ceil(deficit)
-
-    # 6. Today's Total
-    # Query existing today logs and add added_count
-    today_logs = (
-        sb.table("exercise_logs")
-        .select("count")
-        .eq("exercise_type_id", etype.id)
-        .eq("date", today_local.isoformat())
-        .execute()
-    )
-    current_today_total = sum(r["count"] for r in today_logs.data)
-    new_today_total = current_today_total + added_count
-
-    # 7. Format Message
-    progress_percent = (
-        min(1.0, new_cumulative / target_total) if target_total > 0 else 0
-    )
+    
+    # Format the HTML message from the stats
+    progress_percent = stats_out.progress_percent / 100.0  # Convert to 0-1 range
     filled_blocks = int(progress_percent * 10)
     bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
-
+    
     unit_label = "min" if etype.unit in ["minutes", "min"] else ""
-
+    
     # Differentiate formatting based on added_count
     if added_count > 0:
         header = (
@@ -191,29 +152,32 @@ def get_exercise_stats_and_message(
         )
     else:
         header = f"{etype.emoji} <b>{etype.display_name}</b>"
-
+    
     msg_part = (
         f"{header}\n"
-        f"Day {day_number}/{total_days} • Today: {new_today_total} • Total: {new_cumulative}/{target_total}\n"
-        f"[{bar}] {int(progress_percent * 100)}%\n"
+        f"Day {stats_out.day_number}/{stats_out.total_days} • "
+        f"Today: {stats_out.today_total} • "
+        f"Total: {stats_out.cumulative_total}/{stats_out.target_total}\n"
+        f"[{bar}] {int(stats_out.progress_percent)}%\n"
     )
-
+    
     # Add catch-up message if behind
-    if catch_up_reps > 0:
-        msg_part += f"Need {catch_up_reps} more to catch up!\n"
-
+    if stats_out.catch_up_reps > 0:
+        msg_part += f"Need {stats_out.catch_up_reps} more to catch up!\n"
+    
+    # Return stats dict for backward compatibility with existing code
     stats = {
-        "cumulative_total": new_cumulative,
-        "today_total": new_today_total,
-        "status": status,
-        "day_number": day_number,
-        "target_total": target_total,
-        "total_days": total_days,
-        "daily_target": daily_target,
-        "challenge_id": challenge_id,
-        "catch_up_reps": catch_up_reps,
+        "cumulative_total": stats_out.cumulative_total,
+        "today_total": stats_out.today_total,
+        "status": stats_out.status,
+        "day_number": stats_out.day_number,
+        "target_total": stats_out.target_total,
+        "total_days": stats_out.total_days,
+        "daily_target": stats_out.daily_target,
+        "challenge_id": stats_out.challenge_id,
+        "catch_up_reps": stats_out.catch_up_reps,
     }
-
+    
     return msg_part, stats
 
 
