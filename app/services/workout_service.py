@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from datetime import datetime, date
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -13,12 +14,30 @@ from app.services.openai_service import (
     parse_workout_message,
     generate_motivational_response,
 )
-from app.services.telegram_client import send_telegram_message
+from app.services.telegram_client import send_telegram_message, send_chat_action
 from app.config import settings
 from src.api.services import compute_exercise_stats
 
 logger = logging.getLogger(__name__)
 TZ = ZoneInfo(settings.TZ)
+
+
+async def keep_typing(chat_id: int, stop_event: asyncio.Event):
+    """
+    Continuously sends 'typing' action to Telegram while processing.
+    Stops when stop_event is set.
+    """
+    logger.debug(f"Starting typing indicator for chat_id {chat_id}")
+    while not stop_event.is_set():
+        await send_chat_action(chat_id, "typing")
+        try:
+            # Wait 4 seconds or until stop event is set
+            await asyncio.wait_for(stop_event.wait(), timeout=4.0)
+            break  # Stop event was set
+        except asyncio.TimeoutError:
+            # Continue sending typing action
+            continue
+    logger.debug(f"Stopped typing indicator for chat_id {chat_id}")
 
 
 async def get_exercise_types() -> List[ExerciseType]:
@@ -353,240 +372,252 @@ async def undo_last_log(chat_id: int) -> str:
 
 
 async def process_incoming_message(text: str, chat_id: int):
-    # Handle commands
-    text_lower = text.strip().lower()
+    # Send typing action immediately
+    await send_chat_action(chat_id, "typing")
 
-    if text_lower == "/start":
-        welcome_message = (
-            "👋 <b>Welcome to Fitness Challenge Bot!</b>\n\n"
-            "I help you track your workouts. Just send me your exercises:\n\n"
-            "Examples:\n"
-            "• <code>20 pushups</code>\n"
-            "• <code>30 squats</code>\n"
-            "• <code>2 min plank</code>\n"
-            "• <code>20 pushups and 30 squats</code>\n\n"
-            "<b>Commands:</b>\n"
-            "• <code>/undo</code> - Remove last log entry\n"
-            "• <code>/recent [N]</code> - Show recent logs (default: 5)\n"
-            "• <code>/delete &lt;id&gt;</code> - Delete a specific log\n\n"
-            "I'll track your progress and keep you motivated! 💪"
-        )
-        await send_telegram_message(chat_id, welcome_message)
-        return
+    # Start typing indicator loop
+    stop_typing = asyncio.Event()
+    typing_task = asyncio.create_task(keep_typing(chat_id, stop_typing))
 
-    # Handle /undo command
-    if text_lower == "/undo":
-        result = await undo_last_log(chat_id)
-        await send_telegram_message(chat_id, result)
-        return
+    try:
+        # Handle commands
+        text_lower = text.strip().lower()
 
-    # Handle /recent command
-    if text_lower.startswith("/recent"):
-        parts = text_lower.split()
-        limit = 5
-        if len(parts) > 1:
+        if text_lower == "/start":
+            welcome_message = (
+                "👋 <b>Welcome to Fitness Challenge Bot!</b>\n\n"
+                "I help you track your workouts. Just send me your exercises:\n\n"
+                "Examples:\n"
+                "• <code>20 pushups</code>\n"
+                "• <code>30 squats</code>\n"
+                "• <code>2 min plank</code>\n"
+                "• <code>20 pushups and 30 squats</code>\n\n"
+                "<b>Commands:</b>\n"
+                "• <code>/undo</code> - Remove last log entry\n"
+                "• <code>/recent [N]</code> - Show recent logs (default: 5)\n"
+                "• <code>/delete &lt;id&gt;</code> - Delete a specific log\n\n"
+                "I'll track your progress and keep you motivated! 💪"
+            )
+            await send_telegram_message(chat_id, welcome_message)
+            return
+
+        # Handle /undo command
+        if text_lower == "/undo":
+            result = await undo_last_log(chat_id)
+            await send_telegram_message(chat_id, result)
+            return
+
+        # Handle /recent command
+        if text_lower.startswith("/recent"):
+            parts = text_lower.split()
+            limit = 5
+            if len(parts) > 1:
+                try:
+                    limit = int(parts[1])
+                    limit = max(1, min(limit, 20))  # Clamp between 1 and 20
+                except ValueError:
+                    pass
+            result = await get_recent_logs(chat_id, limit)
+            await send_telegram_message(chat_id, result)
+            return
+
+        # Handle /delete command
+        if text_lower.startswith("/delete"):
+            parts = text_lower.split()
+            if len(parts) < 2:
+                await send_telegram_message(
+                    chat_id,
+                    "❌ Usage: <code>/delete &lt;log_id&gt;</code>\n"
+                    "Use <code>/recent</code> to see log IDs.",
+                )
+                return
+
             try:
-                limit = int(parts[1])
-                limit = max(1, min(limit, 20))  # Clamp between 1 and 20
+                log_id = int(parts[1])
+                result = await delete_log_entry(log_id, chat_id)
+                await send_telegram_message(chat_id, result)
             except ValueError:
-                pass
-        result = await get_recent_logs(chat_id, limit)
-        await send_telegram_message(chat_id, result)
-        return
+                await send_telegram_message(
+                    chat_id, f"❌ Invalid log ID: {parts[1]}\nLog ID must be a number."
+                )
+            return
 
-    # Handle /delete command
-    if text_lower.startswith("/delete"):
-        parts = text_lower.split()
-        if len(parts) < 2:
+        # 1. Get Definitions (filtered by active challenges)
+        sb = get_supabase()
+        today_local = datetime.now(TZ).date()
+
+        # Fetch active challenges within current date range
+        challenges_res = (
+            sb.table("exercise_challenges")
+            .select("*")
+            .eq("is_active", True)
+            .lte("start_date", today_local.isoformat())
+            .gte("end_date", today_local.isoformat())
+            .execute()
+        )
+        challenges_data = challenges_res.data
+
+        # Determine relevant exercise type IDs
+        challenge_type_ids = list({c["exercise_type_id"] for c in challenges_data})
+
+        if not challenge_type_ids:
+            # If no challenges found, maybe fallback to all or empty.
+            # Based on user request to "only see challenge exercises", we return empty/limited list.
+            # But to avoid breaking the bot completely for new users, let's fallback to ALL if NONE are found?
+            # User said: "I don't want to see Plank... because my challenge only..."
+            # This implies if they have challenges, restrict to them.
+            # If they have ZERO challenges, maybe showing nothing is correct, or fallback.
+            # Let's fallback to get_exercise_types() (all active) if NO challenges exist at all.
+            exercise_types = await get_exercise_types()
+            challenge_map = {}
+        else:
+            types_res = (
+                sb.table("exercise_types")
+                .select("*")
+                .in_("id", challenge_type_ids)
+                .eq("is_active", True)
+                .order("id")
+                .execute()
+            )
+            exercise_types = [ExerciseType(**row) for row in types_res.data]
+
+            # Build map: type_id -> best challenge
+            # Sort challenges by end_date desc so we pick the latest/future one if duplicates
+            challenges_data.sort(key=lambda x: x["end_date"], reverse=True)
+            challenge_map = {}
+            for c in challenges_data:
+                tid = c["exercise_type_id"]
+                if tid not in challenge_map:
+                    challenge_map[tid] = c
+
+        # Determine default exercise based on active challenges
+        if len(challenges_data) == 1:
+            single_challenge = challenges_data[0]
+            default_etype = next(
+                (et for et in exercise_types if et.id == single_challenge["exercise_type_id"]),
+                None
+            )
+            default_exercise_name = default_etype.name if default_etype else "pushups"
+        else:
+            default_exercise_name = "pushups"
+
+        # 2. Parse
+        parsed_result = parse_workout_message(text, exercise_types, default_exercise_name)
+
+        if not parsed_result.is_valid:
             await send_telegram_message(
-                chat_id,
-                "❌ Usage: <code>/delete &lt;log_id&gt;</code>\n"
-                "Use <code>/recent</code> to see log IDs.",
+                chat_id, parsed_result.error_reason or "Couldn't understand that workout."
             )
             return
 
-        try:
-            log_id = int(parts[1])
-            result = await delete_log_entry(log_id, chat_id)
-            await send_telegram_message(chat_id, result)
-        except ValueError:
-            await send_telegram_message(
-                chat_id, f"❌ Invalid log ID: {parts[1]}\nLog ID must be a number."
+        response_map = {}
+        witty_comments = []
+        updated_exercise_ids = set()
+
+        # 3. Process Each Entry
+        for entry in parsed_result.entries:
+            # Match exercise type
+            etype = next(
+                (et for et in exercise_types if et.name == entry.exercise_type_name), None
             )
-        return
+            if not etype:
+                continue  # Should not happen if AI follows constraints
 
-    # 1. Get Definitions (filtered by active challenges)
-    sb = get_supabase()
-    today_local = datetime.now(TZ).date()
+            updated_exercise_ids.add(etype.id)
 
-    # Fetch active challenges within current date range
-    challenges_res = (
-        sb.table("exercise_challenges")
-        .select("*")
-        .eq("is_active", True)
-        .lte("start_date", today_local.isoformat())
-        .gte("end_date", today_local.isoformat())
-        .execute()
-    )
-    challenges_data = challenges_res.data
+            # Find Challenge
+            challenge = challenge_map.get(etype.id)
 
-    # Determine relevant exercise type IDs
-    challenge_type_ids = list({c["exercise_type_id"] for c in challenges_data})
-
-    if not challenge_type_ids:
-        # If no challenges found, maybe fallback to all or empty.
-        # Based on user request to "only see challenge exercises", we return empty/limited list.
-        # But to avoid breaking the bot completely for new users, let's fallback to ALL if NONE are found?
-        # User said: "I don't want to see Plank... because my challenge only..."
-        # This implies if they have challenges, restrict to them.
-        # If they have ZERO challenges, maybe showing nothing is correct, or fallback.
-        # Let's fallback to get_exercise_types() (all active) if NO challenges exist at all.
-        exercise_types = await get_exercise_types()
-        challenge_map = {}
-    else:
-        types_res = (
-            sb.table("exercise_types")
-            .select("*")
-            .in_("id", challenge_type_ids)
-            .eq("is_active", True)
-            .order("id")
-            .execute()
-        )
-        exercise_types = [ExerciseType(**row) for row in types_res.data]
-
-        # Build map: type_id -> best challenge
-        # Sort challenges by end_date desc so we pick the latest/future one if duplicates
-        challenges_data.sort(key=lambda x: x["end_date"], reverse=True)
-        challenge_map = {}
-        for c in challenges_data:
-            tid = c["exercise_type_id"]
-            if tid not in challenge_map:
-                challenge_map[tid] = c
-
-    # Determine default exercise based on active challenges
-    if len(challenges_data) == 1:
-        single_challenge = challenges_data[0]
-        default_etype = next(
-            (et for et in exercise_types if et.id == single_challenge["exercise_type_id"]),
-            None
-        )
-        default_exercise_name = default_etype.name if default_etype else "pushups"
-    else:
-        default_exercise_name = "pushups"
-
-    # 2. Parse
-    parsed_result = parse_workout_message(text, exercise_types, default_exercise_name)
-
-    if not parsed_result.is_valid:
-        await send_telegram_message(
-            chat_id, parsed_result.error_reason or "Couldn't understand that workout."
-        )
-        return
-
-    response_map = {}
-    witty_comments = []
-    updated_exercise_ids = set()
-
-    # 3. Process Each Entry
-    for entry in parsed_result.entries:
-        # Match exercise type
-        etype = next(
-            (et for et in exercise_types if et.name == entry.exercise_type_name), None
-        )
-        if not etype:
-            continue  # Should not happen if AI follows constraints
-
-        updated_exercise_ids.add(etype.id)
-
-        # Find Challenge
-        challenge = challenge_map.get(etype.id)
-
-        # Use Helper to get stats and message
-        msg_part, stats = get_exercise_stats_and_message(
-            sb, etype, challenge, today_local, added_count=entry.count
-        )
-
-        response_map[etype.id] = msg_part
-
-        # Insert Log
-        log_data = {
-            "exercise_type_id": etype.id,
-            "challenge_id": stats["challenge_id"],
-            "date": today_local.isoformat(),
-            "timestamp": datetime.now(TZ).isoformat(),
-            "count": entry.count,
-            "cumulative_total": stats["cumulative_total"],
-            "day_number": stats["day_number"],
-            "status": stats["status"],
-            "raw_message": text,
-            "duration_seconds": entry.duration_seconds,
-            "notes": entry.notes,
-        }
-        sb.table("exercise_logs").insert(log_data).execute()
-
-        # Upsert User Stats
-        stats_res = (
-            sb.table("user_stats")
-            .select("*")
-            .eq("exercise_type_id", etype.id)
-            .execute()
-        )
-        if stats_res.data:
-            curr_stats = stats_res.data[0]
-            new_all_time = curr_stats["all_time_total"] + entry.count
-            sb.table("user_stats").update(
-                {
-                    "all_time_total": new_all_time,
-                    "last_logged_date": today_local.isoformat(),
-                }
-            ).eq("id", curr_stats["id"]).execute()
-        else:
-            sb.table("user_stats").insert(
-                {
-                    "exercise_type_id": etype.id,
-                    "all_time_total": entry.count,
-                    "last_logged_date": today_local.isoformat(),
-                }
-            ).execute()
-
-        # Generate Witty Comment (using stats from helper)
-        if challenge:
-            comment = generate_motivational_response(
-                etype.display_name,
-                {
-                    "status": stats["status"],
-                    "today_total": stats["today_total"],
-                    "day_number": stats["day_number"],
-                    "streak": "N/A",
-                },
+            # Use Helper to get stats and message
+            msg_part, stats = get_exercise_stats_and_message(
+                sb, etype, challenge, today_local, added_count=entry.count
             )
-            witty_comments.append(comment)
 
-    # 4. Process Remaining Exercises
-    for etype in exercise_types:
-        if etype.id in updated_exercise_ids:
-            continue
+            response_map[etype.id] = msg_part
 
-        # Find Challenge
-        challenge = challenge_map.get(etype.id)
+            # Insert Log
+            log_data = {
+                "exercise_type_id": etype.id,
+                "challenge_id": stats["challenge_id"],
+                "date": today_local.isoformat(),
+                "timestamp": datetime.now(TZ).isoformat(),
+                "count": entry.count,
+                "cumulative_total": stats["cumulative_total"],
+                "day_number": stats["day_number"],
+                "status": stats["status"],
+                "raw_message": text,
+                "duration_seconds": entry.duration_seconds,
+                "notes": entry.notes,
+            }
+            sb.table("exercise_logs").insert(log_data).execute()
 
-        # Use Helper
-        msg_part, _ = get_exercise_stats_and_message(
-            sb, etype, challenge, today_local, added_count=0
-        )
-        response_map[etype.id] = msg_part
+            # Upsert User Stats
+            stats_res = (
+                sb.table("user_stats")
+                .select("*")
+                .eq("exercise_type_id", etype.id)
+                .execute()
+            )
+            if stats_res.data:
+                curr_stats = stats_res.data[0]
+                new_all_time = curr_stats["all_time_total"] + entry.count
+                sb.table("user_stats").update(
+                    {
+                        "all_time_total": new_all_time,
+                        "last_logged_date": today_local.isoformat(),
+                    }
+                ).eq("id", curr_stats["id"]).execute()
+            else:
+                sb.table("user_stats").insert(
+                    {
+                        "exercise_type_id": etype.id,
+                        "all_time_total": entry.count,
+                        "last_logged_date": today_local.isoformat(),
+                    }
+                ).execute()
 
-    # Final Response Assembly
-    final_parts = []
-    for et in exercise_types:
-        if et.id in response_map:
-            final_parts.append(response_map[et.id])
+            # Generate Witty Comment (using stats from helper)
+            if challenge:
+                comment = generate_motivational_response(
+                    etype.display_name,
+                    {
+                        "status": stats["status"],
+                        "today_total": stats["today_total"],
+                        "day_number": stats["day_number"],
+                        "streak": "N/A",
+                    },
+                )
+                witty_comments.append(comment)
 
-    full_response = "\n".join(final_parts)
-    if witty_comments:
-        full_response += f"\n<i>{witty_comments[-1]}</i>"
+        # 4. Process Remaining Exercises
+        for etype in exercise_types:
+            if etype.id in updated_exercise_ids:
+                continue
 
-    await send_telegram_message(chat_id, full_response)
+            # Find Challenge
+            challenge = challenge_map.get(etype.id)
+
+            # Use Helper
+            msg_part, _ = get_exercise_stats_and_message(
+                sb, etype, challenge, today_local, added_count=0
+            )
+            response_map[etype.id] = msg_part
+
+        # Final Response Assembly
+        final_parts = []
+        for et in exercise_types:
+            if et.id in response_map:
+                final_parts.append(response_map[et.id])
+
+        full_response = "\n".join(final_parts)
+        if witty_comments:
+            full_response += f"\n<i>{witty_comments[-1]}</i>"
+
+        await send_telegram_message(chat_id, full_response)
+    finally:
+        # Stop typing indicator
+        stop_typing.set()
+        await typing_task
 
 
 async def check_daily_reminders():
