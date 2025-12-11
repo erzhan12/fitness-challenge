@@ -162,17 +162,7 @@ def get_exercise_stats_and_message(
     filled_blocks = int(progress_percent * 10)
     bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
     
-    # Unit label for display (Telegram-only formatting)
-    unit_label = "min" if etype.unit in ["minutes", "min"] else "reps"
-
-    # "How many reps left for today" (or minutes for time-based exercises)
-    # Prefer explicit challenge daily_target when present; otherwise use a per-day average.
-    daily_goal = stats_out.daily_target
-    if daily_goal is None and stats_out.total_days > 0:
-        daily_goal = (stats_out.target_total + stats_out.total_days - 1) // stats_out.total_days
-    reps_left_today = (
-        max(0, daily_goal - stats_out.today_total) if daily_goal is not None else None
-    )
+    unit_label = "min" if etype.unit in ["minutes", "min"] else ""
     
     # Differentiate formatting based on added_count
     if added_count > 0:
@@ -181,29 +171,33 @@ def get_exercise_stats_and_message(
         )
     else:
         header = f"{etype.emoji} <b>{etype.display_name}</b>"
-    
-    today_part = (
-        f"Today: {stats_out.today_total}/{daily_goal} {unit_label}"
-        if daily_goal is not None
-        else f"Today: {stats_out.today_total} {unit_label}"
-    )
-    left_part = (
-        f" • Left today: {reps_left_today} {unit_label}"
-        if reps_left_today is not None
-        else ""
-    )
 
     msg_part = (
         f"{header}\n"
         f"Day {stats_out.day_number}/{stats_out.total_days} • "
-        f"{today_part}{left_part} • "
+        f"Today: {stats_out.today_total} • "
         f"Total: {stats_out.cumulative_total}/{stats_out.target_total}\n"
         f"[{bar}] {int(stats_out.progress_percent)}%\n"
     )
     
-    # Add catch-up message if behind
+    # Add catch-up / ahead message
     if stats_out.catch_up_reps > 0:
         msg_part += f"Need {stats_out.catch_up_reps} more to catch up!\n"
+    else:
+        # Compute "ahead" amount vs expected cumulative by day_number.
+        # This mirrors the stats logic thresholding but gives a concrete "ahead by X" number.
+        expected = calculate_expected_progress(
+            stats_out.target_total,
+            stats_out.day_number,
+            stats_out.total_days,
+            stats_out.daily_target,
+        )
+        diff = stats_out.cumulative_total - expected  # positive means ahead
+        ahead_reps = max(0, int(diff))  # floor for floats
+        if ahead_reps > 0:
+            msg_part += f"You're doing great — you are {ahead_reps} reps ahead!\n"
+        else:
+            msg_part += "You're doing great — you're on track!\n"
     
     # Return stats dict for backward compatibility with existing code
     stats = {
