@@ -291,7 +291,7 @@ def calculate_status_and_deficit(
 
     diff = cumulative - expected
     deficit = expected - cumulative
-    threshold = (daily_target or (target_total / total_days)) * 0.5
+    threshold = daily_target or (target_total / total_days)  # full daily target
 
     if diff > threshold:
         return "ahead", deficit
@@ -366,9 +366,9 @@ def compute_exercise_stats(
         new_cumulative, target_total, day_number, total_days, daily_target
     )
 
-    # Catch-up calculation
+    # Catch-up calculation - show for any positive deficit
     catch_up_reps = 0
-    if status == "behind" and deficit > 0:
+    if deficit > 0:
         catch_up_reps = math.ceil(deficit)
 
     # Today's total

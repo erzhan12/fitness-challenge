@@ -32,15 +32,17 @@ class TestProgressCalculations:
 
     def test_calculate_status_and_deficit_ahead(self):
         """Test status and deficit when user is ahead."""
+        # Expected: 166.67, threshold: 33.33 (full daily target)
+        # Need diff > 33.33, so cumulative > 200
         status, deficit = calculate_status_and_deficit(
-            cumulative=200,  # Expected: 166.67
+            cumulative=250,  # diff = 83.33 > threshold of 33.33
             target_total=1000,
             day_number=5,
             total_days=30,
             daily_target=None,
         )
         assert status == "ahead"
-        assert deficit == pytest.approx(-33.33, 0.01)  # negative when ahead
+        assert deficit == pytest.approx(-83.33, 0.01)  # negative when ahead
 
     def test_calculate_status_and_deficit_on_track(self):
         """Test status and deficit when user is on track."""
@@ -83,8 +85,10 @@ class TestCatchUpReps:
 
     def test_catch_up_ahead_should_not_show(self):
         """When ahead, catch-up should be 0."""
+        # Expected: 166.67, threshold: 33.33 (full daily target)
+        # Need diff > 33.33 for "ahead" status
         status, deficit = calculate_status_and_deficit(
-            cumulative=200,  # Expected: 166.67, ahead by 33.33
+            cumulative=250,  # diff = 83.33 > threshold of 33.33
             target_total=1000,
             day_number=5,
             total_days=30,
@@ -93,16 +97,16 @@ class TestCatchUpReps:
         assert status == "ahead"
         assert deficit < 0  # negative when ahead
 
-        # Catch-up calculation
+        # Catch-up calculation - now shows for any positive deficit
         catch_up_reps = 0
-        if status == "behind" and deficit > 0:
+        if deficit > 0:
             catch_up_reps = math.ceil(deficit)
         assert catch_up_reps == 0
 
     def test_catch_up_on_track_should_not_show(self):
-        """When on track, catch-up should be 0."""
+        """When on track (slightly ahead), catch-up should be 0."""
         status, deficit = calculate_status_and_deficit(
-            cumulative=167,  # ~5.57/day for 30 days = 167
+            cumulative=167,  # Expected: 166.67, deficit: -0.33 (slightly ahead)
             target_total=1000,
             day_number=5,
             total_days=30,
@@ -110,11 +114,11 @@ class TestCatchUpReps:
         )
         assert status == "on_track"
 
-        # Catch-up calculation
+        # Catch-up calculation - shows for any positive deficit
         catch_up_reps = 0
-        if status == "behind" and deficit > 0:
+        if deficit > 0:
             catch_up_reps = math.ceil(deficit)
-        assert catch_up_reps == 0
+        assert catch_up_reps == 0  # deficit is negative, so no catch-up
 
     def test_catch_up_behind_no_daily_target(self):
         """When behind without daily target, should show catch-up."""
@@ -128,9 +132,9 @@ class TestCatchUpReps:
         assert status == "behind"
         assert deficit > 0
 
-        # Catch-up calculation
+        # Catch-up calculation - shows for any positive deficit
         catch_up_reps = 0
-        if status == "behind" and deficit > 0:
+        if deficit > 0:
             catch_up_reps = math.ceil(deficit)
         assert catch_up_reps == 67  # ceil(66.67)
 
@@ -146,42 +150,47 @@ class TestCatchUpReps:
         assert status == "behind"
         assert deficit > 0
 
-        # Catch-up calculation
+        # Catch-up calculation - shows for any positive deficit
         catch_up_reps = 0
-        if status == "behind" and deficit > 0:
+        if deficit > 0:
             catch_up_reps = math.ceil(deficit)
         assert catch_up_reps == 10  # ceil(10)
 
-    def test_catch_up_slightly_behind_within_threshold(self):
-        """When slightly behind but within threshold, should not show catch-up."""
+    def test_catch_up_slightly_behind_shows_deficit(self):
+        """When slightly behind (positive deficit), should show catch-up."""
         status, deficit = calculate_status_and_deficit(
-            cumulative=160,  # Expected: 166.67, deficit: 6.67 (within 8.33 threshold)
+            cumulative=160,  # Expected: 166.67, deficit: 6.67
             target_total=1000,
             day_number=5,
             total_days=30,
             daily_target=None,
         )
-        assert status == "on_track"  # Within threshold
+        assert status == "on_track"  # Within status threshold
+        assert deficit > 0  # But still has a positive deficit
 
-        # Catch-up calculation
+        # Catch-up calculation - now shows for ANY positive deficit
         catch_up_reps = 0
-        if status == "behind" and deficit > 0:
+        if deficit > 0:
             catch_up_reps = math.ceil(deficit)
-        assert catch_up_reps == 0
+        assert catch_up_reps == 7  # ceil(6.67) - now shows catch-up!
 
 
 class TestIntegrationScenarios:
     """Test real-world scenarios to ensure the refactoring works correctly."""
 
     def test_exact_match_with_manual_test_script(self):
-        """Verify our refactored code produces same results as manual test script."""
+        """Verify our refactored code produces expected results."""
         test_cases = [
             # (cumulative, target_total, day_number, total_days, daily_target, expected_status, expected_catchup)
-            (200, 1000, 5, 30, None, "ahead", 0),
+            # With full daily target threshold (33.33), 200-166.67=33.33 is NOT > 33.33, so on_track
+            (200, 1000, 5, 30, None, "on_track", 0),
             (167, 1000, 5, 30, None, "on_track", 0),
             (100, 1000, 5, 30, None, "behind", 67),
             (15, 750, 5, 30, 5, "behind", 10),
-            (160, 1000, 5, 30, None, "on_track", 0),
+            # 160 has deficit of 6.67, which now shows catch-up
+            (160, 1000, 5, 30, None, "on_track", 7),
+            # Clearly ahead case: 250-166.67=83.33 > 33.33 threshold
+            (250, 1000, 5, 30, None, "ahead", 0),
         ]
 
         for (
@@ -197,12 +206,13 @@ class TestIntegrationScenarios:
                 cumulative, target_total, day_number, total_days, daily_target
             )
 
+            # New logic: catch-up shows for ANY positive deficit
             catch_up_reps = 0
-            if status == "behind" and deficit > 0:
+            if deficit > 0:
                 catch_up_reps = math.ceil(deficit)
 
-            assert status == expected_status
-            assert catch_up_reps == expected_catchup
+            assert status == expected_status, f"Failed for cumulative={cumulative}"
+            assert catch_up_reps == expected_catchup, f"Failed catchup for cumulative={cumulative}"
 
 
 class TestGetRecentLogs:

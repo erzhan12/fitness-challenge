@@ -114,7 +114,7 @@ def calculate_status_and_deficit(
 
     diff = cumulative - expected
     deficit = expected - cumulative  # positive when behind
-    threshold = (daily_target or (target_total / total_days)) * 0.5  # loose threshold
+    threshold = daily_target or (target_total / total_days)  # full daily target threshold
 
     if diff > threshold:
         return "ahead", deficit
@@ -180,12 +180,11 @@ def get_exercise_stats_and_message(
         f"[{bar}] {int(stats_out.progress_percent)}%\n"
     )
     
-    # Add catch-up / ahead message
+    # Add catch-up / ahead / on-track message
     if stats_out.catch_up_reps > 0:
         msg_part += f"Need {stats_out.catch_up_reps} more to catch up!\n"
     else:
-        # Compute "ahead" amount vs expected cumulative by day_number.
-        # This mirrors the stats logic thresholding but gives a concrete "ahead by X" number.
+        # Compute "ahead" amount vs expected cumulative by day_number
         expected = calculate_expected_progress(
             stats_out.target_total,
             stats_out.day_number,
@@ -193,10 +192,10 @@ def get_exercise_stats_and_message(
             stats_out.daily_target,
         )
         diff = stats_out.cumulative_total - expected  # positive means ahead
-        ahead_reps = max(0, int(diff))  # floor for floats
+        ahead_reps = max(0, int(diff))
         if ahead_reps > 0:
             msg_part += f"You're doing great — you are {ahead_reps} reps ahead!\n"
-        else:
+        elif stats_out.today_total == stats_out.daily_target:
             msg_part += "You're doing great — you're on track!\n"
     
     # Return stats dict for backward compatibility with existing code
