@@ -150,11 +150,17 @@ def get_exercise_stats_and_message(
     This now calls compute_exercise_stats from src.api.services to ensure
     consistent business logic between Telegram and REST API.
     """
-    # Use the shared stats helper
+    # Convert ExerciseType to dict format expected by compute_exercise_stats
+    # Use model_dump() to get all fields from the Pydantic model
+    etype_dict = etype.model_dump()
+    
+    # Use the shared stats helper with pre-fetched data to avoid duplicate queries
     stats_out = compute_exercise_stats(
         exercise_type_id=etype.id,
         target_date=today_local,
         added_count=added_count,
+        etype=etype_dict,
+        challenge=challenge,
     )
     
     # Format the HTML message from the stats
@@ -543,6 +549,7 @@ async def process_incoming_message(text: str, chat_id: int):
             challenge = challenge_map.get(etype.id)
 
             # Use Helper to get stats and message
+            # Pass pre-fetched challenge to avoid duplicate query
             msg_part, stats = get_exercise_stats_and_message(
                 sb, etype, challenge, today_local, added_count=entry.count
             )

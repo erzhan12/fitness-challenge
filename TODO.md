@@ -24,6 +24,15 @@
 - [ ] Calculate trends (7-day average, monthly change)
 - [ ] Add unit tests
 
+### Deterministic Input Parsing (Pre-LLM)
+- [X] When a user enters workout text, try deterministic parsing first; only use LLM as fallback
+- [X] Ensure `exercise_types.aliases` (list/array) is populated with variations (e.g., `["pushups","pushup","push-ups","push-up"]`) for matching
+- [X] If input is just a number and there is exactly one active challenge, log it to that challenge
+- [X] If input is `<number> <word>`, match `<word>` against active challenges using exercise type `name` + `aliases` (handle singular/plural and punctuation variations), then log it
+- [X] If input contains multiple `<number> <word>` pairs, parse all pairs and log each to the matching active challenge
+- [X] If deterministic parsing is ambiguous or fails, fall back to LLM parsing
+- [X] Add unit tests covering ambiguous inputs and fallback-to-LLM behavior
+
 ### Motivational Insights
 - [ ] Create weekly aggregation function in `src/api/services.py`
 - [ ] Implement OpenAI prompt for personalized summaries

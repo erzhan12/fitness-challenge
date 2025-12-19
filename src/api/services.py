@@ -305,6 +305,8 @@ def compute_exercise_stats(
     exercise_type_id: int,
     target_date: Optional[date] = None,
     added_count: int = 0,
+    etype: Optional[Dict[str, Any]] = None,
+    challenge: Optional[Dict[str, Any]] = None,
 ) -> ExerciseStatsOut:
     """Compute stats for an exercise type within its challenge context.
 
@@ -315,18 +317,22 @@ def compute_exercise_stats(
         exercise_type_id: The exercise type to compute stats for
         target_date: Date context (defaults to today)
         added_count: Optional count to add (for preview before insertion)
+        etype: Optional pre-fetched exercise type data (to avoid duplicate queries)
+        challenge: Optional pre-fetched challenge data (to avoid duplicate queries)
     """
     sb = get_supabase()
     today_local = target_date or datetime.now(TZ).date()
 
-    # Get exercise type
-    ex_res = sb.table("exercise_types").select("*").eq("id", exercise_type_id).execute()
-    if not ex_res.data:
-        raise ValueError(f"Exercise type {exercise_type_id} not found")
-    etype = ex_res.data[0]
+    # Get exercise type (only if not provided)
+    if etype is None:
+        ex_res = sb.table("exercise_types").select("*").eq("id", exercise_type_id).execute()
+        if not ex_res.data:
+            raise ValueError(f"Exercise type {exercise_type_id} not found")
+        etype = ex_res.data[0]
 
-    # Get challenge
-    challenge = get_active_challenge_for_type(exercise_type_id, today_local)
+    # Get challenge (only if not provided)
+    if challenge is None:
+        challenge = get_active_challenge_for_type(exercise_type_id, today_local)
 
     # Default values
     challenge_id = None

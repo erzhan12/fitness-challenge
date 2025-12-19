@@ -14,11 +14,12 @@ import sys
 import argparse
 import httpx
 from pathlib import Path
-from app.config import settings
 
 # Add project root to path BEFORE importing app modules
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+from app.config import settings
 
 
 

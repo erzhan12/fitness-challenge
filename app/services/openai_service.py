@@ -4,6 +4,9 @@ from typing import List, Dict, Any
 from openai import OpenAI
 from app.config import settings
 from app.models import ParseResult, ExerciseType
+from app.services.deterministic_parser import (
+    try_deterministic_parse_workout_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,15 @@ def parse_workout_message(text: str, exercise_types: List[ExerciseType], default
         exercise_types: List of valid exercise types
         default_exercise_name: Exercise to default to when user only provides a number (default: "pushups")
     """
+
+    # Try deterministic parsing first (uses existing aliases or simple singular/plural)
+    logger.info(f"🔍 Attempting deterministic parse for: '{text}'")
+    deterministic = try_deterministic_parse_workout_message(text, exercise_types)
+    if deterministic is not None:
+        logger.info(f"✅ Deterministic parse SUCCESS - parsed without LLM: {[e.exercise_type_name for e in deterministic.entries]}")
+        return deterministic
+
+    logger.info("⚠️  Deterministic parse failed - falling back to LLM")
 
     # Prepare list of valid exercises for the prompt
     exercises_info = [
@@ -76,9 +88,7 @@ def parse_workout_message(text: str, exercise_types: List[ExerciseType], default
     """
 
     try:
-        logger.debug(
-            f"Calling LLM API with model: {settings.LLM_MODEL}, base_url: {settings.LLM_BASE_URL}"
-        )
+        logger.info(f"🤖 Calling LLM API (model: {settings.LLM_MODEL})")
         logger.debug(f"User input: {text[:100]}...")  # Log first 100 chars
 
         response = client.chat.completions.create(
@@ -92,9 +102,8 @@ def parse_workout_message(text: str, exercise_types: List[ExerciseType], default
         )
 
         content = response.choices[0].message.content
-        logger.debug(
-            f"LLM response received: {content[:200]}..."
-        )  # Log first 200 chars
+        logger.info("✅ LLM parse SUCCESS")
+        logger.debug(f"LLM response: {content[:200]}...")  # Log first 200 chars
         data = json.loads(content)
         return ParseResult(**data)
 
