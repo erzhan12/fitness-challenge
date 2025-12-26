@@ -69,21 +69,22 @@ def parse_workout_message(text: str, exercise_types: List[ExerciseType], default
        - If user says "90 sec plank", count=1 (rounded min is okay for display) or 1.5, duration_seconds=90.
     3. For rep-based exercises, 'count' is the number of reps, 'duration_seconds' is null.
     4. Handle multiple exercises in one message (e.g., "20 pushups and 30 squats").
-    5. Return strict JSON.
-    
+    5. VALIDATION: The 'count' field MUST be a positive integer greater than 0. If the user provides 0, 0.0, 0.1, or any value <= 0, set is_valid to false and return error_reason: "Count must be greater than 0 and should be an integer."
+    6. Return strict JSON.
+
     Schema:
     {{
       "entries": [
         {{
           "exercise_type_name": "string (must match one of the 'name' fields provided)",
-          "count": "integer (reps or minutes)",
+          "count": "integer (reps or minutes, MUST be > 0)",
           "duration_seconds": "integer (or null)",
           "notes": "string (optional context)",
           "confidence": "float (0.0 to 1.0)"
         }}
       ],
       "is_valid": boolean,
-      "error_reason": "string (friendly reply if no exercises found, else null)"
+      "error_reason": "string (friendly reply if no exercises found or validation fails, else null)"
     }}
     """
 
@@ -105,6 +106,18 @@ def parse_workout_message(text: str, exercise_types: List[ExerciseType], default
         logger.info("✅ LLM parse SUCCESS")
         logger.debug(f"LLM response: {content[:200]}...")  # Log first 200 chars
         data = json.loads(content)
+
+        # Post-processing validation: check all counts are > 0
+        if data.get("is_valid") and data.get("entries"):
+            for entry in data["entries"]:
+                if entry.get("count", 0) <= 0:
+                    logger.warning(f"LLM returned invalid count: {entry.get('count')}")
+                    return ParseResult(
+                        entries=[],
+                        is_valid=False,
+                        error_reason="Count must be greater than 0 and should be an integer."
+                    )
+
         return ParseResult(**data)
 
     except Exception as e:

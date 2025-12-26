@@ -6,5 +6,6 @@ Please do a thorough code review:
 3. Look for subtle data alignment issues (e.g. expecting snake_case but getting camelCase or expecting data to come through in an object but receiving a nested object like {data:{}})
 4. Look for any over-engineering or files getting too large and needing refactoring
 5. Look for any weird syntax or style that doesn't match other parts of the codebase
+6. Review unit tests: verify they exist for all new functionality covering happy paths and edge cases, are isolated with proper mocking of external dependencies, follow existing test patterns and naming conventions, have clear descriptive names, are fast without unnecessary setup/teardown, and properly verify interactions with mocked objects
 
 Document your findings in docs/features/<N>_REVIEW.md unless a different file name is specified.

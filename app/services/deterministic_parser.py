@@ -17,6 +17,11 @@ _CONNECTORS = {
 }
 
 
+def _is_valid_count(count: int) -> bool:
+    """Validate that count is a positive integer greater than 0."""
+    return count > 0
+
+
 def _normalize_token(token: str) -> str:
     return _NON_ALNUM_RE.sub("", token.lower().strip())
 
@@ -132,7 +137,10 @@ def _parse_number_word_pairs(tokens: List[str]) -> Optional[List[Tuple[int, str]
         return None
 
     if len(tokens) == 1 and tokens[0].isdigit():
-        return [(int(tokens[0]), "")]
+        count = int(tokens[0])
+        if not _is_valid_count(count):
+            return None
+        return [(count, "")]
 
     pairs: List[Tuple[int, str]] = []
     i = 0
@@ -143,6 +151,8 @@ def _parse_number_word_pairs(tokens: List[str]) -> Optional[List[Tuple[int, str]
             return None
 
         count = int(tokens[i])
+        if not _is_valid_count(count):
+            return None
         i += 1
 
         words: List[str] = []
@@ -179,7 +189,31 @@ def try_deterministic_parse_workout_message(
     if not normalized_text:
         return None
 
+    # Check for decimal numbers (e.g., 0.1, 0.01, .5) before tokenizing
+    if re.search(r'(\b\d*\.\d+\b|^\.\d+)', normalized_text):
+        return ParseResult(
+            entries=[],
+            is_valid=False,
+            error_reason="Count must be greater than 0 and should be an integer."
+        )
+
     tokens = _TOKEN_RE.findall(normalized_text.lower())
+
+    # Check if input looks like it contains a number that needs validation
+    has_number = any(token.isdigit() for token in tokens)
+    if has_number:
+        # Try to extract the number to check if it's invalid
+        for token in tokens:
+            if token.isdigit():
+                num = int(token)
+                if num <= 0:
+                    # Return an error result instead of None to avoid LLM fallback
+                    return ParseResult(
+                        entries=[],
+                        is_valid=False,
+                        error_reason="Count must be greater than 0 and should be an integer."
+                    )
+
     pairs = _parse_number_word_pairs(tokens)
     if not pairs:
         return None
