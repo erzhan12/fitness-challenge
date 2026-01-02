@@ -556,6 +556,13 @@ When a user sends a message with only a number (e.g., "25"), the system attempts
 **Implementation:**
 - Logic encapsulated in `determine_default_exercise` in `app/services/workout_service.py`.
 - `is_default` field in `exercise_challenges` table.
+- Applied consistently in both:
+  - Telegram flow (`app/services/workout_service.py::process_incoming_message`)
+  - REST API (`src/api/routers/workouts.py::parse_workout`)
+- The REST API computes `default_exercise_name` using `determine_default_exercise()` and passes it to `parse_workout_message()` to ensure single-number inputs (e.g., "50") behave the same as Telegram.
+
+**Pitfall to Avoid:**
+Always pass `default_exercise_name` to `parse_workout_message()` - don't rely on the default "pushups" parameter. This ensures consistent behavior between Telegram and REST endpoints.
 
 ---
 

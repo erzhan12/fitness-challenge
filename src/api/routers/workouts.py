@@ -12,6 +12,7 @@ from app.config import settings
 from app.models import ExerciseType, ParseResult, ExerciseEntry
 from app.services.openai_service import parse_workout_message
 from app.services.deterministic_parser import get_numbers_from_message
+from app.services.workout_service import determine_default_exercise
 from src.api.models import (
     ParseWorkoutRequest,
     ParseWorkoutResponse,
@@ -98,18 +99,22 @@ async def parse_workout(
         for et in api_exercise_types
     ]
 
+    # Fetch active challenges for both fast path and default exercise calculation
+    today_local = datetime.now(TZ).date()
+    challenges_data = list_current_active_challenges(today_local)
+    
+    # Compute default exercise name (consistent with Telegram flow)
+    default_exercise_name = determine_default_exercise(challenges_data, exercise_types)
+
     # Try fast path (numbers-only mapping to challenges)
     result = None
-    today_local = datetime.now(TZ).date()
-    
     counts, parse_error = get_numbers_from_message(data.text)
     
     if parse_error:
         result = ParseResult(entries=[], is_valid=False, error_reason=parse_error)
     elif counts is not None:
         # Valid multi-number input
-        # Get current active challenges to map numbers
-        challenges_data = list_current_active_challenges(today_local)
+        # Use challenges_data already fetched above
         
         if not challenges_data:
              result = ParseResult(
@@ -149,7 +154,7 @@ async def parse_workout(
 
     # Parse the message (Fallback)
     if not result:
-        result = parse_workout_message(data.text, exercise_types)
+        result = parse_workout_message(data.text, exercise_types, default_exercise_name)
 
     # Convert to API response model
     entries = [
