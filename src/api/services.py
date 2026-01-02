@@ -431,13 +431,17 @@ def compute_exercise_stats(
         catch_up_reps = math.ceil(deficit)
 
     # Today's total
-    today_logs = (
+    today_query = (
         sb.table("exercise_logs")
         .select("count")
         .eq("exercise_type_id", exercise_type_id)
         .eq("date", today_local.isoformat())
-        .execute()
     )
+    if challenge_id is not None:
+        today_query = today_query.eq("challenge_id", challenge_id)
+    else:
+        today_query = today_query.is_("challenge_id", "null")
+    today_logs = today_query.execute()
     current_today_total = sum(r["count"] for r in today_logs.data)
     new_today_total = current_today_total + added_count
 
