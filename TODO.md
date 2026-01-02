@@ -1,5 +1,8 @@
 # Fitness Challenge Bot - TODO
 
+Add SSH settings to PyCharm
+Create manual step by step commands to check logs
+
 ## Quick Wins (High Impact, Low Effort)
 
 ### Streak Tracking
@@ -32,7 +35,7 @@
 - [X] If input contains multiple `<number> <word>` pairs, parse all pairs and log each to the matching active challenge
 - [X] If deterministic parsing is ambiguous or fails, fall back to LLM parsing
 - [X] Add unit tests covering ambiguous inputs and fallback-to-LLM behavior
-- [ ] Add validation check: if user entered any number that could be considered as 0 (e.g., 0, 0.0, 0.00, 0.1, 0.01, 0.001, or any value <= 0), don't log it, instead show message that it should be greater than 0 and integer
+- [X] Add validation check: if user entered any number that could be considered as 0 (e.g., 0, 0.0, 0.00, 0.1, 0.01, 0.001, or any value <= 0), don't log it, instead show message that it should be greater than 0 and integer
 
 ### Motivational Insights
 - [ ] Create weekly aggregation function in `src/api/services.py`

@@ -391,6 +391,43 @@ async def undo_last_log(chat_id: int) -> str:
     return await delete_log_entry(log_id, chat_id)
 
 
+def determine_default_exercise(challenges_data: List[Dict], exercise_types: List[ExerciseType]) -> str:
+    """
+    Determine the default exercise name based on active challenges.
+    
+    Logic:
+    1. 1 active challenge -> use that challenge's exercise
+    2. >1 active challenges -> use the one with is_default=True (lowest ID wins ties)
+    3. No active challenges or no defaults -> 'pushups'
+    """
+    if len(challenges_data) == 1:
+        # Single challenge - use it as default
+        single_challenge = challenges_data[0]
+        default_etype = next(
+            (et for et in exercise_types if et.id == single_challenge["exercise_type_id"]),
+            None
+        )
+        return default_etype.name if default_etype else "pushups"
+    elif len(challenges_data) > 1:
+        # Multiple challenges - look for is_default=True
+        # Sort by challenge id (ascending) to get deterministic result for ties
+        default_challenges = [c for c in challenges_data if c.get("is_default", False)]
+        if default_challenges:
+            # Pick the one with lowest challenge_id
+            default_challenge = min(default_challenges, key=lambda c: c["id"])
+            default_etype = next(
+                (et for et in exercise_types if et.id == default_challenge["exercise_type_id"]),
+                None
+            )
+            return default_etype.name if default_etype else "pushups"
+        else:
+            # No is_default set - fallback to pushups
+            return "pushups"
+    else:
+        # No active challenges
+        return "pushups"
+
+
 async def process_incoming_message(text: str, chat_id: int):
     # Send typing action immediately
     await send_chat_action(chat_id, "typing")
@@ -511,15 +548,7 @@ async def process_incoming_message(text: str, chat_id: int):
                     challenge_map[tid] = c
 
         # Determine default exercise based on active challenges
-        if len(challenges_data) == 1:
-            single_challenge = challenges_data[0]
-            default_etype = next(
-                (et for et in exercise_types if et.id == single_challenge["exercise_type_id"]),
-                None
-            )
-            default_exercise_name = default_etype.name if default_etype else "pushups"
-        else:
-            default_exercise_name = "pushups"
+        default_exercise_name = determine_default_exercise(challenges_data, exercise_types)
 
         # 2. Parse
         parsed_result = parse_workout_message(text, exercise_types, default_exercise_name)

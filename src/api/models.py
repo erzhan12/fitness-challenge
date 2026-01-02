@@ -77,6 +77,9 @@ class ExerciseChallengeOut(BaseModel):
     daily_target: Optional[int] = Field(None, description="Daily target count")
     challenge_name: str = Field(..., description="Name of the challenge")
     is_active: bool = Field(..., description="Whether the challenge is currently active")
+    is_default: bool = Field(
+        False, description="Whether this is the default challenge for number-only input"
+    )
 
     # Computed fields
     total_days: Optional[int] = Field(
@@ -109,6 +112,9 @@ class ExerciseChallengeCreate(BaseModel):
         ..., description="Name of the challenge", examples=["January Push-up Challenge"]
     )
     is_active: bool = Field(True, description="Whether the challenge is active")
+    is_default: bool = Field(
+        False, description="Whether this is the default challenge"
+    )
 
 
 class ExerciseChallengeUpdate(BaseModel):
@@ -120,6 +126,9 @@ class ExerciseChallengeUpdate(BaseModel):
     daily_target: Optional[int] = Field(None, description="Daily target count", ge=1)
     challenge_name: Optional[str] = Field(None, description="Name of the challenge")
     is_active: Optional[bool] = Field(None, description="Whether active")
+    is_default: Optional[bool] = Field(
+        None, description="Whether this is the default challenge"
+    )
 
 
 # =============================================================================
