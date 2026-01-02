@@ -161,6 +161,59 @@ def list_challenges(
     ]
 
 
+def list_current_active_challenges(target_date: Optional[date] = None) -> List[Dict[str, Any]]:
+    """List active challenges valid for the target date (default: today)."""
+    sb = get_supabase()
+    current_date = target_date or datetime.now(TZ).date()
+
+    res = (
+        sb.table("exercise_challenges")
+        .select("*")
+        .eq("is_active", True)
+        .lte("start_date", current_date.isoformat())
+        .gte("end_date", current_date.isoformat())
+        .execute()
+    )
+    return res.data
+
+
+def get_ordered_challenges(challenges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Order challenges for multi-number mapping:
+    1. Default challenge (is_default=True, lowest ID)
+    2. Remaining challenges (increasing ID)
+    """
+    if not challenges:
+        return []
+
+    defaults = [c for c in challenges if c.get("is_default")]
+    non_defaults = [c for c in challenges if not c.get("is_default")]
+
+    # Sort both groups by ID
+    defaults.sort(key=lambda x: x["id"])
+    non_defaults.sort(key=lambda x: x["id"])
+
+    ordered = []
+    remaining = []
+
+    if defaults:
+        ordered.append(defaults[0])
+        remaining.extend(defaults[1:])
+        remaining.extend(non_defaults)
+    else:
+        # No default, pick lowest ID as first
+        # Combine all, sort by ID
+        all_sorted = sorted(challenges, key=lambda x: x["id"])
+        ordered.append(all_sorted[0])
+        remaining.extend(all_sorted[1:])
+
+    # Sort remaining by ID
+    remaining.sort(key=lambda x: x["id"])
+    ordered.extend(remaining)
+
+    return ordered
+
+
 def get_challenge(challenge_id: int) -> Optional[ExerciseChallengeOut]:
     """Get a single challenge by ID."""
     sb = get_supabase()
@@ -359,7 +412,7 @@ def compute_exercise_stats(
         query = query.eq("challenge_id", challenge_id)
     else:
         query = query.is_("challenge_id", "null")
-    
+
     # Filter by target_date to get historical snapshots
     query = query.lte("date", today_local.isoformat())
 
@@ -711,4 +764,3 @@ def get_stats_summary() -> StatsSummaryOut:
         total_active_days=distinct_days,
         exercise_stats=user_stats,
     )
-

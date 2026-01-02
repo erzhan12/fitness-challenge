@@ -556,7 +556,39 @@ When a user sends a message with only a number (e.g., "25"), the system attempts
 **Implementation:**
 - Logic encapsulated in `determine_default_exercise` in `app/services/workout_service.py`.
 - `is_default` field in `exercise_challenges` table.
+- Applied consistently in both:
+  - Telegram flow (`app/services/workout_service.py::process_incoming_message`)
+  - REST API (`src/api/routers/workouts.py::parse_workout`)
+- The REST API computes `default_exercise_name` using `determine_default_exercise()` and passes it to `parse_workout_message()` to ensure single-number inputs (e.g., "50") behave the same as Telegram.
+
+**Pitfall to Avoid:**
+Always pass `default_exercise_name` to `parse_workout_message()` - don't rely on the default "pushups" parameter. This ensures consistent behavior between Telegram and REST endpoints.
 
 ---
 
-**Last Updated:** Added default challenge selection rules (2026-01-03)
+## Multi-Number Challenge Selection
+
+When a user sends a numbers-only message with multiple numbers (e.g., "50 30"), the system deterministically maps each number to an active challenge.
+
+**Mapping Logic:**
+1. **Fetch Active Challenges:** All active challenges valid for today.
+2. **Order Challenges:**
+   - First: The "default" challenge (marked `is_default=True`; if multiple, lowest ID wins).
+   - Then: Remaining challenges sorted by increasing `id`.
+3. **Map Numbers:**
+   - 1st number -> 1st ordered challenge
+   - 2nd number -> 2nd ordered challenge
+   - ...and so on.
+   - Extra numbers are ignored.
+
+**Implementation:**
+- `get_numbers_from_message` (`app/services/deterministic_parser.py`): Detects valid multi-number input.
+- `get_ordered_challenges` (`src/api/services.py`): Sorts challenges according to the rule.
+- Applied in both `process_incoming_message` (Telegram) and `/api/v1/workouts/parse` (REST).
+
+**Pitfall to Avoid:**
+Do not rely on `challenge_map` (keyed by exercise type) when processing these entries, as multiple challenges might target the same exercise type. Use explicit index-based mapping where available.
+
+---
+
+**Last Updated:** Added multi-number challenge mapping rules (2026-01-03)
