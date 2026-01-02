@@ -317,3 +317,78 @@ class TestParseWorkout:
                 assert "notes" in entry
                 assert "confidence" in entry
 
+    def test_parse_workout_multi_number_mapping(
+        self, client, auth_headers, mock_exercise_type_data, mock_exercise_type_data_2
+    ):
+        """Test multi-number input mapped to ordered challenges."""
+        with patch("src.api.services.get_supabase") as mock_get_sb:
+            mock_sb = Mock()
+
+            # Challenge 1: Default, Pushups (ID 1), Challenge ID 10
+            challenge_1 = {
+                "id": 10,
+                "exercise_type_id": 1,  # pushups
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-31",
+                "target_total": 1000,
+                "daily_target": 33,
+                "challenge_name": "Default Pushups",
+                "is_active": True,
+                "is_default": True,
+            }
+            # Challenge 2: Non-default, Squats (ID 2), Challenge ID 20
+            challenge_2 = {
+                "id": 20,
+                "exercise_type_id": 2,  # squats
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-31",
+                "target_total": 1000,
+                "daily_target": 33,
+                "challenge_name": "Squats Challenge",
+                "is_active": True,
+                "is_default": False,
+            }
+
+            def table_side_effect(table_name):
+                mock_table = Mock()
+                if table_name == "exercise_types":
+                    mock_table.select.return_value = create_mock_query(
+                        [mock_exercise_type_data, mock_exercise_type_data_2]
+                    )
+                elif table_name == "exercise_challenges":
+                    # For list_current_active_challenges
+                    mock_table.select.return_value = create_mock_query(
+                        [challenge_1, challenge_2]
+                    )
+                return mock_table
+
+            mock_sb.table.side_effect = table_side_effect
+            mock_get_sb.return_value = mock_sb
+
+            # We don't mock parse_workout_message because we want to test the fast path
+            # But parse_workout calls parse_workout_message as fallback.
+            # We want to ensure it DOES NOT call it if successful.
+            # So we can patch it to fail assertion if called? Or just verify result.
+
+            with patch("src.api.routers.workouts.parse_workout_message") as mock_parse_llm:
+                response = client.post(
+                    "/api/v1/workouts/parse",
+                    json={"text": "50 30"},
+                    headers=auth_headers,
+                )
+
+                assert response.status_code == 200
+                data = response.json()
+
+                assert len(data["entries"]) == 2
+
+                # First should be Default (Pushups) -> 50
+                assert data["entries"][0]["exercise_type_name"] == "pushups"
+                assert data["entries"][0]["count"] == 50
+
+                # Second should be Next ID (Squats) -> 30
+                assert data["entries"][1]["exercise_type_name"] == "squats"
+                assert data["entries"][1]["count"] == 30
+
+                # Verify LLM was NOT called
+                mock_parse_llm.assert_not_called()

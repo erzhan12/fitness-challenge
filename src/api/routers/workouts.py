@@ -1,18 +1,31 @@
 """REST API endpoints for workout parsing."""
 
+from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Depends
 
+from app.config import settings
+from app.models import ExerciseType, ParseResult, ExerciseEntry
+from app.services.openai_service import parse_workout_message
+from app.services.deterministic_parser import get_numbers_from_message
 from src.api.models import (
     ParseWorkoutRequest,
     ParseWorkoutResponse,
     ParseWorkoutEntry,
 )
-from src.api.services import list_exercise_types
+from src.api.services import (
+    list_exercise_types,
+    list_current_active_challenges,
+    get_ordered_challenges,
+)
 from src.api.security import verify_api_key
-from app.services.openai_service import parse_workout_message
-from app.models import ExerciseType
 
 router = APIRouter(prefix="/workouts", tags=["Workouts"])
+TZ = ZoneInfo(settings.TZ)
 
 
 @router.post(
@@ -85,8 +98,58 @@ async def parse_workout(
         for et in api_exercise_types
     ]
 
-    # Parse the message
-    result = parse_workout_message(data.text, exercise_types)
+    # Try fast path (numbers-only mapping to challenges)
+    result = None
+    today_local = datetime.now(TZ).date()
+    
+    counts, parse_error = get_numbers_from_message(data.text)
+    
+    if parse_error:
+        result = ParseResult(entries=[], is_valid=False, error_reason=parse_error)
+    elif counts is not None:
+        # Valid multi-number input
+        # Get current active challenges to map numbers
+        challenges_data = list_current_active_challenges(today_local)
+        
+        if not challenges_data:
+             result = ParseResult(
+                 entries=[], 
+                 is_valid=False, 
+                 error_reason="No active challenges found to match these numbers."
+             )
+        else:
+             ordered = get_ordered_challenges(challenges_data)
+             entries = []
+             for i, count in enumerate(counts):
+                 if i >= len(ordered):
+                     break
+                 
+                 challenge = ordered[i]
+                 # Find exercise type matching challenge
+                 etype = next((et for et in exercise_types if et.id == challenge["exercise_type_id"]), None)
+                 
+                 if etype:
+                     duration_seconds = count * 60 if etype.unit.lower() in {"minute", "minutes"} else None
+                     entries.append(ExerciseEntry(
+                         exercise_type_name=etype.name,
+                         count=count,
+                         duration_seconds=duration_seconds,
+                         notes=None,
+                         confidence=1.0
+                     ))
+            
+             if not entries:
+                  result = ParseResult(
+                      entries=[], 
+                      is_valid=False, 
+                      error_reason="Could not map numbers to active exercises."
+                  )
+             else:
+                  result = ParseResult(entries=entries, is_valid=True)
+
+    # Parse the message (Fallback)
+    if not result:
+        result = parse_workout_message(data.text, exercise_types)
 
     # Convert to API response model
     entries = [
@@ -105,4 +168,3 @@ async def parse_workout(
         is_valid=result.is_valid,
         error_reason=result.error_reason,
     )
-

@@ -9,14 +9,19 @@ except ImportError:
     from backports.zoneinfo import ZoneInfo
 
 from app.dependencies import get_supabase
-from app.models import ExerciseType
+from app.models import ExerciseType, ParseResult, ExerciseEntry
 from app.services.openai_service import (
     parse_workout_message,
     generate_motivational_response,
 )
+from app.services.deterministic_parser import get_numbers_from_message
 from app.services.telegram_client import send_telegram_message, send_chat_action
 from app.config import settings
-from src.api.services import compute_exercise_stats
+from src.api.services import (
+    compute_exercise_stats,
+    list_current_active_challenges,
+    get_ordered_challenges,
+)
 
 logger = logging.getLogger(__name__)
 TZ = ZoneInfo(settings.TZ)
@@ -504,15 +509,7 @@ async def process_incoming_message(text: str, chat_id: int):
         today_local = datetime.now(TZ).date()
 
         # Fetch active challenges within current date range
-        challenges_res = (
-            sb.table("exercise_challenges")
-            .select("*")
-            .eq("is_active", True)
-            .lte("start_date", today_local.isoformat())
-            .gte("end_date", today_local.isoformat())
-            .execute()
-        )
-        challenges_data = challenges_res.data
+        challenges_data = list_current_active_challenges(today_local)
 
         # Determine relevant exercise type IDs
         challenge_type_ids = list({c["exercise_type_id"] for c in challenges_data})
@@ -550,8 +547,59 @@ async def process_incoming_message(text: str, chat_id: int):
         # Determine default exercise based on active challenges
         default_exercise_name = determine_default_exercise(challenges_data, exercise_types)
 
-        # 2. Parse
-        parsed_result = parse_workout_message(text, exercise_types, default_exercise_name)
+        # 2. Parse (Try fast numbers-only parser first)
+        parsed_result = None
+        entry_challenge_map = {}  # Map entry index -> challenge dict
+
+        # Check for numbers-only multi-number input
+        counts, parse_error = get_numbers_from_message(text)
+
+        if parse_error:
+            # Explicit error from fast parser (e.g. decimals)
+            parsed_result = ParseResult(entries=[], is_valid=False, error_reason=parse_error)
+        elif counts is not None:
+            # Valid multi-number input
+            if not challenges_data:
+                parsed_result = ParseResult(
+                    entries=[],
+                    is_valid=False,
+                    error_reason="No active challenges found to match these numbers."
+                )
+            else:
+                ordered_challenges = get_ordered_challenges(challenges_data)
+                entries = []
+
+                for i, count in enumerate(counts):
+                    if i >= len(ordered_challenges):
+                        break
+
+                    challenge = ordered_challenges[i]
+                    # Find exercise type
+                    etype = next((et for et in exercise_types if et.id == challenge["exercise_type_id"]), None)
+
+                    if etype:
+                        duration_seconds = count * 60 if etype.unit.lower() in {"minute", "minutes"} else None
+                        entries.append(ExerciseEntry(
+                            exercise_type_name=etype.name,
+                            count=count,
+                            duration_seconds=duration_seconds,
+                            notes=None,
+                            confidence=1.0
+                        ))
+                        # Explicitly map this entry index to this challenge
+                        entry_challenge_map[len(entries) - 1] = challenge
+
+                if not entries:
+                    parsed_result = ParseResult(
+                        entries=[],
+                        is_valid=False,
+                        error_reason="Could not map numbers to active exercises."
+                    )
+                else:
+                    parsed_result = ParseResult(entries=entries, is_valid=True)
+
+        if not parsed_result:
+            parsed_result = parse_workout_message(text, exercise_types, default_exercise_name)
 
         if not parsed_result.is_valid:
             await send_telegram_message(
@@ -564,7 +612,7 @@ async def process_incoming_message(text: str, chat_id: int):
         updated_exercise_ids = set()
 
         # 3. Process Each Entry
-        for entry in parsed_result.entries:
+        for i, entry in enumerate(parsed_result.entries):
             # Match exercise type
             etype = next(
                 (et for et in exercise_types if et.name == entry.exercise_type_name), None
@@ -574,8 +622,11 @@ async def process_incoming_message(text: str, chat_id: int):
 
             updated_exercise_ids.add(etype.id)
 
-            # Find Challenge
-            challenge = challenge_map.get(etype.id)
+            # Find Challenge (prefer explicit map from fast parser, fallback to exercise type map)
+            if i in entry_challenge_map:
+                challenge = entry_challenge_map[i]
+            else:
+                challenge = challenge_map.get(etype.id)
 
             # Use Helper to get stats and message
             # Pass pre-fetched challenge to avoid duplicate query
@@ -583,7 +634,19 @@ async def process_incoming_message(text: str, chat_id: int):
                 sb, etype, challenge, today_local, added_count=entry.count
             )
 
-            response_map[etype.id] = msg_part
+            # Store response map keyed by index or something unique?
+            # Originally it was keyed by etype.id.
+            # If we have multiple entries for same etype.id (e.g. 10 20 squats), response_map[id] gets overwritten.
+            # However, logic below constructs final response from exercise_types list.
+            # If same exercise type appears twice in entries, we should probably aggregate them or append messages?
+            # Current structure assumes 1 message block per exercise type.
+            # If I overwrite, I lose previous message.
+            # I should append to response_map if exists.
+            
+            if etype.id in response_map:
+                response_map[etype.id] += "\n" + msg_part
+            else:
+                response_map[etype.id] = msg_part
 
             # Insert Log
             log_data = {

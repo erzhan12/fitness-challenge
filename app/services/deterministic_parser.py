@@ -173,6 +173,46 @@ def _parse_number_word_pairs(tokens: List[str]) -> Optional[List[Tuple[int, str]
     return pairs
 
 
+def get_numbers_from_message(text: str) -> Tuple[Optional[List[int]], Optional[str]]:
+    """
+    Extracts a list of integer counts from a numbers-only message.
+
+    Returns:
+        (counts, error_message)
+        - If input is not numbers-only (contains letters): (None, None)
+        - If input has decimals/zeros: (None, error_msg)
+        - If valid: (list_of_ints, None)
+    """
+    normalized = text.strip()
+    if not normalized:
+        return None, None
+
+    # Check for decimals first
+    if re.search(r'(\b\d*\.\d+\b|^\.\d+)', normalized):
+        return None, "Count must be greater than 0 and should be an integer."
+
+    # Remove allowed separators to check for other characters
+    # Allowed: digits, whitespace, comma, parens, brackets
+    clean = re.sub(r'[\d\s,\(\)\[\]]', '', normalized)
+    if clean:
+        # Contains other characters (like letters) -> not numbers-only
+        return None, None
+
+    # Extract numbers
+    tokens = re.findall(r'\d+', normalized)
+    if len(tokens) < 2:
+        return None, None  # Not multi-number
+
+    counts = []
+    for t in tokens:
+        val = int(t)
+        if val <= 0:
+             return None, "Count must be greater than 0 and should be an integer."
+        counts.append(val)
+
+    return counts, None
+
+
 def try_deterministic_parse_workout_message(
     text: str, exercise_types: Sequence[ExerciseType]
 ) -> Optional[ParseResult]:
