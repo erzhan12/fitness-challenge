@@ -133,7 +133,7 @@ def parse_workout_message(text: str, exercise_types: List[ExerciseType], default
             logger.error(f"Current base_url: {settings.LLM_BASE_URL}")
             user_friendly_msg = f"AI service unavailable. Please check model configuration (model: {settings.LLM_MODEL})."
         else:
-            user_friendly_msg = f"AI parsing failed: {error_msg[:100]}"
+            user_friendly_msg = "AI parsing failed. Please try again later."
 
         # Fallback for API errors
         return ParseResult(entries=[], is_valid=False, error_reason=user_friendly_msg)
