@@ -68,10 +68,10 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: ./deployment/docker/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          target: production
 
   deploy:
     needs: build-and-push
@@ -89,65 +89,77 @@ jobs:
           script: |
             DEPLOY_PATH=${DEPLOY_PATH:-/home/deploy/fitness-challenge}
             mkdir -p $DEPLOY_PATH
-            mkdir -p $DEPLOY_PATH/logs
+            mkdir -p $DEPLOY_PATH/deployment
             echo "Deployment directory created at: $DEPLOY_PATH"
         env:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
 
-      - name: Deploy to DigitalOcean Droplet
+      - name: Copy deployment files to server
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          # We pass secrets as environment variables to the script block
-          envs: GITHUB_TOKEN,TELEGRAM_BOT_TOKEN,TELEGRAM_SECRET_TOKEN,LLM_API_KEY,LLM_BASE_URL,LLM_MODEL,SUPABASE_URL,SUPABASE_KEY,ADMIN_API_KEY,TARGET_CHAT_ID,TZ,DEPLOY_PATH
           script: |
-            # Set deploy path (default if not provided)
+            set -euo pipefail
             DEPLOY_PATH=${DEPLOY_PATH:-/home/deploy/fitness-challenge}
-            cd $DEPLOY_PATH || exit 1
-            
-            # Log in to GHCR on the server
-            echo $GITHUB_TOKEN | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-
-            # Pull the latest image
-            docker pull ghcr.io/${{ github.repository }}:latest
-
-            # Stop and remove existing container
-            docker stop fitness-challenge || true
-            docker rm fitness-challenge || true
-
-            # Run new container
-            # We use the injected environment variables directly
-            docker run -d \
-              --name fitness-challenge \
-              --restart unless-stopped \
-              -p 8001:8001 \
-              -e TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN \
-              -e TELEGRAM_SECRET_TOKEN=$TELEGRAM_SECRET_TOKEN \
-              -e LLM_API_KEY=$LLM_API_KEY \
-              -e LLM_BASE_URL=$LLM_BASE_URL \
-              -e LLM_MODEL=$LLM_MODEL \
-              -e SUPABASE_URL=$SUPABASE_URL \
-              -e SUPABASE_KEY=$SUPABASE_KEY \
-              -e ADMIN_API_KEY=$ADMIN_API_KEY \
-              -e TARGET_CHAT_ID=$TARGET_CHAT_ID \
-              -e TZ=$TZ \
-              ghcr.io/${{ github.repository }}:latest
-            
-            # Wait for container to start
-            echo "Waiting for container to start..."
-            sleep 5
-            
-            # Show container status
-            echo "Container Status:"
-            docker ps | grep fitness-challenge || echo "Container not found!"
-            
-            # Prune old images to save space
-            docker image prune -f
+            mkdir -p "$DEPLOY_PATH/deployment"
         env:
-          # Map GitHub Secrets to environment variables for the ssh-action
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+
+      - name: Upload deployment bundle
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "deployment/*"
+          target: "${{ secrets.DEPLOY_PATH }}/deployment"
+
+      - name: Create .env file on server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: DEPLOY_PATH,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD,TELEGRAM_BOT_TOKEN,TELEGRAM_SECRET_TOKEN,LLM_API_KEY,LLM_BASE_URL,LLM_MODEL,SUPABASE_URL,SUPABASE_KEY,ADMIN_API_KEY,TARGET_CHAT_ID,TZ,DJANGO_SECRET_KEY,ALLOWED_HOSTS
+          script: |
+            set -euo pipefail
+            DEPLOY_PATH=${DEPLOY_PATH:-/home/deploy/fitness-challenge}
+
+            cat > "$DEPLOY_PATH/.env" << EOF
+            # Docker image
+            DOCKER_REGISTRY=${{ env.REGISTRY }}
+            DOCKER_IMAGE_NAME=${{ env.IMAGE_NAME }}
+            IMAGE_TAG=latest
+
+            # Postgres
+            POSTGRES_DB=$POSTGRES_DB
+            POSTGRES_USER=$POSTGRES_USER
+            POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+            DATABASE_URL=postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@db:5432/$POSTGRES_DB
+
+            # App env
+            TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
+            TELEGRAM_SECRET_TOKEN=$TELEGRAM_SECRET_TOKEN
+            LLM_API_KEY=$LLM_API_KEY
+            LLM_BASE_URL=$LLM_BASE_URL
+            LLM_MODEL=$LLM_MODEL
+            SUPABASE_URL=$SUPABASE_URL
+            SUPABASE_KEY=$SUPABASE_KEY
+            ADMIN_API_KEY=$ADMIN_API_KEY
+            TARGET_CHAT_ID=$TARGET_CHAT_ID
+            TZ=$TZ
+
+            # Django settings
+            DJANGO_SECRET_KEY=$DJANGO_SECRET_KEY
+            ALLOWED_HOSTS=$ALLOWED_HOSTS
+            EOF
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_SECRET_TOKEN: ${{ secrets.TELEGRAM_SECRET_TOKEN }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
@@ -157,8 +169,32 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
           TARGET_CHAT_ID: ${{ secrets.TARGET_CHAT_ID }}
-          TZ: "Asia/Almaty" # Can be overridden by secret if needed, but hardcoded default here for safety
+          TZ: "Asia/Almaty"
+          DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+          ALLOWED_HOSTS: ${{ secrets.ALLOWED_HOSTS }}
+
+      - name: Deploy with Docker Compose
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: DEPLOY_PATH,GITHUB_TOKEN
+          script: |
+            set -euo pipefail
+            DEPLOY_PATH=${DEPLOY_PATH:-/home/deploy/fitness-challenge}
+            cd "$DEPLOY_PATH"
+
+            echo "$GITHUB_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            docker compose --env-file .env -f deployment/docker/docker-compose.yml pull web
+            docker compose --env-file .env -f deployment/docker/docker-compose.yml down --timeout 30
+            docker compose --env-file .env -f deployment/docker/docker-compose.yml up -d
+
+            docker image prune -f
+        env:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify deployment
         uses: appleboy/ssh-action@v1.0.3
@@ -169,25 +205,13 @@ jobs:
           script: |
             DEPLOY_PATH=${DEPLOY_PATH:-/home/deploy/fitness-challenge}
             
-            echo "Checking container logs:"
-            docker logs fitness-challenge --tail=30 || echo "Container logs not available"
-            
-            echo "Checking container status:"
-            docker ps -a | grep fitness-challenge || echo "Container not found"
-            
-            echo "Checking if container is healthy:"
-            if docker ps | grep -q fitness-challenge; then
-              echo "✅ Container is running"
-              # Check if port is listening
-              if docker port fitness-challenge | grep -q 8001; then
-                echo "✅ Port 8001 is mapped correctly"
-              else
-                echo "⚠️ Port 8001 mapping issue"
-              fi
-            else
-              echo "❌ Container is not running"
-              exit 1
-            fi
+            cd "$DEPLOY_PATH"
+
+            echo "Container Status:"
+            docker compose --env-file .env -f deployment/docker/docker-compose.yml ps
+
+            echo "Recent logs (web):"
+            docker compose --env-file .env -f deployment/docker/docker-compose.yml logs --tail=50 web
         env:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
 

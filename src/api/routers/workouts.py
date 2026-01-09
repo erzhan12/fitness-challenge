@@ -80,11 +80,11 @@ async def parse_workout(
     """
     # Get active exercise types for the parser
     # Try challenge-only first, but fallback to all active if no challenges exist
-    api_exercise_types = list_exercise_types(is_active=True, challenge_only=True)
+    api_exercise_types = await list_exercise_types(is_active=True, challenge_only=True)
     
     # Fallback: if no challenges exist, use all active exercise types
     if not api_exercise_types:
-        api_exercise_types = list_exercise_types(is_active=True, challenge_only=False)
+        api_exercise_types = await list_exercise_types(is_active=True, challenge_only=False)
 
     # Convert to app models for the parser
     exercise_types = [
@@ -101,7 +101,7 @@ async def parse_workout(
 
     # Fetch active challenges for both fast path and default exercise calculation
     today_local = datetime.now(TZ).date()
-    challenges_data = list_current_active_challenges(today_local)
+    challenges_data = await list_current_active_challenges(today_local)
     
     # Compute default exercise name (consistent with Telegram flow)
     default_exercise_name = determine_default_exercise(challenges_data, exercise_types)

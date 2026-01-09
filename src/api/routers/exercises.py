@@ -58,7 +58,7 @@ async def list_exercises(
     ),
 ) -> List[ExerciseTypeOut]:
     """List all exercise types with optional filters."""
-    return list_exercise_types(is_active=is_active, challenge_only=challenge_only)
+    return await list_exercise_types(is_active=is_active, challenge_only=challenge_only)
 
 
 @router.get(
@@ -72,7 +72,7 @@ async def list_exercises(
 )
 async def get_exercise(exercise_type_id: int) -> ExerciseTypeOut:
     """Get a single exercise type by its ID."""
-    result = get_exercise_type(exercise_type_id)
+    result = await get_exercise_type(exercise_type_id)
     if not result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -98,7 +98,7 @@ async def create_exercise(
     _: str = Depends(verify_api_key),
 ) -> ExerciseTypeOut:
     """Create a new exercise type."""
-    return create_exercise_type(data)
+    return await create_exercise_type(data)
 
 
 @router.patch(
@@ -120,7 +120,7 @@ async def update_exercise(
     _: str = Depends(verify_api_key),
 ) -> ExerciseTypeOut:
     """Update an exercise type (partial update)."""
-    result = update_exercise_type(exercise_type_id, data)
+    result = await update_exercise_type(exercise_type_id, data)
     if not result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

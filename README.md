@@ -4,7 +4,7 @@ A Telegram bot built with Python, FastAPI, and OpenAI to help users track fitnes
 
 ## Deployment: DigitalOcean Droplet + Telegram Webhook
 
-This application is deployed on a DigitalOcean Droplet using Docker (GHCR) and Caddy as a reverse proxy.
+This application is deployed on a DigitalOcean Droplet using Docker (GHCR) and Postgres for production.
 
 ### 1. Environment Variables
 
@@ -31,7 +31,7 @@ All secrets are managed via **GitHub Repository Secrets**. No `.env` file is nee
 Build and run the production image locally:
 ```bash
 # Build
-docker build --target production -t fitness-challenge .
+docker build -f deployment/docker/Dockerfile -t fitness-challenge .
 
 # Run (passing local .env)
 docker run --env-file .env -p 8001:8001 fitness-challenge
@@ -211,6 +211,9 @@ The workflow `.github/workflows/deploy.yml` runs on push to `main`.
 *   `SSH_PRIVATE_KEY`: The content of `~/.ssh/github_actions` (private key) you generated in Step 3.
 *   `DEPLOY_PATH`: Deployment path on the server (e.g., `/home/deploy/fitness-challenge`).
 *   `GITHUB_TOKEN`: GitHub Personal Access Token for GHCR authentication (optional, uses built-in token if not set).
+*   `POSTGRES_DB`
+*   `POSTGRES_USER`
+*   `POSTGRES_PASSWORD`
 *   `TELEGRAM_BOT_TOKEN`
 *   `TELEGRAM_SECRET_TOKEN`
 *   `LLM_API_KEY`

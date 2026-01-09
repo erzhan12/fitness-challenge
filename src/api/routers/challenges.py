@@ -64,7 +64,7 @@ async def list_all_challenges(
     ),
 ) -> List[ExerciseChallengeOut]:
     """List all challenges with optional filters."""
-    return list_challenges(
+    return await list_challenges(
         exercise_type_id=exercise_type_id,
         is_active=is_active,
         starts_before=starts_before,
@@ -85,7 +85,7 @@ async def list_all_challenges(
 )
 async def get_single_challenge(challenge_id: int) -> ExerciseChallengeOut:
     """Get a single challenge by its ID."""
-    result = get_challenge(challenge_id)
+    result = await get_challenge(challenge_id)
     if not result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -119,7 +119,7 @@ async def create_new_challenge(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="end_date must be after or equal to start_date",
         )
-    return create_challenge(data)
+    return await create_challenge(data)
 
 
 @router.patch(
@@ -143,7 +143,7 @@ async def update_existing_challenge(
 ) -> ExerciseChallengeOut:
     """Update a challenge (partial update)."""
     # Get existing to validate date changes
-    existing = get_challenge(challenge_id)
+    existing = await get_challenge(challenge_id)
     if not existing:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -159,6 +159,6 @@ async def update_existing_challenge(
             detail="end_date must be after or equal to start_date",
         )
 
-    result = update_challenge(challenge_id, data)
+    result = await update_challenge(challenge_id, data)
     return result
 

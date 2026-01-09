@@ -1,0 +1,315 @@
+from datetime import date
+from typing import List, Optional, Tuple
+from asgiref.sync import sync_to_async
+
+# NOTE: This module is used both from Django management commands and from
+# standalone (e.g. FastAPI) contexts. In the standalone case, Django may not be
+# configured yet at import time.
+from django.conf import settings as django_settings
+
+if not django_settings.configured:
+    from src.core import setup_django
+
+    setup_django()
+
+from django.db.models import Sum
+
+from .models import ExerciseType, ExerciseChallenge, ExerciseLog, UserStats
+
+
+class ExerciseTypeRepository:
+    """Repository for ExerciseType operations."""
+
+    @sync_to_async
+    def get_all(self, is_active: Optional[bool] = None) -> List[ExerciseType]:
+        """Get all exercise types, optionally filtered by is_active."""
+        queryset = ExerciseType.objects.all()
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active)
+        return list(queryset.order_by("id"))
+
+    @sync_to_async
+    def get_by_id(self, id: int) -> Optional[ExerciseType]:
+        """Get exercise type by ID."""
+        try:
+            return ExerciseType.objects.get(id=id)
+        except ExerciseType.DoesNotExist:
+            return None
+
+    @sync_to_async
+    def get_by_name(self, name: str) -> Optional[ExerciseType]:
+        """Get exercise type by name."""
+        try:
+            return ExerciseType.objects.get(name=name)
+        except ExerciseType.DoesNotExist:
+            return None
+
+    @sync_to_async
+    def create(self, data: dict) -> ExerciseType:
+        """Create new exercise type."""
+        return ExerciseType.objects.create(**data)
+
+    @sync_to_async
+    def update(self, id: int, data: dict) -> Optional[ExerciseType]:
+        """Update exercise type by ID."""
+        try:
+            exercise_type = ExerciseType.objects.get(id=id)
+            for key, value in data.items():
+                setattr(exercise_type, key, value)
+            exercise_type.save()
+            return exercise_type
+        except ExerciseType.DoesNotExist:
+            return None
+
+    @sync_to_async
+    def get_by_ids(self, ids: List[int]) -> List[ExerciseType]:
+        """Get exercise types by list of IDs."""
+        return list(ExerciseType.objects.filter(id__in=ids))
+
+
+class ExerciseChallengeRepository:
+    """Repository for ExerciseChallenge operations."""
+
+    @sync_to_async
+    def get_all(self, filters: Optional[dict] = None) -> List[ExerciseChallenge]:
+        """Get all challenges with optional filters."""
+        queryset = ExerciseChallenge.objects.select_related("exercise_type").all()
+
+        if filters:
+            if "exercise_type_id" in filters:
+                queryset = queryset.filter(exercise_type_id=filters["exercise_type_id"])
+            if "is_active" in filters:
+                queryset = queryset.filter(is_active=filters["is_active"])
+            if "is_default" in filters:
+                queryset = queryset.filter(is_default=filters["is_default"])
+
+        return list(queryset.order_by("id"))
+
+    @sync_to_async
+    def get_by_id(self, id: int) -> Optional[ExerciseChallenge]:
+        """Get challenge by ID."""
+        try:
+            return ExerciseChallenge.objects.select_related("exercise_type").get(id=id)
+        except ExerciseChallenge.DoesNotExist:
+            return None
+
+    @sync_to_async
+    def get_active_for_type(
+        self, exercise_type_id: int, target_date: date
+    ) -> Optional[ExerciseChallenge]:
+        """Get active challenge for exercise type on target date."""
+        return (
+            ExerciseChallenge.objects.select_related("exercise_type")
+            .filter(
+                exercise_type_id=exercise_type_id,
+                is_active=True,
+                start_date__lte=target_date,
+                end_date__gte=target_date,
+            )
+            .first()
+        )
+
+    @sync_to_async
+    def get_current_active(self, target_date: date) -> List[ExerciseChallenge]:
+        """Get all active challenges for target date."""
+        return list(
+            ExerciseChallenge.objects.select_related("exercise_type").filter(
+                is_active=True,
+                start_date__lte=target_date,
+                end_date__gte=target_date,
+            ).order_by("id")
+        )
+
+    @sync_to_async
+    def create(self, data: dict) -> ExerciseChallenge:
+        """Create new challenge."""
+        return ExerciseChallenge.objects.create(**data)
+
+    @sync_to_async
+    def update(self, id: int, data: dict) -> Optional[ExerciseChallenge]:
+        """Update challenge by ID."""
+        try:
+            challenge = ExerciseChallenge.objects.get(id=id)
+            for key, value in data.items():
+                setattr(challenge, key, value)
+            challenge.save()
+            return challenge
+        except ExerciseChallenge.DoesNotExist:
+            return None
+
+
+class ExerciseLogRepository:
+    """Repository for ExerciseLog operations."""
+
+    @sync_to_async
+    def get_all(
+        self, filters: Optional[dict] = None, limit: int = 50, offset: int = 0
+    ) -> Tuple[List[ExerciseLog], int]:
+        """Get all logs with pagination and optional filters."""
+        queryset = ExerciseLog.objects.select_related("exercise_type", "challenge").all()
+
+        if filters:
+            if "exercise_type_id" in filters:
+                queryset = queryset.filter(exercise_type_id=filters["exercise_type_id"])
+            if "challenge_id" in filters:
+                queryset = queryset.filter(challenge_id=filters["challenge_id"])
+            if "date" in filters:
+                queryset = queryset.filter(date=filters["date"])
+            if "date_from" in filters:
+                queryset = queryset.filter(date__gte=filters["date_from"])
+            if "date_to" in filters:
+                queryset = queryset.filter(date__lte=filters["date_to"])
+
+        total_count = queryset.count()
+        logs = list(queryset.order_by("-timestamp")[offset:offset + limit])
+
+        return logs, total_count
+
+    @sync_to_async
+    def get_by_id(self, id: int) -> Optional[ExerciseLog]:
+        """Get log by ID."""
+        try:
+            return ExerciseLog.objects.select_related("exercise_type", "challenge").get(id=id)
+        except ExerciseLog.DoesNotExist:
+            return None
+
+    @sync_to_async
+    def get_cumulative_count(
+        self,
+        exercise_type_id: int,
+        challenge_id: Optional[int] = None,
+        up_to_date: Optional[date] = None,
+    ) -> int:
+        """Get cumulative count for exercise type."""
+        queryset = ExerciseLog.objects.filter(exercise_type_id=exercise_type_id)
+
+        if challenge_id is not None:
+            queryset = queryset.filter(challenge_id=challenge_id)
+
+        if up_to_date is not None:
+            queryset = queryset.filter(date__lte=up_to_date)
+
+        result = queryset.aggregate(total=Sum("count"))
+        return result["total"] or 0
+
+    @sync_to_async
+    def get_today_count(
+        self, exercise_type_id: int, date: date, challenge_id: Optional[int] = None
+    ) -> int:
+        """Get count for specific date."""
+        queryset = ExerciseLog.objects.filter(
+            exercise_type_id=exercise_type_id,
+            date=date,
+        )
+
+        if challenge_id is not None:
+            queryset = queryset.filter(challenge_id=challenge_id)
+
+        result = queryset.aggregate(total=Sum("count"))
+        return result["total"] or 0
+
+    @sync_to_async
+    def create(self, data: dict) -> ExerciseLog:
+        """Create new log entry."""
+        return ExerciseLog.objects.create(**data)
+
+    @sync_to_async
+    def delete(self, id: int) -> Optional[ExerciseLog]:
+        """Delete log by ID."""
+        try:
+            log = ExerciseLog.objects.get(id=id)
+            log.delete()
+            return log
+        except ExerciseLog.DoesNotExist:
+            return None
+
+    @sync_to_async
+    def get_last_log(self, exercise_type_id: int) -> Optional[ExerciseLog]:
+        """Get the most recent log for exercise type."""
+        return ExerciseLog.objects.filter(
+            exercise_type_id=exercise_type_id
+        ).order_by("-timestamp").first()
+
+
+class UserStatsRepository:
+    """Repository for UserStats operations."""
+
+    @sync_to_async
+    def get_all(self) -> List[UserStats]:
+        """Get all user stats."""
+        return list(UserStats.objects.select_related("exercise_type").all())
+
+    @sync_to_async
+    def get_by_exercise_type(self, exercise_type_id: int) -> Optional[UserStats]:
+        """Get user stats for exercise type."""
+        try:
+            return UserStats.objects.select_related("exercise_type").get(
+                exercise_type_id=exercise_type_id
+            )
+        except UserStats.DoesNotExist:
+            return None
+
+    @sync_to_async
+    def get_or_create(self, exercise_type_id: int) -> UserStats:
+        """Get or create user stats for exercise type."""
+        stats, created = UserStats.objects.get_or_create(
+            exercise_type_id=exercise_type_id
+        )
+        return stats
+
+    @sync_to_async
+    def update(self, id: int, data: dict) -> UserStats:
+        """Update user stats by ID."""
+        stats = UserStats.objects.get(id=id)
+        for key, value in data.items():
+            setattr(stats, key, value)
+        stats.save()
+        return stats
+
+    @sync_to_async
+    def increment_total(self, exercise_type_id: int, count: int, log_date: date):
+        """Increment all-time total for exercise type."""
+        stats, created = UserStats.objects.get_or_create(
+            exercise_type_id=exercise_type_id
+        )
+        stats.all_time_total += count
+        stats.last_logged_date = log_date
+        stats.save()
+
+    @sync_to_async
+    def decrement_total(self, exercise_type_id: int, count: int):
+        """Decrement all-time total for exercise type."""
+        try:
+            stats = UserStats.objects.get(exercise_type_id=exercise_type_id)
+            stats.all_time_total = max(0, stats.all_time_total - count)
+            stats.save()
+        except UserStats.DoesNotExist:
+            pass
+
+    @sync_to_async
+    def sync_last_logged_date(self, exercise_type_id: int) -> Optional[date]:
+        """Recompute last_logged_date from remaining logs for the exercise type.
+
+        This is used after deletions so both API and Telegram flows stay consistent.
+        Returns the updated last_logged_date (or None if stats row/logs are missing).
+        """
+        try:
+            stats = UserStats.objects.get(exercise_type_id=exercise_type_id)
+        except UserStats.DoesNotExist:
+            return None
+
+        last_log = (
+            ExerciseLog.objects.filter(exercise_type_id=exercise_type_id)
+            .order_by("-timestamp")
+            .first()
+        )
+        stats.last_logged_date = last_log.date if last_log else None
+        stats.save(update_fields=["last_logged_date"])
+        return stats.last_logged_date
+
+
+# Module-level singleton instances
+exercise_type_repo = ExerciseTypeRepository()
+challenge_repo = ExerciseChallengeRepository()
+log_repo = ExerciseLogRepository()
+user_stats_repo = UserStatsRepository()
