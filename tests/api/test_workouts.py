@@ -1,333 +1,270 @@
 """Tests for /api/v1/workouts endpoints."""
 
-from unittest.mock import patch, Mock
+from unittest.mock import patch
 
-from tests.api.conftest import create_mock_query
-from app.models import ParseResult, ExerciseEntry
+from app.models import ExerciseEntry, ParseResult
+from tests.api.conftest import make_challenge_model, make_exercise_type_model
 
 
 class TestParseWorkout:
     """Tests for POST /api/v1/workouts/parse."""
 
     def test_parse_workout_success(
-        self, client, auth_headers, mock_exercise_type_data, mock_challenge_data
+        self, client, auth_headers, mock_repos, exercise_type_model, challenge_model
     ):
-        """Test successful parsing of workout message."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
+        mock_repos["exercise_type"].get_all.return_value = [exercise_type_model]
+        mock_repos["challenge"].get_all.return_value = [challenge_model]
+        mock_repos["challenge"].get_current_active.return_value = [challenge_model]
 
-            def table_side_effect(table_name):
-                mock_table = Mock()
-                if table_name == "exercise_types":
-                    mock_table.select.return_value = create_mock_query(
-                        [mock_exercise_type_data]
-                    )
-                elif table_name == "exercise_challenges":
-                    mock_table.select.return_value = create_mock_query(
-                        [mock_challenge_data]
-                    )
-                return mock_table
-
-            mock_sb.table.side_effect = table_side_effect
-            mock_get_sb.return_value = mock_sb
-
-            # Mock the parse_workout_message function
-            mock_result = ParseResult(
-                entries=[
-                    ExerciseEntry(
-                        exercise_type_name="pushups",
-                        count=25,
-                        duration_seconds=None,
-                        notes=None,
-                        confidence=0.95,
-                    )
-                ],
-                is_valid=True,
-                error_reason=None,
-            )
-
-            with patch(
-                "src.api.routers.workouts.parse_workout_message",
-                return_value=mock_result,
-            ):
-                response = client.post(
-                    "/api/v1/workouts/parse",
-                    json={"text": "25 pushups"},
-                    headers=auth_headers,
+        mock_result = ParseResult(
+            entries=[
+                ExerciseEntry(
+                    exercise_type_name="pushups",
+                    count=25,
+                    duration_seconds=None,
+                    notes=None,
+                    confidence=0.95,
                 )
-
-                assert response.status_code == 200
-                data = response.json()
-                assert data["is_valid"] is True
-                assert len(data["entries"]) == 1
-                assert data["entries"][0]["exercise_type_name"] == "pushups"
-                assert data["entries"][0]["count"] == 25
-                assert data["entries"][0]["confidence"] == 0.95
-
-    def test_parse_workout_multiple_exercises(
-        self, client, auth_headers, mock_exercise_type_data, mock_exercise_type_data_2
-    ):
-        """Test parsing message with multiple exercises."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-
-            def table_side_effect(table_name):
-                mock_table = Mock()
-                if table_name == "exercise_types":
-                    mock_table.select.return_value = create_mock_query(
-                        [mock_exercise_type_data, mock_exercise_type_data_2]
-                    )
-                elif table_name == "exercise_challenges":
-                    mock_table.select.return_value = create_mock_query([])
-                return mock_table
-
-            mock_sb.table.side_effect = table_side_effect
-            mock_get_sb.return_value = mock_sb
-
-            mock_result = ParseResult(
-                entries=[
-                    ExerciseEntry(
-                        exercise_type_name="pushups",
-                        count=20,
-                        duration_seconds=None,
-                        notes=None,
-                        confidence=0.95,
-                    ),
-                    ExerciseEntry(
-                        exercise_type_name="squats",
-                        count=30,
-                        duration_seconds=None,
-                        notes=None,
-                        confidence=0.92,
-                    ),
-                ],
-                is_valid=True,
-                error_reason=None,
-            )
-
-            with patch(
-                "src.api.routers.workouts.parse_workout_message",
-                return_value=mock_result,
-            ):
-                response = client.post(
-                    "/api/v1/workouts/parse",
-                    json={"text": "20 pushups and 30 squats"},
-                    headers=auth_headers,
-                )
-
-                assert response.status_code == 200
-                data = response.json()
-                assert len(data["entries"]) == 2
-
-    def test_parse_workout_invalid_message(self, client, auth_headers):
-        """Test parsing an invalid/unrecognized workout message."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query([])
-            mock_get_sb.return_value = mock_sb
-
-            mock_result = ParseResult(
-                entries=[],
-                is_valid=False,
-                error_reason="Could not understand the workout message",
-            )
-
-            with patch(
-                "src.api.routers.workouts.parse_workout_message",
-                return_value=mock_result,
-            ):
-                response = client.post(
-                    "/api/v1/workouts/parse",
-                    json={"text": "random gibberish"},
-                    headers=auth_headers,
-                )
-
-                assert response.status_code == 200
-                data = response.json()
-                assert data["is_valid"] is False
-                assert data["error_reason"] is not None
-                assert data["entries"] == []
-
-    def test_parse_workout_unauthorized(self, client):
-        """Test 401 when no API key provided."""
-        response = client.post(
-            "/api/v1/workouts/parse",
-            json={"text": "25 pushups"},
+            ],
+            is_valid=True,
+            error_reason=None,
         )
 
+        with patch(
+            "src.api.routers.workouts.parse_workout_message",
+            return_value=mock_result,
+        ):
+            response = client.post(
+                "/api/v1/workouts/parse",
+                json={"text": "25 pushups"},
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["is_valid"] is True
+        assert len(data["entries"]) == 1
+        assert data["entries"][0]["exercise_type_name"] == "pushups"
+        assert data["entries"][0]["count"] == 25
+        assert data["entries"][0]["confidence"] == 0.95
+
+    def test_parse_workout_multiple_exercises(
+        self,
+        client,
+        auth_headers,
+        mock_repos,
+        exercise_type_model,
+        exercise_type_model_2,
+    ):
+        # Force fallback from challenge-only -> all active types.
+        mock_repos["challenge"].get_all.return_value = []
+        mock_repos["exercise_type"].get_all.return_value = [
+            exercise_type_model,
+            exercise_type_model_2,
+        ]
+        mock_repos["challenge"].get_current_active.return_value = []
+
+        mock_result = ParseResult(
+            entries=[
+                ExerciseEntry(
+                    exercise_type_name="pushups",
+                    count=20,
+                    duration_seconds=None,
+                    notes=None,
+                    confidence=0.95,
+                ),
+                ExerciseEntry(
+                    exercise_type_name="squats",
+                    count=30,
+                    duration_seconds=None,
+                    notes=None,
+                    confidence=0.92,
+                ),
+            ],
+            is_valid=True,
+            error_reason=None,
+        )
+
+        with patch(
+            "src.api.routers.workouts.parse_workout_message",
+            return_value=mock_result,
+        ):
+            response = client.post(
+                "/api/v1/workouts/parse",
+                json={"text": "20 pushups and 30 squats"},
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["entries"]) == 2
+
+    def test_parse_workout_invalid_message(self, client, auth_headers, mock_repos):
+        mock_repos["exercise_type"].get_all.return_value = []
+        mock_repos["challenge"].get_all.return_value = []
+        mock_repos["challenge"].get_current_active.return_value = []
+
+        mock_result = ParseResult(
+            entries=[],
+            is_valid=False,
+            error_reason="Could not understand the workout message",
+        )
+
+        with patch(
+            "src.api.routers.workouts.parse_workout_message",
+            return_value=mock_result,
+        ):
+            response = client.post(
+                "/api/v1/workouts/parse",
+                json={"text": "random gibberish"},
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["is_valid"] is False
+        assert data["error_reason"] is not None
+        assert data["entries"] == []
+
+    def test_parse_workout_unauthorized(self, client):
+        response = client.post("/api/v1/workouts/parse", json={"text": "25 pushups"})
         assert response.status_code == 401
 
     def test_parse_workout_forbidden(self, client, invalid_auth_headers):
-        """Test 403 when invalid API key provided."""
         response = client.post(
             "/api/v1/workouts/parse",
             json={"text": "25 pushups"},
             headers=invalid_auth_headers,
         )
-
         assert response.status_code == 403
 
     def test_parse_workout_missing_text(self, client, auth_headers):
-        """Test 422 when text field is missing."""
-        response = client.post(
-            "/api/v1/workouts/parse",
-            json={},
-            headers=auth_headers,
-        )
-
+        response = client.post("/api/v1/workouts/parse", json={}, headers=auth_headers)
         assert response.status_code == 422
 
-    def test_parse_workout_empty_text(self, client, auth_headers):
-        """Test parsing empty text."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query([])
-            mock_get_sb.return_value = mock_sb
+    def test_parse_workout_empty_text(self, client, auth_headers, mock_repos):
+        mock_repos["exercise_type"].get_all.return_value = []
+        mock_repos["challenge"].get_all.return_value = []
+        mock_repos["challenge"].get_current_active.return_value = []
 
-            mock_result = ParseResult(
-                entries=[],
-                is_valid=False,
-                error_reason="Empty message",
+        mock_result = ParseResult(
+            entries=[],
+            is_valid=False,
+            error_reason="Empty message",
+        )
+
+        with patch(
+            "src.api.routers.workouts.parse_workout_message",
+            return_value=mock_result,
+        ):
+            response = client.post(
+                "/api/v1/workouts/parse",
+                json={"text": ""},
+                headers=auth_headers,
             )
 
-            with patch(
-                "src.api.routers.workouts.parse_workout_message",
-                return_value=mock_result,
-            ):
-                response = client.post(
-                    "/api/v1/workouts/parse",
-                    json={"text": ""},
-                    headers=auth_headers,
-                )
-
-                # Empty string is valid input, parser should handle it
-                assert response.status_code == 200
+        # Empty string is valid input, parser should handle it
+        assert response.status_code == 200
 
     def test_parse_workout_with_duration(
-        self, client, auth_headers, mock_exercise_type_data
+        self, client, auth_headers, mock_repos, mock_exercise_type_data
     ):
-        """Test parsing workout with duration-based exercise."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
+        plank_type = {
+            **mock_exercise_type_data,
+            "id": 3,
+            "name": "plank",
+            "display_name": "Plank",
+            "unit": "minutes",
+        }
+        mock_repos["challenge"].get_all.return_value = []
+        mock_repos["exercise_type"].get_all.return_value = [make_exercise_type_model(plank_type)]
+        mock_repos["challenge"].get_current_active.return_value = []
 
-            plank_type = {
-                **mock_exercise_type_data,
-                "id": 3,
-                "name": "plank",
-                "display_name": "Plank",
-                "unit": "minutes",
-            }
+        mock_result = ParseResult(
+            entries=[
+                ExerciseEntry(
+                    exercise_type_name="plank",
+                    count=2,
+                    duration_seconds=120,
+                    notes="morning routine",
+                    confidence=0.90,
+                )
+            ],
+            is_valid=True,
+            error_reason=None,
+        )
 
-            def table_side_effect(table_name):
-                mock_table = Mock()
-                if table_name == "exercise_types":
-                    mock_table.select.return_value = create_mock_query([plank_type])
-                elif table_name == "exercise_challenges":
-                    mock_table.select.return_value = create_mock_query([])
-                return mock_table
-
-            mock_sb.table.side_effect = table_side_effect
-            mock_get_sb.return_value = mock_sb
-
-            mock_result = ParseResult(
-                entries=[
-                    ExerciseEntry(
-                        exercise_type_name="plank",
-                        count=2,
-                        duration_seconds=120,
-                        notes="morning routine",
-                        confidence=0.90,
-                    )
-                ],
-                is_valid=True,
-                error_reason=None,
+        with patch(
+            "src.api.routers.workouts.parse_workout_message",
+            return_value=mock_result,
+        ):
+            response = client.post(
+                "/api/v1/workouts/parse",
+                json={"text": "2 min plank"},
+                headers=auth_headers,
             )
 
-            with patch(
-                "src.api.routers.workouts.parse_workout_message",
-                return_value=mock_result,
-            ):
-                response = client.post(
-                    "/api/v1/workouts/parse",
-                    json={"text": "2 min plank"},
-                    headers=auth_headers,
-                )
-
-                assert response.status_code == 200
-                data = response.json()
-                assert data["entries"][0]["duration_seconds"] == 120
+        assert response.status_code == 200
+        data = response.json()
+        assert data["entries"][0]["duration_seconds"] == 120
 
     def test_parse_workout_response_format(
-        self, client, auth_headers, mock_exercise_type_data
+        self, client, auth_headers, mock_repos, exercise_type_model
     ):
-        """Test that response matches expected schema."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
+        mock_repos["exercise_type"].get_all.return_value = [exercise_type_model]
+        mock_repos["challenge"].get_all.return_value = []
+        mock_repos["challenge"].get_current_active.return_value = []
 
-            def table_side_effect(table_name):
-                mock_table = Mock()
-                if table_name == "exercise_types":
-                    mock_table.select.return_value = create_mock_query(
-                        [mock_exercise_type_data]
-                    )
-                elif table_name == "exercise_challenges":
-                    mock_table.select.return_value = create_mock_query([])
-                return mock_table
+        mock_result = ParseResult(
+            entries=[
+                ExerciseEntry(
+                    exercise_type_name="pushups",
+                    count=25,
+                    duration_seconds=None,
+                    notes="test notes",
+                    confidence=0.95,
+                )
+            ],
+            is_valid=True,
+            error_reason=None,
+        )
 
-            mock_sb.table.side_effect = table_side_effect
-            mock_get_sb.return_value = mock_sb
-
-            mock_result = ParseResult(
-                entries=[
-                    ExerciseEntry(
-                        exercise_type_name="pushups",
-                        count=25,
-                        duration_seconds=None,
-                        notes="test notes",
-                        confidence=0.95,
-                    )
-                ],
-                is_valid=True,
-                error_reason=None,
+        with patch(
+            "src.api.routers.workouts.parse_workout_message",
+            return_value=mock_result,
+        ):
+            response = client.post(
+                "/api/v1/workouts/parse",
+                json={"text": "25 pushups"},
+                headers=auth_headers,
             )
 
-            with patch(
-                "src.api.routers.workouts.parse_workout_message",
-                return_value=mock_result,
-            ):
-                response = client.post(
-                    "/api/v1/workouts/parse",
-                    json={"text": "25 pushups"},
-                    headers=auth_headers,
-                )
+        assert response.status_code == 200
+        data = response.json()
 
-                assert response.status_code == 200
-                data = response.json()
+        assert "entries" in data
+        assert "is_valid" in data
+        assert "error_reason" in data
 
-                # Verify top-level structure
-                assert "entries" in data
-                assert "is_valid" in data
-                assert "error_reason" in data
-
-                # Verify entry structure
-                entry = data["entries"][0]
-                assert "exercise_type_name" in entry
-                assert "count" in entry
-                assert "duration_seconds" in entry
-                assert "notes" in entry
-                assert "confidence" in entry
+        entry = data["entries"][0]
+        assert "exercise_type_name" in entry
+        assert "count" in entry
+        assert "duration_seconds" in entry
+        assert "notes" in entry
+        assert "confidence" in entry
 
     def test_parse_workout_multi_number_mapping(
-        self, client, auth_headers, mock_exercise_type_data, mock_exercise_type_data_2
+        self,
+        client,
+        auth_headers,
+        mock_repos,
+        exercise_type_model,
+        exercise_type_model_2,
     ):
-        """Test multi-number input mapped to ordered challenges."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-
-            # Challenge 1: Default, Pushups (ID 1), Challenge ID 10
-            challenge_1 = {
+        challenge_1 = make_challenge_model(
+            {
                 "id": 10,
-                "exercise_type_id": 1,  # pushups
+                "exercise_type_id": 1,
                 "start_date": "2024-01-01",
                 "end_date": "2024-01-31",
                 "target_total": 1000,
@@ -336,10 +273,11 @@ class TestParseWorkout:
                 "is_active": True,
                 "is_default": True,
             }
-            # Challenge 2: Non-default, Squats (ID 2), Challenge ID 20
-            challenge_2 = {
+        )
+        challenge_2 = make_challenge_model(
+            {
                 "id": 20,
-                "exercise_type_id": 2,  # squats
+                "exercise_type_id": 2,
                 "start_date": "2024-01-01",
                 "end_date": "2024-01-31",
                 "target_total": 1000,
@@ -348,47 +286,30 @@ class TestParseWorkout:
                 "is_active": True,
                 "is_default": False,
             }
+        )
 
-            def table_side_effect(table_name):
-                mock_table = Mock()
-                if table_name == "exercise_types":
-                    mock_table.select.return_value = create_mock_query(
-                        [mock_exercise_type_data, mock_exercise_type_data_2]
-                    )
-                elif table_name == "exercise_challenges":
-                    # For list_current_active_challenges
-                    mock_table.select.return_value = create_mock_query(
-                        [challenge_1, challenge_2]
-                    )
-                return mock_table
+        mock_repos["exercise_type"].get_all.return_value = [
+            exercise_type_model,
+            exercise_type_model_2,
+        ]
+        mock_repos["challenge"].get_all.return_value = [challenge_1, challenge_2]
+        mock_repos["challenge"].get_current_active.return_value = [challenge_1, challenge_2]
 
-            mock_sb.table.side_effect = table_side_effect
-            mock_get_sb.return_value = mock_sb
+        with patch("src.api.routers.workouts.parse_workout_message") as mock_parse_llm:
+            response = client.post(
+                "/api/v1/workouts/parse",
+                json={"text": "50 30"},
+                headers=auth_headers,
+            )
 
-            # We don't mock parse_workout_message because we want to test the fast path
-            # But parse_workout calls parse_workout_message as fallback.
-            # We want to ensure it DOES NOT call it if successful.
-            # So we can patch it to fail assertion if called? Or just verify result.
+        assert response.status_code == 200
+        data = response.json()
 
-            with patch("src.api.routers.workouts.parse_workout_message") as mock_parse_llm:
-                response = client.post(
-                    "/api/v1/workouts/parse",
-                    json={"text": "50 30"},
-                    headers=auth_headers,
-                )
+        assert len(data["entries"]) == 2
+        assert data["entries"][0]["exercise_type_name"] == "pushups"
+        assert data["entries"][0]["count"] == 50
+        assert data["entries"][1]["exercise_type_name"] == "squats"
+        assert data["entries"][1]["count"] == 30
 
-                assert response.status_code == 200
-                data = response.json()
+        mock_parse_llm.assert_not_called()
 
-                assert len(data["entries"]) == 2
-
-                # First should be Default (Pushups) -> 50
-                assert data["entries"][0]["exercise_type_name"] == "pushups"
-                assert data["entries"][0]["count"] == 50
-
-                # Second should be Next ID (Squats) -> 30
-                assert data["entries"][1]["exercise_type_name"] == "squats"
-                assert data["entries"][1]["count"] == 30
-
-                # Verify LLM was NOT called
-                mock_parse_llm.assert_not_called()

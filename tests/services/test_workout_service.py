@@ -1,8 +1,17 @@
 """Tests for workout_service module."""
 
-import pytest
+import asyncio
 import math
-from unittest.mock import Mock, patch
+from datetime import date, datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from src.core import setup_django
+
+setup_django()
+
 from app.services.workout_service import (
     calculate_expected_progress,
     calculate_status_and_deficit,
@@ -11,7 +20,6 @@ from app.services.workout_service import (
     delete_log_entry,
     undo_last_log,
 )
-
 
 class TestProgressCalculations:
     """Test progress calculation functions."""
@@ -85,10 +93,8 @@ class TestCatchUpReps:
 
     def test_catch_up_ahead_should_not_show(self):
         """When ahead, catch-up should be 0."""
-        # Expected: 166.67, threshold: 33.33 (full daily target)
-        # Need diff > 33.33 for "ahead" status
         status, deficit = calculate_status_and_deficit(
-            cumulative=250,  # diff = 83.33 > threshold of 33.33
+            cumulative=250,  # Expected: 166.67, diff = 83.33
             target_total=1000,
             day_number=5,
             total_days=30,
@@ -97,7 +103,6 @@ class TestCatchUpReps:
         assert status == "ahead"
         assert deficit < 0  # negative when ahead
 
-        # Catch-up calculation - now shows for any positive deficit
         catch_up_reps = 0
         if deficit > 0:
             catch_up_reps = math.ceil(deficit)
@@ -106,7 +111,7 @@ class TestCatchUpReps:
     def test_catch_up_on_track_should_not_show(self):
         """When on track (slightly ahead), catch-up should be 0."""
         status, deficit = calculate_status_and_deficit(
-            cumulative=167,  # Expected: 166.67, deficit: -0.33 (slightly ahead)
+            cumulative=167,  # Expected: 166.67, deficit: -0.33
             target_total=1000,
             day_number=5,
             total_days=30,
@@ -114,11 +119,10 @@ class TestCatchUpReps:
         )
         assert status == "on_track"
 
-        # Catch-up calculation - shows for any positive deficit
         catch_up_reps = 0
         if deficit > 0:
             catch_up_reps = math.ceil(deficit)
-        assert catch_up_reps == 0  # deficit is negative, so no catch-up
+        assert catch_up_reps == 0
 
     def test_catch_up_behind_no_daily_target(self):
         """When behind without daily target, should show catch-up."""
@@ -132,10 +136,7 @@ class TestCatchUpReps:
         assert status == "behind"
         assert deficit > 0
 
-        # Catch-up calculation - shows for any positive deficit
-        catch_up_reps = 0
-        if deficit > 0:
-            catch_up_reps = math.ceil(deficit)
+        catch_up_reps = math.ceil(deficit)
         assert catch_up_reps == 67  # ceil(66.67)
 
     def test_catch_up_behind_with_daily_target(self):
@@ -150,11 +151,8 @@ class TestCatchUpReps:
         assert status == "behind"
         assert deficit > 0
 
-        # Catch-up calculation - shows for any positive deficit
-        catch_up_reps = 0
-        if deficit > 0:
-            catch_up_reps = math.ceil(deficit)
-        assert catch_up_reps == 10  # ceil(10)
+        catch_up_reps = math.ceil(deficit)
+        assert catch_up_reps == 10
 
     def test_catch_up_slightly_behind_shows_deficit(self):
         """When slightly behind (positive deficit), should show catch-up."""
@@ -165,14 +163,11 @@ class TestCatchUpReps:
             total_days=30,
             daily_target=None,
         )
-        assert status == "on_track"  # Within status threshold
-        assert deficit > 0  # But still has a positive deficit
+        assert status == "on_track"  # within threshold
+        assert deficit > 0
 
-        # Catch-up calculation - now shows for ANY positive deficit
-        catch_up_reps = 0
-        if deficit > 0:
-            catch_up_reps = math.ceil(deficit)
-        assert catch_up_reps == 7  # ceil(6.67) - now shows catch-up!
+        catch_up_reps = math.ceil(deficit)
+        assert catch_up_reps == 7
 
 
 class TestIntegrationScenarios:
@@ -182,14 +177,11 @@ class TestIntegrationScenarios:
         """Verify our refactored code produces expected results."""
         test_cases = [
             # (cumulative, target_total, day_number, total_days, daily_target, expected_status, expected_catchup)
-            # With full daily target threshold (33.33), 200-166.67=33.33 is NOT > 33.33, so on_track
             (200, 1000, 5, 30, None, "on_track", 0),
             (167, 1000, 5, 30, None, "on_track", 0),
             (100, 1000, 5, 30, None, "behind", 67),
             (15, 750, 5, 30, 5, "behind", 10),
-            # 160 has deficit of 6.67, which now shows catch-up
             (160, 1000, 5, 30, None, "on_track", 7),
-            # Clearly ahead case: 250-166.67=83.33 > 33.33 threshold
             (250, 1000, 5, 30, None, "ahead", 0),
         ]
 
@@ -206,381 +198,215 @@ class TestIntegrationScenarios:
                 cumulative, target_total, day_number, total_days, daily_target
             )
 
-            # New logic: catch-up shows for ANY positive deficit
-            catch_up_reps = 0
-            if deficit > 0:
-                catch_up_reps = math.ceil(deficit)
+            catch_up_reps = math.ceil(deficit) if deficit > 0 else 0
 
             assert status == expected_status, f"Failed for cumulative={cumulative}"
             assert catch_up_reps == expected_catchup, f"Failed catchup for cumulative={cumulative}"
 
 
 class TestGetRecentLogs:
-    """Test get_recent_logs function."""
+    """Test get_recent_logs function (repository-based)."""
 
-    @pytest.mark.asyncio
-    @patch("app.services.workout_service.get_supabase")
-    async def test_get_recent_logs_success(self, mock_get_supabase):
-        """Test successful retrieval of recent logs."""
-        # Mock Supabase response
-        mock_sb = Mock()
-        mock_table = Mock()
-        mock_query = Mock()
+    def test_get_recent_logs_success(self):
+        log_1 = SimpleNamespace(
+            id=1,
+            count=20,
+            date=date(2024, 1, 15),
+            timestamp=datetime(2024, 1, 15, 10, 30, tzinfo=timezone.utc),
+            raw_message="20 pushups",
+            exercise_type=SimpleNamespace(display_name="Pushups", emoji="💪"),
+        )
+        log_2 = SimpleNamespace(
+            id=2,
+            count=30,
+            date=date(2024, 1, 15),
+            timestamp=datetime(2024, 1, 15, 11, 0, tzinfo=timezone.utc),
+            raw_message="30 squats",
+            exercise_type=SimpleNamespace(display_name="Squats", emoji="🏋️"),
+        )
 
-        mock_logs_data = [
-            {
-                "id": 1,
-                "exercise_type_id": 1,
-                "count": 20,
-                "date": "2024-01-15",
-                "timestamp": "2024-01-15T10:30:00+00:00",
-                "raw_message": "20 pushups",
-                "exercise_types": {"display_name": "Pushups", "emoji": "💪"},
-            },
-            {
-                "id": 2,
-                "exercise_type_id": 2,
-                "count": 30,
-                "date": "2024-01-15",
-                "timestamp": "2024-01-15T11:00:00+00:00",
-                "raw_message": "30 squats",
-                "exercise_types": {"display_name": "Squats", "emoji": "🏋️"},
-            },
-        ]
-
-        mock_response = Mock()
-        mock_response.data = mock_logs_data
-        mock_query.execute.return_value = mock_response
-        mock_query.limit.return_value = mock_query
-        mock_query.order.return_value = mock_query
-        mock_table.select.return_value = mock_query
-        mock_sb.table.return_value = mock_table
-        mock_get_supabase.return_value = mock_sb
-
-        result = await get_recent_logs(12345, limit=5)
+        with patch(
+            "app.services.workout_service.log_repo.get_all",
+            new=AsyncMock(return_value=([log_1, log_2], 2)),
+        ) as get_all_mock:
+            result = asyncio.run(get_recent_logs(12345, limit=5))
 
         assert "Recent Logs" in result
         assert "Pushups" in result
         assert "Squats" in result
-        assert "20" in result
-        assert "30" in result
         assert "<code>1</code>" in result
         assert "<code>2</code>" in result
         assert "/delete" in result
+        get_all_mock.assert_awaited_once_with(limit=5, offset=0)
 
-    @pytest.mark.asyncio
-    @patch("app.services.workout_service.get_supabase")
-    async def test_get_recent_logs_empty(self, mock_get_supabase):
-        """Test when no logs are found."""
-        mock_sb = Mock()
-        mock_table = Mock()
-        mock_query = Mock()
-
-        mock_response = Mock()
-        mock_response.data = []
-        mock_query.execute.return_value = mock_response
-        mock_query.limit.return_value = mock_query
-        mock_query.order.return_value = mock_query
-        mock_table.select.return_value = mock_query
-        mock_sb.table.return_value = mock_table
-        mock_get_supabase.return_value = mock_sb
-
-        result = await get_recent_logs(12345)
+    def test_get_recent_logs_empty(self):
+        with patch(
+            "app.services.workout_service.log_repo.get_all",
+            new=AsyncMock(return_value=([], 0)),
+        ) as get_all_mock:
+            result = asyncio.run(get_recent_logs(12345))
 
         assert result == "No logs found."
+        get_all_mock.assert_awaited_once_with(limit=5, offset=0)
 
-    @pytest.mark.asyncio
-    @patch("app.services.workout_service.get_supabase")
-    async def test_get_recent_logs_limit(self, mock_get_supabase):
-        """Test that limit parameter is respected."""
-        mock_sb = Mock()
-        mock_table = Mock()
-        mock_query = Mock()
+    def test_get_recent_logs_limit_is_respected(self):
+        with patch(
+            "app.services.workout_service.log_repo.get_all",
+            new=AsyncMock(return_value=([], 0)),
+        ) as get_all_mock:
+            asyncio.run(get_recent_logs(12345, limit=3))
 
-        mock_response = Mock()
-        mock_response.data = [
-            {
-                "id": i,
-                "exercise_type_id": 1,
-                "count": 10,
-                "date": "2024-01-15",
-                "timestamp": "2024-01-15T10:00:00+00:00",
-                "raw_message": "test",
-                "exercise_types": {"display_name": "Test", "emoji": "🏋️"},
-            }
-            for i in range(10)
-        ]
-        mock_query.execute.return_value = mock_response
-        mock_query.limit.return_value = mock_query
-        mock_query.order.return_value = mock_query
-        mock_table.select.return_value = mock_query
-        mock_sb.table.return_value = mock_table
-        mock_get_supabase.return_value = mock_sb
-
-        await get_recent_logs(12345, limit=3)
-
-        # Verify limit was called with 3
-        mock_query.limit.assert_called_with(3)
+        get_all_mock.assert_awaited_once_with(limit=3, offset=0)
 
 
 class TestDeleteLogEntry:
-    """Test delete_log_entry function."""
+    """Test delete_log_entry function (repository-based)."""
 
-    def _create_mock_query_chain(self, execute_return_value):
-        """Helper to create a mock query chain."""
-        mock_query = Mock()
-        mock_response = Mock()
-        mock_response.data = execute_return_value
-        mock_query.execute.return_value = mock_response
-        mock_query.eq.return_value = mock_query
-        mock_query.gt.return_value = mock_query
-        mock_query.lt.return_value = mock_query
-        mock_query.order.return_value = mock_query
-        mock_query.limit.return_value = mock_query
-        mock_query.select.return_value = mock_query
-        mock_query.delete.return_value = mock_query
-        mock_query.update.return_value = mock_query
-        return mock_query, mock_response
+    def test_delete_log_entry_success_updates_stats_and_last_logged_date(self):
+        log_entry = SimpleNamespace(
+            id=123,
+            exercise_type_id=1,
+            count=20,
+            date=date(2024, 1, 15),
+            exercise_type=SimpleNamespace(display_name="Pushups", emoji="💪"),
+        )
+        with (
+            patch(
+                "app.services.workout_service.log_repo.get_by_id",
+                new=AsyncMock(return_value=log_entry),
+            ) as get_by_id_mock,
+            patch(
+                "app.services.workout_service.log_repo.delete",
+                new=AsyncMock(return_value=log_entry),
+            ) as delete_mock,
+            patch(
+                "app.services.workout_service.user_stats_repo.decrement_total",
+                new=AsyncMock(),
+            ) as decrement_mock,
+            patch(
+                "app.services.workout_service.user_stats_repo.sync_last_logged_date",
+                new=AsyncMock(return_value=date(2024, 1, 14)),
+            ) as sync_last_logged_date_mock,
+        ):
+            result = asyncio.run(delete_log_entry(123, 12345))
 
-    @pytest.mark.asyncio
-    @patch("app.services.workout_service.get_supabase")
-    async def test_delete_log_entry_success(self, mock_get_supabase):
-        """Test successful deletion of a log entry."""
-        mock_sb = Mock()
-
-        def create_query_chain(response_data):
-            """Create a query chain that returns the given response."""
-            query = Mock()
-            response = Mock()
-            response.data = response_data
-            query.execute.return_value = response
-            query.eq.return_value = query
-            query.gt.return_value = query
-            query.lt.return_value = query
-            query.order.return_value = query
-            query.limit.return_value = query
-            query.select.return_value = query
-            query.delete.return_value = query
-            query.update.return_value = query
-            return query
-
-        # Responses in order of execution
-        responses = [
-            [
-                {
-                    "id": 123,
-                    "exercise_type_id": 1,
-                    "count": 20,
-                    "challenge_id": None,
-                    "date": "2024-01-15",
-                }
-            ],  # Get log
-            [{"display_name": "Pushups", "emoji": "💪"}],  # Get exercise type
-            [{"id": 123}],  # Delete response
-            [{"id": 1, "exercise_type_id": 1, "all_time_total": 100}],  # Get stats
-            [],  # Later logs (empty)
-            [],  # Same date logs (empty)
-            [{"date": "2024-01-14"}],  # Previous logs
-        ]
-
-        query_index = [0]
-
-        def execute_side_effect():
-            idx = query_index[0]
-            query_index[0] += 1
-            response = Mock()
-            response.data = responses[idx] if idx < len(responses) else []
-            return response
-
-        # Create tables
-        mock_log_table = Mock()
-        mock_ex_table = Mock()
-        mock_stats_table = Mock()
-
-        # Setup query chains - all return same query object but execute returns different data
-        log_query = create_query_chain([])
-        log_query.execute.side_effect = execute_side_effect
-
-        ex_query = create_query_chain([])
-        ex_query.execute.side_effect = execute_side_effect
-
-        stats_query = create_query_chain([])
-        stats_query.execute.side_effect = execute_side_effect
-
-        mock_log_table.select.return_value = log_query
-        mock_log_table.delete.return_value = log_query
-        mock_ex_table.select.return_value = ex_query
-        mock_stats_table.select.return_value = stats_query
-        mock_stats_table.update.return_value = stats_query
-
-        def table_side_effect(table_name):
-            if table_name == "exercise_logs":
-                return mock_log_table
-            elif table_name == "exercise_types":
-                return mock_ex_table
-            elif table_name == "user_stats":
-                return mock_stats_table
-            return Mock()
-
-        mock_sb.table.side_effect = table_side_effect
-        mock_get_supabase.return_value = mock_sb
-
-        result = await delete_log_entry(123, 12345)
-
-        assert "Deleted log entry 123" in result
+        assert "✅ Deleted log entry 123" in result
         assert "Pushups" in result
         assert "-20" in result
         assert "2024-01-15" in result
+        get_by_id_mock.assert_awaited_once_with(123)
+        delete_mock.assert_awaited_once_with(123)
+        decrement_mock.assert_awaited_once_with(1, 20)
+        sync_last_logged_date_mock.assert_awaited_once_with(1)
 
-    @pytest.mark.asyncio
-    @patch("app.services.workout_service.get_supabase")
-    async def test_delete_log_entry_not_found(self, mock_get_supabase):
-        """Test deletion when log entry doesn't exist."""
-        mock_sb = Mock()
-        mock_table = Mock()
-        mock_query = Mock()
+    def test_delete_log_entry_not_found(self):
+        with (
+            patch(
+                "app.services.workout_service.log_repo.get_by_id",
+                new=AsyncMock(return_value=None),
+            ) as get_by_id_mock,
+            patch(
+                "app.services.workout_service.log_repo.delete",
+                new=AsyncMock(),
+            ) as delete_mock,
+        ):
+            result = asyncio.run(delete_log_entry(999, 12345))
 
-        mock_response = Mock()
-        mock_response.data = []
-        mock_query.execute.return_value = mock_response
-        mock_query.eq.return_value = mock_query
-        mock_table.select.return_value = mock_query
-        mock_sb.table.return_value = mock_table
-        mock_get_supabase.return_value = mock_sb
-
-        result = await delete_log_entry(999, 12345)
-
-        assert "not found" in result
+        assert "not found" in result.lower()
         assert "999" in result
+        get_by_id_mock.assert_awaited_once_with(999)
+        delete_mock.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    @patch("app.services.workout_service.get_supabase")
-    async def test_delete_log_entry_updates_stats(self, mock_get_supabase):
-        """Test that user_stats are updated correctly when deleting."""
-        mock_sb = Mock()
+    def test_delete_log_entry_delete_failed(self):
+        log_entry = SimpleNamespace(
+            id=123,
+            exercise_type_id=1,
+            count=20,
+            date=date(2024, 1, 15),
+            exercise_type=SimpleNamespace(display_name="Pushups", emoji="💪"),
+        )
 
-        # Track execute calls
-        query_index = [0]
+        with (
+            patch(
+                "app.services.workout_service.log_repo.get_by_id",
+                new=AsyncMock(return_value=log_entry),
+            ),
+            patch(
+                "app.services.workout_service.log_repo.delete",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "app.services.workout_service.user_stats_repo.decrement_total",
+                new=AsyncMock(),
+            ) as decrement_mock,
+        ):
+            result = asyncio.run(delete_log_entry(123, 12345))
 
-        # Responses in order: log, ex_type, delete, stats, later, same_date, prev
-        responses = [
-            [
-                {
-                    "id": 123,
-                    "exercise_type_id": 1,
-                    "count": 20,
-                    "challenge_id": None,
-                    "date": "2024-01-15",
-                }
-            ],
-            [{"display_name": "Pushups", "emoji": "💪"}],
-            [{"id": 123}],
-            [{"id": 1, "exercise_type_id": 1, "all_time_total": 100}],
-            [],
-            [],
-            [{"date": "2024-01-14"}],
-        ]
+        assert "failed to delete" in result.lower()
+        decrement_mock.assert_not_awaited()
 
-        def execute_side_effect():
-            idx = query_index[0]
-            query_index[0] += 1
-            response = Mock()
-            response.data = responses[idx] if idx < len(responses) else []
-            return response
+    def test_delete_log_entry_sets_last_logged_date_none_when_no_remaining_logs(self):
+        # Behavior for "no remaining logs" is internal to the repository method.
+        # Ensure we still invoke it after a successful delete.
+        log_entry = SimpleNamespace(
+            id=123,
+            exercise_type_id=1,
+            count=20,
+            date=date(2024, 1, 15),
+            exercise_type=SimpleNamespace(display_name="Pushups", emoji="💪"),
+        )
 
-        # Create query chains
-        def create_query():
-            query = Mock()
-            query.execute.side_effect = execute_side_effect
-            query.eq.return_value = query
-            query.gt.return_value = query
-            query.lt.return_value = query
-            query.order.return_value = query
-            query.limit.return_value = query
-            query.select.return_value = query
-            query.delete.return_value = query
-            query.update.return_value = query
-            return query
+        with (
+            patch(
+                "app.services.workout_service.log_repo.get_by_id",
+                new=AsyncMock(return_value=log_entry),
+            ),
+            patch(
+                "app.services.workout_service.log_repo.delete",
+                new=AsyncMock(return_value=log_entry),
+            ),
+            patch(
+                "app.services.workout_service.user_stats_repo.decrement_total",
+                new=AsyncMock(),
+            ),
+            patch(
+                "app.services.workout_service.user_stats_repo.sync_last_logged_date",
+                new=AsyncMock(return_value=None),
+            ) as sync_last_logged_date_mock,
+        ):
+            asyncio.run(delete_log_entry(123, 12345))
 
-        mock_log_table = Mock()
-        mock_ex_table = Mock()
-        mock_stats_table = Mock()
-
-        log_query = create_query()
-        ex_query = create_query()
-        stats_query = create_query()
-
-        mock_log_table.select.return_value = log_query
-        mock_log_table.delete.return_value = log_query
-        mock_ex_table.select.return_value = ex_query
-        mock_stats_table.select.return_value = stats_query
-        mock_stats_table.update.return_value = stats_query
-
-        def table_side_effect(table_name):
-            if table_name == "exercise_logs":
-                return mock_log_table
-            elif table_name == "exercise_types":
-                return mock_ex_table
-            elif table_name == "user_stats":
-                return mock_stats_table
-            return Mock()
-
-        mock_sb.table.side_effect = table_side_effect
-        mock_get_supabase.return_value = mock_sb
-
-        await delete_log_entry(123, 12345)
-
-        # Verify update was called on user_stats
-        assert mock_stats_table.update.called
+        sync_last_logged_date_mock.assert_awaited_once_with(1)
 
 
 class TestUndoLastLog:
-    """Test undo_last_log function."""
+    """Test undo_last_log function (repository-based)."""
 
-    @pytest.mark.asyncio
-    @patch("app.services.workout_service.get_supabase")
-    @patch("app.services.workout_service.delete_log_entry")
-    async def test_undo_last_log_success(
-        self, mock_delete_log_entry, mock_get_supabase
-    ):
-        """Test successful undo of last log."""
-        mock_sb = Mock()
-        mock_table = Mock()
-        mock_query = Mock()
+    def test_undo_last_log_success(self):
+        log_entry = SimpleNamespace(id=123)
 
-        mock_response = Mock()
-        mock_response.data = [{"id": 123}]
-        mock_query.execute.return_value = mock_response
-        mock_query.limit.return_value = mock_query
-        mock_query.order.return_value = mock_query
-        mock_table.select.return_value = mock_query
-        mock_sb.table.return_value = mock_table
-        mock_get_supabase.return_value = mock_sb
-
-        mock_delete_log_entry.return_value = "✅ Deleted log entry 123"
-
-        result = await undo_last_log(12345)
+        with (
+            patch(
+                "app.services.workout_service.log_repo.get_all",
+                new=AsyncMock(return_value=([log_entry], 1)),
+            ) as get_all_mock,
+            patch(
+                "app.services.workout_service.delete_log_entry",
+                new=AsyncMock(return_value="✅ Deleted log entry 123"),
+            ) as delete_mock,
+        ):
+            result = asyncio.run(undo_last_log(12345))
 
         assert "Deleted log entry 123" in result
-        mock_delete_log_entry.assert_called_once_with(123, 12345)
+        get_all_mock.assert_awaited_once_with(limit=1, offset=0)
+        delete_mock.assert_awaited_once_with(123, 12345)
 
-    @pytest.mark.asyncio
-    @patch("app.services.workout_service.get_supabase")
-    async def test_undo_last_log_no_logs(self, mock_get_supabase):
-        """Test undo when no logs exist."""
-        mock_sb = Mock()
-        mock_table = Mock()
-        mock_query = Mock()
-
-        mock_response = Mock()
-        mock_response.data = []
-        mock_query.execute.return_value = mock_response
-        mock_query.limit.return_value = mock_query
-        mock_query.order.return_value = mock_query
-        mock_table.select.return_value = mock_query
-        mock_sb.table.return_value = mock_table
-        mock_get_supabase.return_value = mock_sb
-
-        result = await undo_last_log(12345)
+    def test_undo_last_log_no_logs(self):
+        with patch(
+            "app.services.workout_service.log_repo.get_all",
+            new=AsyncMock(return_value=([], 0)),
+        ) as get_all_mock:
+            result = asyncio.run(undo_last_log(12345))
 
         assert "No logs found to undo" in result
+        get_all_mock.assert_awaited_once_with(limit=1, offset=0)

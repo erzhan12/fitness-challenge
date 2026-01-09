@@ -1,148 +1,105 @@
 """Tests for /api/v1/exercises endpoints."""
 
-from unittest.mock import patch, Mock
-
-from tests.api.conftest import create_mock_query
+from tests.api.conftest import make_exercise_type_model
 
 
 class TestListExercises:
     """Tests for GET /api/v1/exercises."""
 
-    def test_list_exercises_success(self, client, mock_exercise_type_data):
+    def test_list_exercises_success(self, client, mock_repos, exercise_type_model):
         """Test successful listing of exercise types."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query(
-                [mock_exercise_type_data]
-            )
-            mock_get_sb.return_value = mock_sb
+        mock_repos["exercise_type"].get_all.return_value = [exercise_type_model]
 
-            response = client.get("/api/v1/exercises")
+        response = client.get("/api/v1/exercises")
 
-            assert response.status_code == 200
-            data = response.json()
-            assert len(data) == 1
-            assert data[0]["name"] == "pushups"
-            assert data[0]["display_name"] == "Push-ups"
-            assert data[0]["emoji"] == "💪"
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["name"] == "pushups"
+        assert data[0]["display_name"] == "Push-ups"
+        assert data[0]["emoji"] == "💪"
+        mock_repos["exercise_type"].get_all.assert_awaited_once_with(is_active=True)
 
-    def test_list_exercises_empty(self, client):
+    def test_list_exercises_empty(self, client, mock_repos):
         """Test listing when no exercise types exist."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query([])
-            mock_get_sb.return_value = mock_sb
+        mock_repos["exercise_type"].get_all.return_value = []
 
-            response = client.get("/api/v1/exercises")
+        response = client.get("/api/v1/exercises")
 
-            assert response.status_code == 200
-            assert response.json() == []
+        assert response.status_code == 200
+        assert response.json() == []
 
-    def test_list_exercises_filter_active(self, client, mock_exercise_type_data):
+    def test_list_exercises_filter_active(self, client, mock_repos, exercise_type_model):
         """Test filtering by active status."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_query = create_mock_query([mock_exercise_type_data])
-            mock_sb.table.return_value.select.return_value = mock_query
-            mock_get_sb.return_value = mock_sb
+        mock_repos["exercise_type"].get_all.return_value = [exercise_type_model]
 
-            response = client.get("/api/v1/exercises?is_active=true")
+        response = client.get("/api/v1/exercises?is_active=true")
 
-            assert response.status_code == 200
-            mock_query.eq.assert_called()
+        assert response.status_code == 200
+        mock_repos["exercise_type"].get_all.assert_awaited_once_with(is_active=True)
 
     def test_list_exercises_challenge_only(
-        self, client, mock_exercise_type_data, mock_challenge_data
+        self, client, mock_repos, exercise_type_model, challenge_model
     ):
         """Test filtering to only exercise types with active challenges."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
+        mock_repos["exercise_type"].get_all.return_value = [exercise_type_model]
+        mock_repos["challenge"].get_all.return_value = [challenge_model]
 
-            # First call returns exercise types
-            exercise_query = create_mock_query([mock_exercise_type_data])
-            # Second call returns challenges
-            challenge_query = create_mock_query([mock_challenge_data])
+        response = client.get("/api/v1/exercises?challenge_only=true")
 
-            call_count = [0]
-
-            def table_side_effect(table_name):
-                mock_table = Mock()
-                call_count[0] += 1
-                if table_name == "exercise_types":
-                    mock_table.select.return_value = exercise_query
-                elif table_name == "exercise_challenges":
-                    mock_table.select.return_value = challenge_query
-                return mock_table
-
-            mock_sb.table.side_effect = table_side_effect
-            mock_get_sb.return_value = mock_sb
-
-            response = client.get("/api/v1/exercises?challenge_only=true")
-
-            assert response.status_code == 200
+        assert response.status_code == 200
+        assert len(response.json()) == 1
+        mock_repos["challenge"].get_all.assert_awaited_once_with(filters={"is_active": True})
 
 
 class TestGetExercise:
     """Tests for GET /api/v1/exercises/{exercise_type_id}."""
 
-    def test_get_exercise_success(self, client, mock_exercise_type_data):
+    def test_get_exercise_success(self, client, mock_repos, exercise_type_model):
         """Test successful retrieval of single exercise type."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query(
-                [mock_exercise_type_data]
-            )
-            mock_get_sb.return_value = mock_sb
+        mock_repos["exercise_type"].get_by_id.return_value = exercise_type_model
 
-            response = client.get("/api/v1/exercises/1")
+        response = client.get("/api/v1/exercises/1")
 
-            assert response.status_code == 200
-            data = response.json()
-            assert data["id"] == 1
-            assert data["name"] == "pushups"
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == 1
+        assert data["name"] == "pushups"
 
-    def test_get_exercise_not_found(self, client):
+    def test_get_exercise_not_found(self, client, mock_repos):
         """Test 404 when exercise type doesn't exist."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query([])
-            mock_get_sb.return_value = mock_sb
+        mock_repos["exercise_type"].get_by_id.return_value = None
 
-            response = client.get("/api/v1/exercises/999")
+        response = client.get("/api/v1/exercises/999")
 
-            assert response.status_code == 404
-            assert "not found" in response.json()["detail"].lower()
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"].lower()
 
 
 class TestCreateExercise:
     """Tests for POST /api/v1/exercises."""
 
     def test_create_exercise_success(
-        self, client, auth_headers, mock_exercise_type_data
+        self, client, auth_headers, mock_repos, mock_exercise_type_data
     ):
         """Test successful creation of exercise type."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.insert.return_value = create_mock_query(
-                [mock_exercise_type_data]
-            )
-            mock_get_sb.return_value = mock_sb
+        mock_repos["exercise_type"].create.return_value = make_exercise_type_model(
+            mock_exercise_type_data
+        )
 
-            create_data = {
-                "name": "pushups",
-                "display_name": "Push-ups",
-                "emoji": "💪",
-                "unit": "reps",
-                "aliases": ["push-up"],
-            }
+        create_data = {
+            "name": "pushups",
+            "display_name": "Push-ups",
+            "emoji": "💪",
+            "unit": "reps",
+            "aliases": ["push-up"],
+        }
 
-            response = client.post(
-                "/api/v1/exercises", json=create_data, headers=auth_headers
-            )
+        response = client.post("/api/v1/exercises", json=create_data, headers=auth_headers)
 
-            assert response.status_code == 201
-            data = response.json()
-            assert data["name"] == "pushups"
+        assert response.status_code == 201
+        data = response.json()
+        assert data["name"] == "pushups"
 
     def test_create_exercise_unauthorized(self, client):
         """Test 401 when no API key provided."""
@@ -185,41 +142,29 @@ class TestUpdateExercise:
     """Tests for PATCH /api/v1/exercises/{exercise_type_id}."""
 
     def test_update_exercise_success(
-        self, client, auth_headers, mock_exercise_type_data
+        self, client, auth_headers, mock_repos, mock_exercise_type_data
     ):
         """Test successful update of exercise type."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            updated_data = {**mock_exercise_type_data, "display_name": "Updated Name"}
-            mock_sb.table.return_value.update.return_value = create_mock_query(
-                [updated_data]
-            )
-            mock_get_sb.return_value = mock_sb
+        updated_data = {**mock_exercise_type_data, "display_name": "Updated Name"}
+        mock_repos["exercise_type"].update.return_value = make_exercise_type_model(updated_data)
 
-            update_data = {"display_name": "Updated Name"}
+        update_data = {"display_name": "Updated Name"}
 
-            response = client.patch(
-                "/api/v1/exercises/1", json=update_data, headers=auth_headers
-            )
+        response = client.patch("/api/v1/exercises/1", json=update_data, headers=auth_headers)
 
-            assert response.status_code == 200
-            data = response.json()
-            assert data["display_name"] == "Updated Name"
+        assert response.status_code == 200
+        data = response.json()
+        assert data["display_name"] == "Updated Name"
 
-    def test_update_exercise_not_found(self, client, auth_headers):
+    def test_update_exercise_not_found(self, client, auth_headers, mock_repos):
         """Test 404 when exercise type doesn't exist."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.update.return_value = create_mock_query([])
-            mock_get_sb.return_value = mock_sb
+        mock_repos["exercise_type"].update.return_value = None
 
-            update_data = {"display_name": "Updated Name"}
+        update_data = {"display_name": "Updated Name"}
 
-            response = client.patch(
-                "/api/v1/exercises/999", json=update_data, headers=auth_headers
-            )
+        response = client.patch("/api/v1/exercises/999", json=update_data, headers=auth_headers)
 
-            assert response.status_code == 404
+        assert response.status_code == 404
 
     def test_update_exercise_unauthorized(self, client):
         """Test 401 when no API key provided."""
@@ -229,24 +174,15 @@ class TestUpdateExercise:
 
         assert response.status_code == 401
 
-    def test_update_exercise_partial(self, client, auth_headers, mock_exercise_type_data):
+    def test_update_exercise_partial(
+        self, client, auth_headers, mock_repos, mock_exercise_type_data
+    ):
         """Test partial update with only some fields."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            # When no update data, it should return existing record
-            mock_sb.table.return_value.select.return_value = create_mock_query(
-                [mock_exercise_type_data]
-            )
-            mock_sb.table.return_value.update.return_value = create_mock_query(
-                [mock_exercise_type_data]
-            )
-            mock_get_sb.return_value = mock_sb
+        updated = {**mock_exercise_type_data, "emoji": "🏋️"}
+        mock_repos["exercise_type"].update.return_value = make_exercise_type_model(updated)
 
-            update_data = {"emoji": "🏋️"}
+        update_data = {"emoji": "🏋️"}
 
-            response = client.patch(
-                "/api/v1/exercises/1", json=update_data, headers=auth_headers
-            )
+        response = client.patch("/api/v1/exercises/1", json=update_data, headers=auth_headers)
 
-            assert response.status_code == 200
-
+        assert response.status_code == 200

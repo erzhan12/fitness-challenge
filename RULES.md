@@ -592,3 +592,57 @@ Do not rely on `challenge_map` (keyed by exercise type) when processing these en
 ---
 
 **Last Updated:** Added multi-number challenge mapping rules (2026-01-03)
+
+---
+
+## Django Admin Panel
+
+The application includes a Django admin panel for managing database records through a web interface.
+
+### Access
+
+- **URL:** `http://localhost:8000/admin/` (when FastAPI server is running)
+- **Authentication:** Requires Django superuser account (see setup below)
+
+### Setup
+
+1. **Create a superuser:**
+```bash
+python manage.py createsuperuser
+```
+
+2. **Start the FastAPI server:**
+```bash
+# The admin panel will be available at /admin/
+uvicorn app.main:app --reload
+```
+
+### Admin Features
+
+All models are registered with customized admin interfaces:
+
+- **ExerciseType**: List display with name, display_name, emoji, unit, is_active. Filterable by is_active and unit. Searchable by name, display_name, and aliases.
+
+- **ExerciseChallenge**: List display with challenge details, dates, targets, and flags. Filterable by is_active, is_default, and dates. Date hierarchy for easy navigation.
+
+- **ExerciseLog**: List display with exercise, challenge, date, count, and stats. Filterable by exercise_type, status, and dates. Read-only fields for computed stats (cumulative_total, day_number, status).
+
+- **UserStats**: List display with all-time totals, streaks, and best counts. Read-only fields as stats are computed automatically.
+
+### Integration
+
+The admin panel is integrated with FastAPI using WSGI middleware:
+- Django admin is mounted at `/admin/` in `app/main.py`
+- Uses `WSGIMiddleware` from `fastapi.middleware.wsgi`
+- Django settings configured in `src/core/settings.py`
+- Admin registrations in `src/core/admin.py`
+- URL routing in `src/core/urls.py`
+
+### Files
+
+- `src/core/admin.py` - Model admin registrations and customizations
+- `src/core/urls.py` - Django URL configuration
+- `src/core/settings.py` - Django settings (includes admin apps)
+- `app/main.py` - FastAPI integration with WSGI middleware
+
+**Last Updated:** Added Django admin panel setup (2026-01-09)

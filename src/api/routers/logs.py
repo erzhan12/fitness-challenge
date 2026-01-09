@@ -76,7 +76,7 @@ async def list_all_logs(
     offset: int = Query(0, ge=0, description="Offset for pagination"),
 ) -> PaginatedLogsResponse:
     """List exercise logs with pagination and filters."""
-    return list_logs(
+    return await list_logs(
         exercise_type_id=exercise_type_id,
         challenge_id=challenge_id,
         date_from=date_from,
@@ -97,7 +97,7 @@ async def list_all_logs(
 )
 async def get_single_log(log_id: int) -> ExerciseLogOut:
     """Get a single log entry by its ID."""
-    result = get_log(log_id)
+    result = await get_log(log_id)
     if not result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -162,7 +162,7 @@ async def create_new_log(
 ) -> ExerciseLogCreateResponse:
     """Create a new log entry."""
     # Validate exercise type exists
-    etype = get_exercise_type(data.exercise_type_id)
+    etype = await get_exercise_type(data.exercise_type_id)
     if not etype:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -170,7 +170,7 @@ async def create_new_log(
         )
 
     try:
-        log, stats = create_log(data)
+        log, stats = await create_log(data)
         return ExerciseLogCreateResponse(log=log, stats=stats)
     except ValueError as e:
         raise HTTPException(
@@ -206,11 +206,10 @@ async def delete_single_log(
     _: str = Depends(verify_api_key),
 ) -> ExerciseLogCreateResponse:
     """Delete a log entry."""
-    log, stats = delete_log(log_id)
+    log, stats = await delete_log(log_id)
     if not log:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Log entry {log_id} not found",
         )
     return ExerciseLogCreateResponse(log=log, stats=stats)
-

@@ -60,7 +60,7 @@ async def get_exercises_stats(
     ),
 ) -> List[ExerciseStatsOut]:
     """Get stats for all exercises."""
-    return get_all_exercise_stats(target_date=target_date, challenge_only=challenge_only)
+    return await get_all_exercise_stats(target_date=target_date, challenge_only=challenge_only)
 
 
 @router.get(
@@ -81,7 +81,7 @@ async def get_single_exercise_stats(
     ),
 ) -> ExerciseStatsOut:
     """Get stats for a specific exercise type."""
-    return compute_exercise_stats(exercise_type_id, target_date=target_date)
+    return await compute_exercise_stats(exercise_type_id, target_date=target_date)
 
 
 @router.get(
@@ -116,5 +116,5 @@ async def get_single_exercise_stats(
 )
 async def get_summary_stats() -> StatsSummaryOut:
     """Get overall stats summary."""
-    return get_stats_summary()
+    return await get_stats_summary()
 
