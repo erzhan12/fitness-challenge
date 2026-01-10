@@ -8,7 +8,6 @@ try:
 except ImportError:
     from backports.zoneinfo import ZoneInfo
 
-from app.dependencies import get_supabase
 from app.models import ExerciseType, ParseResult, ExerciseEntry
 from app.services.openai_service import (
     parse_workout_message,
@@ -17,6 +16,13 @@ from app.services.openai_service import (
 from app.services.deterministic_parser import get_numbers_from_message
 from app.services.telegram_client import send_telegram_message, send_chat_action
 from app.config import settings
+from src.core import setup_django
+from src.core.repositories import (
+    exercise_type_repo,
+    challenge_repo,
+    log_repo,
+    user_stats_repo,
+)
 from src.api.services import (
     compute_exercise_stats,
     list_current_active_challenges,
@@ -25,6 +31,35 @@ from src.api.services import (
 
 logger = logging.getLogger(__name__)
 TZ = ZoneInfo(settings.TZ)
+
+
+def _ensure_orm():
+    setup_django()
+
+
+def _to_app_exercise_type(model) -> ExerciseType:
+    return ExerciseType(
+        id=model.id,
+        name=model.name,
+        display_name=model.display_name,
+        emoji=model.emoji,
+        unit=model.unit,
+        aliases=list(model.aliases or []),
+    )
+
+
+def _challenge_model_to_dict(model) -> Dict[str, Any]:
+    return {
+        "id": model.id,
+        "exercise_type_id": model.exercise_type_id,
+        "challenge_name": model.challenge_name,
+        "start_date": model.start_date.isoformat(),
+        "end_date": model.end_date.isoformat(),
+        "target_total": model.target_total,
+        "daily_target": model.daily_target,
+        "is_active": model.is_active,
+        "is_default": model.is_default,
+    }
 
 
 async def keep_typing(chat_id: int, stop_event: asyncio.Event):
@@ -46,48 +81,18 @@ async def keep_typing(chat_id: int, stop_event: asyncio.Event):
 
 
 async def get_exercise_types() -> List[ExerciseType]:
-    sb = get_supabase()
-    # Supabase-py: select("*").execute() returns .data
-    res = (
-        sb.table("exercise_types")
-        .select("*")
-        .eq("is_active", True)
-        .order("id")
-        .execute()
-    )
-    return [ExerciseType(**row) for row in res.data]
+    _ensure_orm()
+    types = await exercise_type_repo.get_all(is_active=True)
+    return [_to_app_exercise_type(t) for t in types]
 
 
-def get_active_challenge(exercise_type_id: int, current_date: date) -> Optional[Dict]:
-    sb = get_supabase()
-    res = (
-        sb.table("exercise_challenges")
-        .select("*")
-        .eq("exercise_type_id", exercise_type_id)
-        .eq("is_active", True)
-        .lte("start_date", current_date.isoformat())
-        .gte("end_date", current_date.isoformat())
-        .execute()
-    )
-
-    if res.data:
-        return res.data[0]
-
-    # 2. Fallback: Find ANY active challenge for this exercise type (by is_active=True)
-    # Pick the one with the latest end_date (most recent or future)
-    res_fallback = (
-        sb.table("exercise_challenges")
-        .select("*")
-        .eq("exercise_type_id", exercise_type_id)
-        .eq("is_active", True)
-        .order("end_date", desc=True)
-        .limit(1)
-        .execute()
-    )
-
-    if res_fallback.data:
-        return res_fallback.data[0]
-
+async def get_active_challenge(
+    exercise_type_id: int, current_date: date
+) -> Optional[Dict[str, Any]]:
+    _ensure_orm()
+    challenge = await challenge_repo.get_active_for_type(exercise_type_id, current_date)
+    if challenge:
+        return _challenge_model_to_dict(challenge)
     return None
 
 
@@ -143,8 +148,7 @@ def calculate_status(
     return status
 
 
-def get_exercise_stats_and_message(
-    sb,
+async def get_exercise_stats_and_message(
     etype: ExerciseType,
     challenge: Optional[Dict],
     today_local: date,
@@ -160,7 +164,7 @@ def get_exercise_stats_and_message(
     etype_dict = etype.model_dump()
     
     # Use the shared stats helper with pre-fetched data to avoid duplicate queries
-    stats_out = compute_exercise_stats(
+    stats_out = await compute_exercise_stats(
         exercise_type_id=etype.id,
         target_date=today_local,
         added_count=added_count,
@@ -177,9 +181,10 @@ def get_exercise_stats_and_message(
     
     # Differentiate formatting based on added_count
     if added_count > 0:
-        header = (
-            f"{etype.emoji} <b>{etype.display_name}</b>: +{added_count} {unit_label}"
-        )
+        if unit_label:
+            header = f"{etype.emoji} <b>{etype.display_name}</b>: +{added_count} {unit_label}"
+        else:
+            header = f"{etype.emoji} <b>{etype.display_name}</b>: +{added_count}"
     else:
         header = f"{etype.emoji} <b>{etype.display_name}</b>"
 
@@ -227,44 +232,31 @@ def get_exercise_stats_and_message(
 
 async def get_recent_logs(chat_id: int, limit: int = 5) -> str:
     """Get recent log entries for the user."""
-    sb = get_supabase()
+    _ensure_orm()
+    logs, _ = await log_repo.get_all(limit=limit, offset=0)
 
-    # Get recent logs with exercise type info
-    res = (
-        sb.table("exercise_logs")
-        .select(
-            "id, exercise_type_id, count, date, timestamp, raw_message, exercise_types(display_name, emoji)"
-        )
-        .order("timestamp", desc=True)
-        .limit(limit)
-        .execute()
-    )
-
-    if not res.data:
+    if not logs:
         return "No logs found."
 
     lines = ["📋 <b>Recent Logs:</b>\n"]
-    for log in res.data:
-        ex_info = log.get("exercise_types", {})
-        ex_name = ex_info.get("display_name", "Unknown")
-        emoji = ex_info.get("emoji", "🏋️")
-        log_date = log["date"]
-        count = log["count"]
-        log_id = log["id"]
-        timestamp = log.get("timestamp", "")
+    for log in logs:
+        ex_name = getattr(log.exercise_type, "display_name", "Unknown")
+        emoji = getattr(log.exercise_type, "emoji", "🏋️")
+        log_date = log.date.isoformat()
+        count = log.count
+        log_id = log.id
 
-        # Format timestamp if available
         time_str = ""
-        if timestamp:
+        if log.timestamp:
             try:
-                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                time_str = dt.strftime("%H:%M")
+                dt = log.timestamp.astimezone(TZ)
             except (ValueError, AttributeError):
-                pass
+                dt = log.timestamp
+            time_str = dt.strftime("%H:%M")
 
         lines.append(
             f"{emoji} <b>{ex_name}</b>: {count} • {log_date} {time_str}\n"
-            f'   ID: <code>{log_id}</code> • "{log.get("raw_message", "")[:30]}..."'
+            f'   ID: <code>{log_id}</code> • "{(log.raw_message or "")[:30]}..."'
         )
 
     lines.append("\n💡 Use <code>/delete &lt;id&gt;</code> to remove a log")
@@ -273,101 +265,26 @@ async def get_recent_logs(chat_id: int, limit: int = 5) -> str:
 
 async def delete_log_entry(log_id: int, chat_id: int) -> str:
     """Delete a log entry and update related stats."""
-    sb = get_supabase()
-
-    # Get the log entry first
-    log_res = (
-        sb.table("exercise_logs")
-        .select("id, exercise_type_id, count, challenge_id, date")
-        .eq("id", log_id)
-        .execute()
-    )
-
-    if not log_res.data:
+    _ensure_orm()
+    log_entry = await log_repo.get_by_id(log_id)
+    if not log_entry:
         return f"❌ Log entry {log_id} not found."
 
-    log_entry = log_res.data[0]
-    exercise_type_id = log_entry["exercise_type_id"]
-    count_to_remove = log_entry["count"]
-    log_date = log_entry["date"]
+    exercise_type_id = log_entry.exercise_type_id
+    count_to_remove = log_entry.count
+    log_date = log_entry.date.isoformat()
 
-    # Get exercise type info for response
-    ex_res = (
-        sb.table("exercise_types")
-        .select("display_name, emoji")
-        .eq("id", exercise_type_id)
-        .execute()
-    )
-    ex_info = (
-        ex_res.data[0] if ex_res.data else {"display_name": "Exercise", "emoji": "🏋️"}
-    )
+    ex_info = {
+        "display_name": getattr(log_entry.exercise_type, "display_name", "Exercise"),
+        "emoji": getattr(log_entry.exercise_type, "emoji", "🏋️"),
+    }
 
-    # Delete the log entry
-    delete_res = sb.table("exercise_logs").delete().eq("id", log_id).execute()
-
-    if not delete_res.data:
+    deleted = await log_repo.delete(log_id)
+    if not deleted:
         return f"❌ Failed to delete log entry {log_id}."
 
-    # Update user_stats: subtract the count
-    stats_res = (
-        sb.table("user_stats")
-        .select("*")
-        .eq("exercise_type_id", exercise_type_id)
-        .execute()
-    )
-
-    if stats_res.data:
-        curr_stats = stats_res.data[0]
-        new_all_time = max(0, curr_stats["all_time_total"] - count_to_remove)
-
-        # Update last_logged_date if this was the last log
-        # Check if there are any logs after this date
-        later_logs = (
-            sb.table("exercise_logs")
-            .select("date")
-            .eq("exercise_type_id", exercise_type_id)
-            .gt("date", log_date)
-            .order("date", desc=True)
-            .limit(1)
-            .execute()
-        )
-
-        new_last_date = log_date
-        if later_logs.data:
-            new_last_date = later_logs.data[0]["date"]
-        else:
-            # Check for logs on the same date (there might be others)
-            same_date_logs = (
-                sb.table("exercise_logs")
-                .select("date")
-                .eq("exercise_type_id", exercise_type_id)
-                .eq("date", log_date)
-                .limit(1)
-                .execute()
-            )
-            if same_date_logs.data:
-                new_last_date = log_date
-            else:
-                # No logs on this date or later, find the most recent log
-                prev_logs = (
-                    sb.table("exercise_logs")
-                    .select("date")
-                    .eq("exercise_type_id", exercise_type_id)
-                    .lt("date", log_date)
-                    .order("date", desc=True)
-                    .limit(1)
-                    .execute()
-                )
-                if prev_logs.data:
-                    new_last_date = prev_logs.data[0]["date"]
-                else:
-                    new_last_date = None
-
-        update_data = {"all_time_total": new_all_time}
-        if new_last_date:
-            update_data["last_logged_date"] = new_last_date
-
-        sb.table("user_stats").update(update_data).eq("id", curr_stats["id"]).execute()
+    await user_stats_repo.decrement_total(exercise_type_id, count_to_remove)
+    await user_stats_repo.sync_last_logged_date(exercise_type_id)
 
     return (
         f"✅ Deleted log entry {log_id}\n"
@@ -378,21 +295,12 @@ async def delete_log_entry(log_id: int, chat_id: int) -> str:
 
 async def undo_last_log(chat_id: int) -> str:
     """Undo the most recent log entry."""
-    sb = get_supabase()
-
-    # Get the most recent log
-    res = (
-        sb.table("exercise_logs")
-        .select("id")
-        .order("timestamp", desc=True)
-        .limit(1)
-        .execute()
-    )
-
-    if not res.data:
+    _ensure_orm()
+    logs, _ = await log_repo.get_all(limit=1, offset=0)
+    if not logs:
         return "❌ No logs found to undo."
 
-    log_id = res.data[0]["id"]
+    log_id = logs[0].id
     return await delete_log_entry(log_id, chat_id)
 
 
@@ -442,6 +350,8 @@ async def process_incoming_message(text: str, chat_id: int):
     typing_task = asyncio.create_task(keep_typing(chat_id, stop_typing))
 
     try:
+        _ensure_orm()
+
         # Handle commands
         text_lower = text.strip().lower()
 
@@ -505,11 +415,10 @@ async def process_incoming_message(text: str, chat_id: int):
             return
 
         # 1. Get Definitions (filtered by active challenges)
-        sb = get_supabase()
         today_local = datetime.now(TZ).date()
 
         # Fetch active challenges within current date range
-        challenges_data = list_current_active_challenges(today_local)
+        challenges_data = await list_current_active_challenges(today_local)
 
         # Determine relevant exercise type IDs
         challenge_type_ids = list({c["exercise_type_id"] for c in challenges_data})
@@ -525,15 +434,10 @@ async def process_incoming_message(text: str, chat_id: int):
             exercise_types = await get_exercise_types()
             challenge_map = {}
         else:
-            types_res = (
-                sb.table("exercise_types")
-                .select("*")
-                .in_("id", challenge_type_ids)
-                .eq("is_active", True)
-                .order("id")
-                .execute()
-            )
-            exercise_types = [ExerciseType(**row) for row in types_res.data]
+            types_models = await exercise_type_repo.get_by_ids(challenge_type_ids)
+            types_models = [t for t in types_models if t.is_active]
+            types_models.sort(key=lambda x: x.id)
+            exercise_types = [_to_app_exercise_type(t) for t in types_models]
 
             # Build map: type_id -> best challenge
             # Sort challenges by end_date desc so we pick the latest/future one if duplicates
@@ -630,8 +534,8 @@ async def process_incoming_message(text: str, chat_id: int):
 
             # Use Helper to get stats and message
             # Pass pre-fetched challenge to avoid duplicate query
-            msg_part, stats = get_exercise_stats_and_message(
-                sb, etype, challenge, today_local, added_count=entry.count
+            msg_part, stats = await get_exercise_stats_and_message(
+                etype, challenge, today_local, added_count=entry.count
             )
 
             # Store response map keyed by index or something unique?
@@ -652,8 +556,8 @@ async def process_incoming_message(text: str, chat_id: int):
             log_data = {
                 "exercise_type_id": etype.id,
                 "challenge_id": stats["challenge_id"],
-                "date": today_local.isoformat(),
-                "timestamp": datetime.now(TZ).isoformat(),
+                "date": today_local,
+                "timestamp": datetime.now(TZ),
                 "count": entry.count,
                 "cumulative_total": stats["cumulative_total"],
                 "day_number": stats["day_number"],
@@ -662,32 +566,8 @@ async def process_incoming_message(text: str, chat_id: int):
                 "duration_seconds": entry.duration_seconds,
                 "notes": entry.notes,
             }
-            sb.table("exercise_logs").insert(log_data).execute()
-
-            # Upsert User Stats
-            stats_res = (
-                sb.table("user_stats")
-                .select("*")
-                .eq("exercise_type_id", etype.id)
-                .execute()
-            )
-            if stats_res.data:
-                curr_stats = stats_res.data[0]
-                new_all_time = curr_stats["all_time_total"] + entry.count
-                sb.table("user_stats").update(
-                    {
-                        "all_time_total": new_all_time,
-                        "last_logged_date": today_local.isoformat(),
-                    }
-                ).eq("id", curr_stats["id"]).execute()
-            else:
-                sb.table("user_stats").insert(
-                    {
-                        "exercise_type_id": etype.id,
-                        "all_time_total": entry.count,
-                        "last_logged_date": today_local.isoformat(),
-                    }
-                ).execute()
+            await log_repo.create(log_data)
+            await user_stats_repo.increment_total(etype.id, entry.count, today_local)
 
             # Generate Witty Comment (using stats from helper)
             if challenge:
@@ -711,8 +591,8 @@ async def process_incoming_message(text: str, chat_id: int):
             challenge = challenge_map.get(etype.id)
 
             # Use Helper
-            msg_part, _ = get_exercise_stats_and_message(
-                sb, etype, challenge, today_local, added_count=0
+            msg_part, _ = await get_exercise_stats_and_message(
+                etype, challenge, today_local, added_count=0
             )
             response_map[etype.id] = msg_part
 
@@ -737,20 +617,10 @@ async def check_daily_reminders():
     """
     Checks active challenges. If no log for today, send a reminder.
     """
-    sb = get_supabase()
+    _ensure_orm()
     today_local = datetime.now(TZ).date()
 
-    # Get active challenges
-    res = (
-        sb.table("exercise_challenges")
-        .select("*, exercise_types(name, emoji, display_name)")
-        .eq("is_active", True)
-        .lte("start_date", today_local.isoformat())
-        .gte("end_date", today_local.isoformat())
-        .execute()
-    )
-
-    challenges = res.data
+    challenges = await challenge_repo.get_current_active(today_local)
 
     # We need the user's chat_id.
     # Since this is single user, we can just grab the chat_id from the last log or config.
@@ -772,17 +642,11 @@ async def check_daily_reminders():
 
     for ch in challenges:
         # Check if logged today
-        logs = (
-            sb.table("exercise_logs")
-            .select("id")
-            .eq("challenge_id", ch["id"])
-            .eq("date", today_local.isoformat())
-            .execute()
+        today_count = await log_repo.get_today_count(
+            ch.exercise_type_id, today_local, challenge_id=ch.id
         )
-
-        if not logs.data:
-            # Send Reminder
-            ex_name = ch["exercise_types"]["display_name"]
-            emoji = ch["exercise_types"]["emoji"]
+        if today_count <= 0:
+            ex_name = getattr(ch.exercise_type, "display_name", "exercise")
+            emoji = getattr(ch.exercise_type, "emoji", "🏋️")
             msg = f"Hey, your {emoji} {ex_name} are missing you today! 🥺"
             await send_telegram_message(target_chat_id, msg)

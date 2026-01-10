@@ -1,11 +1,22 @@
 """Shared fixtures for API tests."""
 
 import pytest
-from unittest.mock import Mock, patch
+from datetime import date as dt_date, datetime as dt_datetime
+from unittest.mock import AsyncMock, Mock, patch
 from fastapi.testclient import TestClient
 
-from app.main import app
-from app.config import settings
+from src.core import setup_django
+
+setup_django()
+
+from app.main import app  # noqa: E402
+from app.config import settings  # noqa: E402
+from src.core.models import (  # noqa: E402
+    ExerciseType as ExerciseTypeModel,
+    ExerciseChallenge as ExerciseChallengeModel,
+    ExerciseLog as ExerciseLogModel,
+    UserStats as UserStatsModel,
+)
 
 
 @pytest.fixture
@@ -113,59 +124,163 @@ def mock_user_stats_data():
     }
 
 
-# =============================================================================
-# Supabase Mocking Helpers
-# =============================================================================
+def _parse_date(value):
+    if value is None or isinstance(value, dt_date):
+        return value
+    return dt_date.fromisoformat(value)
 
 
-def create_mock_query(data, count=None):
-    """Create a mock Supabase query chain."""
-    mock_response = Mock()
-    mock_response.data = data
-    mock_response.count = count if count is not None else len(data)
+def _parse_datetime(value):
+    if value is None or isinstance(value, dt_datetime):
+        return value
+    # Support "Z" suffix (Supabase-style) while still accepting offset-aware strings.
+    return dt_datetime.fromisoformat(value.replace("Z", "+00:00"))
 
-    mock_query = Mock()
-    mock_query.execute.return_value = mock_response
-    mock_query.eq.return_value = mock_query
-    mock_query.neq.return_value = mock_query
-    mock_query.gt.return_value = mock_query
-    mock_query.gte.return_value = mock_query
-    mock_query.lt.return_value = mock_query
-    mock_query.lte.return_value = mock_query
-    mock_query.in_.return_value = mock_query
-    mock_query.is_.return_value = mock_query
-    mock_query.order.return_value = mock_query
-    mock_query.limit.return_value = mock_query
-    mock_query.range.return_value = mock_query
-    mock_query.select.return_value = mock_query
-    mock_query.insert.return_value = mock_query
-    mock_query.update.return_value = mock_query
-    mock_query.delete.return_value = mock_query
 
-    return mock_query
+def make_exercise_type_model(data: dict) -> ExerciseTypeModel:
+    return ExerciseTypeModel(
+        id=data.get("id"),
+        name=data["name"],
+        display_name=data["display_name"],
+        emoji=data["emoji"],
+        unit=data.get("unit", "reps"),
+        aliases=data.get("aliases", []),
+        is_active=data.get("is_active", True),
+    )
+
+
+def make_challenge_model(data: dict, exercise_type: ExerciseTypeModel | None = None) -> ExerciseChallengeModel:
+    model = ExerciseChallengeModel(
+        id=data.get("id"),
+        exercise_type_id=data["exercise_type_id"],
+        start_date=_parse_date(data["start_date"]),
+        end_date=_parse_date(data["end_date"]),
+        target_total=data["target_total"],
+        daily_target=data.get("daily_target"),
+        challenge_name=data.get("challenge_name", ""),
+        is_active=data.get("is_active", True),
+        is_default=data.get("is_default", False),
+    )
+    if exercise_type is not None:
+        model.exercise_type = exercise_type
+    return model
+
+
+def make_log_model(
+    data: dict,
+    exercise_type: ExerciseTypeModel | None = None,
+    challenge: ExerciseChallengeModel | None = None,
+) -> ExerciseLogModel:
+    model = ExerciseLogModel(
+        id=data.get("id"),
+        exercise_type_id=data["exercise_type_id"],
+        challenge_id=data.get("challenge_id"),
+        date=_parse_date(data["date"]),
+        timestamp=_parse_datetime(data["timestamp"]),
+        count=data["count"],
+        cumulative_total=data.get("cumulative_total"),
+        day_number=data.get("day_number"),
+        status=data.get("status"),
+        raw_message=data.get("raw_message"),
+        duration_seconds=data.get("duration_seconds"),
+        notes=data.get("notes"),
+    )
+    if exercise_type is not None:
+        model.exercise_type = exercise_type
+    if challenge is not None:
+        model.challenge = challenge
+    return model
+
+
+def make_user_stats_model(
+    data: dict, exercise_type: ExerciseTypeModel | None = None
+) -> UserStatsModel:
+    model = UserStatsModel(
+        id=data.get("id"),
+        exercise_type_id=data["exercise_type_id"],
+        all_time_total=data.get("all_time_total", 0),
+        best_daily_count=data.get("best_daily_count", 0),
+        current_streak=data.get("current_streak", 0),
+        longest_streak=data.get("longest_streak", 0),
+        last_logged_date=_parse_date(data.get("last_logged_date")),
+    )
+    if exercise_type is not None:
+        model.exercise_type = exercise_type
+    return model
 
 
 @pytest.fixture
-def mock_supabase():
-    """Create a mock Supabase client."""
-    mock_sb = Mock()
-
-    def table_factory(table_name):
-        mock_table = Mock()
-        mock_table.select.return_value = create_mock_query([])
-        mock_table.insert.return_value = create_mock_query([])
-        mock_table.update.return_value = create_mock_query([])
-        mock_table.delete.return_value = create_mock_query([])
-        return mock_table
-
-    mock_sb.table.side_effect = table_factory
-    return mock_sb
+def exercise_type_model(mock_exercise_type_data):
+    return make_exercise_type_model(mock_exercise_type_data)
 
 
 @pytest.fixture
-def patch_supabase(mock_supabase):
-    """Patch the get_supabase function to return mock client."""
-    with patch("app.dependencies.get_supabase", return_value=mock_supabase):
-        with patch("src.api.services.get_supabase", return_value=mock_supabase):
-            yield mock_supabase
+def exercise_type_model_2(mock_exercise_type_data_2):
+    return make_exercise_type_model(mock_exercise_type_data_2)
 
+
+@pytest.fixture
+def challenge_model(mock_challenge_data, exercise_type_model):
+    return make_challenge_model(mock_challenge_data, exercise_type=exercise_type_model)
+
+
+@pytest.fixture
+def log_model(mock_log_data, exercise_type_model, challenge_model):
+    return make_log_model(
+        mock_log_data, exercise_type=exercise_type_model, challenge=challenge_model
+    )
+
+
+@pytest.fixture
+def user_stats_model(mock_user_stats_data, exercise_type_model):
+    return make_user_stats_model(mock_user_stats_data, exercise_type=exercise_type_model)
+
+
+@pytest.fixture
+def mock_repos():
+    """Mock all repository instances used by src.api.services."""
+    exercise_type_repo = Mock()
+    exercise_type_repo.get_all = AsyncMock(return_value=[])
+    exercise_type_repo.get_by_id = AsyncMock(return_value=None)
+    exercise_type_repo.get_by_name = AsyncMock(return_value=None)
+    exercise_type_repo.create = AsyncMock(return_value=None)
+    exercise_type_repo.update = AsyncMock(return_value=None)
+    exercise_type_repo.get_by_ids = AsyncMock(return_value=[])
+
+    challenge_repo = Mock()
+    challenge_repo.get_all = AsyncMock(return_value=[])
+    challenge_repo.get_by_id = AsyncMock(return_value=None)
+    challenge_repo.get_active_for_type = AsyncMock(return_value=None)
+    challenge_repo.get_current_active = AsyncMock(return_value=[])
+    challenge_repo.create = AsyncMock(return_value=None)
+    challenge_repo.update = AsyncMock(return_value=None)
+
+    log_repo = Mock()
+    log_repo.get_all = AsyncMock(return_value=([], 0))
+    log_repo.get_by_id = AsyncMock(return_value=None)
+    log_repo.get_cumulative_count = AsyncMock(return_value=0)
+    log_repo.get_today_count = AsyncMock(return_value=0)
+    log_repo.create = AsyncMock(return_value=None)
+    log_repo.delete = AsyncMock(return_value=None)
+    log_repo.get_last_log = AsyncMock(return_value=None)
+
+    user_stats_repo = Mock()
+    user_stats_repo.get_all = AsyncMock(return_value=[])
+    user_stats_repo.get_by_exercise_type = AsyncMock(return_value=None)
+    user_stats_repo.get_or_create = AsyncMock(return_value=None)
+    user_stats_repo.update = AsyncMock(return_value=None)
+    user_stats_repo.increment_total = AsyncMock(return_value=None)
+    user_stats_repo.decrement_total = AsyncMock(return_value=None)
+    user_stats_repo.sync_last_logged_date = AsyncMock(return_value=None)
+
+    with patch("src.api.services.exercise_type_repo", exercise_type_repo), patch(
+        "src.api.services.challenge_repo", challenge_repo
+    ), patch("src.api.services.log_repo", log_repo), patch(
+        "src.api.services.user_stats_repo", user_stats_repo
+    ):
+        yield {
+            "exercise_type": exercise_type_repo,
+            "challenge": challenge_repo,
+            "log": log_repo,
+            "user_stats": user_stats_repo,
+        }

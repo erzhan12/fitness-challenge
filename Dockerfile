@@ -50,6 +50,9 @@ COPY pyproject.toml uv.lock ./
 # Copy application code (needed for uv sync to install the project)
 COPY ./app ./app
 COPY ./src ./src
+COPY ./manage.py ./manage.py
+COPY ./deployment/scripts/entrypoint.sh ./entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Install only production dependencies (no test extras)
 # uv sync will install the project itself since pyproject.toml is present
@@ -69,6 +72,9 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 # Expose port (8001 to avoid conflicts with other services)
 EXPOSE 8001
+
+# Entrypoint runs migrations before starting the app
+ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Run application using Python from venv directly
 CMD ["/app/.venv/bin/python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]

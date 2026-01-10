@@ -1,8 +1,6 @@
 """Tests for API security and authentication."""
 
-from unittest.mock import patch, Mock
-
-from tests.api.conftest import create_mock_query
+from tests.api.conftest import make_challenge_model, make_exercise_type_model, make_log_model, make_user_stats_model
 
 
 class TestAuthenticationRequired:
@@ -125,143 +123,102 @@ class TestInvalidAuthentication:
 class TestValidAuthentication:
     """Tests for valid API key scenarios."""
 
-    def test_bearer_token_format(self, client, api_key, mock_exercise_type_data):
+    def test_bearer_token_format(self, client, api_key, mock_repos, mock_exercise_type_data):
         """Test with valid Bearer token format."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.insert.return_value = create_mock_query(
-                [mock_exercise_type_data]
-            )
-            mock_get_sb.return_value = mock_sb
+        mock_repos["exercise_type"].create.return_value = make_exercise_type_model(
+            {**mock_exercise_type_data, "name": "test", "display_name": "Test", "emoji": "🏋️"}
+        )
 
-            response = client.post(
-                "/api/v1/exercises",
-                json={
-                    "name": "test",
-                    "display_name": "Test",
-                    "emoji": "🏋️",
-                    "unit": "reps",
-                },
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            assert response.status_code == 201
+        response = client.post(
+            "/api/v1/exercises",
+            json={
+                "name": "test",
+                "display_name": "Test",
+                "emoji": "🏋️",
+                "unit": "reps",
+            },
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        assert response.status_code == 201
 
-    def test_raw_token_format(self, client, api_key, mock_exercise_type_data):
+    def test_raw_token_format(self, client, api_key, mock_repos, mock_exercise_type_data):
         """Test with raw token format (no Bearer prefix)."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.insert.return_value = create_mock_query(
-                [mock_exercise_type_data]
-            )
-            mock_get_sb.return_value = mock_sb
+        mock_repos["exercise_type"].create.return_value = make_exercise_type_model(
+            {**mock_exercise_type_data, "name": "test", "display_name": "Test", "emoji": "🏋️"}
+        )
 
-            response = client.post(
-                "/api/v1/exercises",
-                json={
-                    "name": "test",
-                    "display_name": "Test",
-                    "emoji": "🏋️",
-                    "unit": "reps",
-                },
-                headers={"Authorization": api_key},
-            )
-            assert response.status_code == 201
+        response = client.post(
+            "/api/v1/exercises",
+            json={
+                "name": "test",
+                "display_name": "Test",
+                "emoji": "🏋️",
+                "unit": "reps",
+            },
+            headers={"Authorization": api_key},
+        )
+        assert response.status_code == 201
 
 
 class TestPublicEndpoints:
     """Tests for endpoints that don't require authentication."""
 
-    def test_list_exercises_public(self, client):
+    def test_list_exercises_public(self, client, mock_repos):
         """GET /exercises is publicly accessible."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query([])
-            mock_get_sb.return_value = mock_sb
+        mock_repos["exercise_type"].get_all.return_value = []
+        response = client.get("/api/v1/exercises")
+        assert response.status_code == 200
 
-            response = client.get("/api/v1/exercises")
-            assert response.status_code == 200
-
-    def test_get_exercise_public(self, client, mock_exercise_type_data):
+    def test_get_exercise_public(self, client, mock_repos, mock_exercise_type_data):
         """GET /exercises/{id} is publicly accessible."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query(
-                [mock_exercise_type_data]
-            )
-            mock_get_sb.return_value = mock_sb
+        mock_repos["exercise_type"].get_by_id.return_value = make_exercise_type_model(
+            mock_exercise_type_data
+        )
+        response = client.get("/api/v1/exercises/1")
+        assert response.status_code == 200
 
-            response = client.get("/api/v1/exercises/1")
-            assert response.status_code == 200
-
-    def test_list_challenges_public(self, client):
+    def test_list_challenges_public(self, client, mock_repos):
         """GET /challenges is publicly accessible."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query([])
-            mock_get_sb.return_value = mock_sb
+        mock_repos["challenge"].get_all.return_value = []
+        response = client.get("/api/v1/challenges")
+        assert response.status_code == 200
 
-            response = client.get("/api/v1/challenges")
-            assert response.status_code == 200
-
-    def test_get_challenge_public(self, client, mock_challenge_data):
+    def test_get_challenge_public(self, client, mock_repos, mock_challenge_data):
         """GET /challenges/{id} is publicly accessible."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query(
-                [mock_challenge_data]
-            )
-            mock_get_sb.return_value = mock_sb
+        mock_repos["challenge"].get_by_id.return_value = make_challenge_model(
+            mock_challenge_data
+        )
+        response = client.get("/api/v1/challenges/1")
+        assert response.status_code == 200
 
-            response = client.get("/api/v1/challenges/1")
-            assert response.status_code == 200
-
-    def test_list_logs_public(self, client):
+    def test_list_logs_public(self, client, mock_repos):
         """GET /logs is publicly accessible."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query(
-                [], count=0
-            )
-            mock_get_sb.return_value = mock_sb
+        mock_repos["log"].get_all.return_value = ([], 0)
+        response = client.get("/api/v1/logs")
+        assert response.status_code == 200
 
-            response = client.get("/api/v1/logs")
-            assert response.status_code == 200
-
-    def test_get_log_public(self, client, mock_log_data, mock_exercise_type_data):
+    def test_get_log_public(
+        self, client, mock_repos, mock_log_data, mock_exercise_type_data
+    ):
         """GET /logs/{id} is publicly accessible."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            log_with_type = {
-                **mock_log_data,
-                "exercise_types": mock_exercise_type_data,
-            }
-            mock_sb.table.return_value.select.return_value = create_mock_query(
-                [log_with_type]
-            )
-            mock_get_sb.return_value = mock_sb
+        ex = make_exercise_type_model(mock_exercise_type_data)
+        log = make_log_model(mock_log_data, exercise_type=ex)
+        mock_repos["log"].get_by_id.return_value = log
+        response = client.get("/api/v1/logs/123")
+        assert response.status_code == 200
 
-            response = client.get("/api/v1/logs/123")
-            assert response.status_code == 200
-
-    def test_stats_exercises_public(self, client):
+    def test_stats_exercises_public(self, client, mock_repos):
         """GET /stats/exercises is publicly accessible."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query([])
-            mock_get_sb.return_value = mock_sb
+        mock_repos["exercise_type"].get_all.return_value = []
+        response = client.get("/api/v1/stats/exercises")
+        assert response.status_code == 200
 
-            response = client.get("/api/v1/stats/exercises")
-            assert response.status_code == 200
-
-    def test_stats_summary_public(self, client):
+    def test_stats_summary_public(self, client, mock_repos):
         """GET /stats/summary is publicly accessible."""
-        with patch("src.api.services.get_supabase") as mock_get_sb:
-            mock_sb = Mock()
-            mock_sb.table.return_value.select.return_value = create_mock_query([])
-            mock_get_sb.return_value = mock_sb
-
-            response = client.get("/api/v1/stats/summary")
-            assert response.status_code == 200
+        mock_repos["user_stats"].get_all.return_value = []
+        mock_repos["log"].get_all.return_value = ([], 0)
+        response = client.get("/api/v1/stats/summary")
+        assert response.status_code == 200
 
     def test_health_check_public(self, client):
         """GET / (health check) is publicly accessible."""
@@ -285,4 +242,3 @@ class TestAdminJobsAuth:
             headers={"Authorization": "Bearer invalid-key"},
         )
         assert response.status_code == 403
-

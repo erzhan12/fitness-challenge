@@ -1,0 +1,3 @@
+# This directory contains the SQLite database file
+# The actual database file (fitness.db) is gitignored
+

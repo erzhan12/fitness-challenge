@@ -1,5 +1,19 @@
+# ruff: noqa: E402
+
 import logging
+from pathlib import Path
 from fastapi import FastAPI
+from fastapi.middleware.wsgi import WSGIMiddleware
+from fastapi.staticfiles import StaticFiles
+
+# Configure Django ORM before importing modules that touch Django models.
+from src.core import setup_django
+setup_django()
+
+# Import Django WSGI application for admin
+from django.core.wsgi import get_wsgi_application
+from django.conf import settings
+
 from app.routers import telegram, admin
 
 # Import API routers
@@ -70,6 +84,23 @@ Read-only endpoints (GET) are accessible without authentication.
     redoc_url="/redoc",
     openapi_url="/openapi.json",
 )
+
+
+@app.on_event("startup")
+async def startup():
+    """Initialize Django ORM on application startup."""
+    setup_django()
+
+# Mount static files for Django admin FIRST (more specific route)
+# This must come before mounting /admin so /admin/static/... requests are handled here
+static_root = Path(settings.STATIC_ROOT)
+if static_root.exists():
+    app.mount("/admin/static", StaticFiles(directory=str(static_root)), name="static")
+
+# Mount Django admin at /admin/ (less specific, catches everything else under /admin)
+# This allows access to Django admin panel through FastAPI
+django_wsgi = get_wsgi_application()
+app.mount("/admin", WSGIMiddleware(django_wsgi))
 
 # Include existing routers (Telegram bot & admin jobs)
 app.include_router(telegram.router)
