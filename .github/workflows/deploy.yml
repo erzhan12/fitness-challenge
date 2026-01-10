@@ -89,16 +89,26 @@ jobs:
 
       - name: Create deployment directory
         run: |
-          ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << 'SETUP'
-            mkdir -p ${{ secrets.DEPLOY_PATH }}
-            mkdir -p ${{ secrets.DEPLOY_PATH }}/logs
-            echo "Deployment directory created at: ${{ secrets.DEPLOY_PATH }}"
+          DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
+          if [ -z "$DEPLOY_PATH" ]; then
+            DEPLOY_PATH="/home/deploy/fitness-challenge"
+          fi
+          ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << SETUP
+            DEPLOY_PATH="$DEPLOY_PATH"
+            mkdir -p \$DEPLOY_PATH
+            mkdir -p \$DEPLOY_PATH/logs
+            echo "Deployment directory created at: \$DEPLOY_PATH"
           SETUP
 
       - name: Deploy to DigitalOcean Droplet
         run: |
-          ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << DEPLOY
-            cd ${{ secrets.DEPLOY_PATH }} || exit 1
+          DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
+          if [ -z "$DEPLOY_PATH" ]; then
+            DEPLOY_PATH="/home/deploy/fitness-challenge"
+          fi
+          ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << 'DEPLOY'
+            DEPLOY_PATH="$DEPLOY_PATH"
+            cd \$DEPLOY_PATH || exit 1
 
             # Log in to GHCR on the server
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
