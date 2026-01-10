@@ -106,9 +106,9 @@ jobs:
           if [ -z "$DEPLOY_PATH" ]; then
             DEPLOY_PATH="/home/deploy/fitness-challenge"
           fi
-          ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << 'DEPLOY'
+          ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << DEPLOY
             DEPLOY_PATH="$DEPLOY_PATH"
-            cd \$DEPLOY_PATH || exit 1
+            cd $DEPLOY_PATH || exit 1
 
             # Log in to GHCR on the server
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
