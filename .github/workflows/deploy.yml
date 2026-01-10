@@ -98,6 +98,8 @@ jobs:
             mkdir -p \$DEPLOY_PATH
             mkdir -p \$DEPLOY_PATH/logs
             mkdir -p \$DEPLOY_PATH/data
+            # Ensure data directory is writable by container's non-root user
+            chmod 777 \$DEPLOY_PATH/data
             echo "Deployment directory created at: \$DEPLOY_PATH"
           SETUP
 
