@@ -14,16 +14,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install uv
         uses: astral-sh/setup-uv@v4
-        
+
       - name: Set up Python
         run: uv python install
-        
+
       - name: Install dependencies with test extras
         run: uv sync --extra test
-        
+
       - name: Run tests
         env:
           # Dummy values for testing - actual values not needed for unit tests
@@ -77,62 +77,41 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Install SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
 
       - name: Create deployment directory
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            DEPLOY_PATH="${DEPLOY_PATH:-/home/deploy/fitness-challenge}"
-            echo "Creating deployment directory at: $DEPLOY_PATH"
-            mkdir -p "$DEPLOY_PATH"
-            mkdir -p "$DEPLOY_PATH/deployment"
-            echo "Deployment directory created successfully"
-            echo "Directory permissions:"
-            ls -ld "$DEPLOY_PATH" "$DEPLOY_PATH/deployment" || true
-        env:
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-
-      - name: List deployment files to upload
         run: |
-          echo "=== Files in deployment/ folder ==="
-          find deployment -type f | sort
-          echo ""
-          echo "=== Deployment folder structure ==="
-          tree deployment || find deployment -print | sed -e 's;[^/]*/;|____;g;s;____|; |;g'
-          echo ""
-          echo "=== Source path: deployment/* ==="
-          echo "=== Target path: ${{ secrets.DEPLOY_PATH }}/deployment ==="
+          DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
+          if [ -z "$DEPLOY_PATH" ]; then
+            DEPLOY_PATH="/home/deploy/fitness-challenge"
+          fi
+          ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << SETUP
+            DEPLOY_PATH="$DEPLOY_PATH"
+            mkdir -p \$DEPLOY_PATH
+            mkdir -p \$DEPLOY_PATH/logs
+            echo "Deployment directory created at: \$DEPLOY_PATH"
+          SETUP
 
-      - name: Upload deployment bundle
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "deployment/*"
-          target: "${{ secrets.DEPLOY_PATH }}/deployment"
+      - name: Deploy to DigitalOcean Droplet
+        run: |
+          DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
+          if [ -z "$DEPLOY_PATH" ]; then
+            DEPLOY_PATH="/home/deploy/fitness-challenge"
+          fi
+          ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << DEPLOY
+            DEPLOY_PATH="$DEPLOY_PATH"
+            cd $DEPLOY_PATH || exit 1
 
-      - name: Verify uploaded files on server
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            DEPLOY_PATH="${DEPLOY_PATH:-/home/deploy/fitness-challenge}"
-            echo "=== Files deployed to $DEPLOY_PATH/deployment ==="
-            ls -la "$DEPLOY_PATH/deployment" || echo "Directory not found"
-            echo ""
-            echo "=== Deployment folder structure on server ==="
-            find "$DEPLOY_PATH/deployment" -type f | sort || echo "No files found"
-        env:
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+            # Log in to GHCR on the server
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Create .env file on server
         uses: appleboy/ssh-action@v1.0.3
@@ -151,88 +130,58 @@ jobs:
             DOCKER_IMAGE_NAME=${{ env.IMAGE_NAME }}
             IMAGE_TAG=latest
 
-            # Postgres
-            POSTGRES_DB=$POSTGRES_DB
-            POSTGRES_USER=$POSTGRES_USER
-            POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-            DATABASE_URL=postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@db:5432/$POSTGRES_DB
+            # Run new container
+            docker run -d \
+              --name fitness-challenge \
+              --restart unless-stopped \
+              -p 8001:8001 \
+              -e TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+              -e TELEGRAM_SECRET_TOKEN="${{ secrets.TELEGRAM_SECRET_TOKEN }}" \
+              -e LLM_API_KEY="${{ secrets.LLM_API_KEY }}" \
+              -e LLM_BASE_URL="${{ secrets.LLM_BASE_URL }}" \
+              -e LLM_MODEL="${{ secrets.LLM_MODEL }}" \
+              -e SUPABASE_URL="${{ secrets.SUPABASE_URL }}" \
+              -e SUPABASE_KEY="${{ secrets.SUPABASE_KEY }}" \
+              -e ADMIN_API_KEY="${{ secrets.ADMIN_API_KEY }}" \
+              -e TARGET_CHAT_ID="${{ secrets.TARGET_CHAT_ID }}" \
+              -e TZ="Asia/Almaty" \
+              ghcr.io/${{ github.repository }}:latest
 
-            # App env
-            TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
-            TELEGRAM_SECRET_TOKEN=$TELEGRAM_SECRET_TOKEN
-            LLM_API_KEY=$LLM_API_KEY
-            LLM_BASE_URL=$LLM_BASE_URL
-            LLM_MODEL=$LLM_MODEL
-            SUPABASE_URL=$SUPABASE_URL
-            SUPABASE_KEY=$SUPABASE_KEY
-            ADMIN_API_KEY=$ADMIN_API_KEY
-            TARGET_CHAT_ID=$TARGET_CHAT_ID
-            TZ=$TZ
+            # Wait for container to start
+            echo "Waiting for container to start..."
+            sleep 5
 
-            # Django settings
-            DJANGO_SECRET_KEY=$DJANGO_SECRET_KEY
-            ALLOWED_HOSTS=$ALLOWED_HOSTS
-            EOF
-        env:
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
-          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_SECRET_TOKEN: ${{ secrets.TELEGRAM_SECRET_TOKEN }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-          LLM_MODEL: ${{ secrets.LLM_MODEL }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
-          TARGET_CHAT_ID: ${{ secrets.TARGET_CHAT_ID }}
-          TZ: "Asia/Almaty"
-          DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
-          ALLOWED_HOSTS: ${{ secrets.ALLOWED_HOSTS }}
+            # Show container status
+            echo "Container Status:"
+            docker ps | grep fitness-challenge || echo "Container not found!"
 
-      - name: Deploy with Docker Compose
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: DEPLOY_PATH,GITHUB_TOKEN
-          script: |
-            set -euo pipefail
-            DEPLOY_PATH="${DEPLOY_PATH:-$HOME/fitness-challenge}"
-            cd "$DEPLOY_PATH"
-
-            echo "$GITHUB_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-
-            docker compose --env-file .env -f deployment/docker/docker-compose.yml pull web
-            docker compose --env-file .env -f deployment/docker/docker-compose.yml down --timeout 30
-            docker compose --env-file .env -f deployment/docker/docker-compose.yml up -d
-
+            # Prune old images to save space
             docker image prune -f
-        env:
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY
 
       - name: Verify deployment
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: DEPLOY_PATH
-          script: |
-            DEPLOY_PATH="${DEPLOY_PATH:-$HOME/fitness-challenge}"
-            
-            cd "$DEPLOY_PATH"
+        run: |
+          ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << 'VERIFY'
+            echo "Checking container logs:"
+            docker logs fitness-challenge --tail=30 || echo "Container logs not available"
 
-            echo "Container Status:"
-            docker compose --env-file .env -f deployment/docker/docker-compose.yml ps
+            echo "Checking container status:"
+            docker ps -a | grep fitness-challenge || echo "Container not found"
 
-            echo "Recent logs (web):"
-            docker compose --env-file .env -f deployment/docker/docker-compose.yml logs --tail=50 web
-        env:
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+            echo "Checking if container is healthy:"
+            if docker ps | grep -q fitness-challenge; then
+              echo "Container is running"
+              # Check if port is listening
+              if docker port fitness-challenge | grep -q 8001; then
+                echo "Port 8001 is mapped correctly"
+              else
+                echo "Port 8001 mapping issue"
+              fi
+            else
+              echo "Container is not running"
+              exit 1
+            fi
+          VERIFY
 
   health-check:
     name: Health Check (HTTPS)
@@ -248,11 +197,11 @@ jobs:
         run: |
           echo "Testing HTTPS endpoint..."
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://fitnesschallenge.habitreward.org/ || echo "000")
-          
+
           if [ "$STATUS" == "200" ] || [ "$STATUS" == "404" ] || [ "$STATUS" == "405" ]; then
-            echo "✅ HTTPS is working! (HTTP $STATUS)"
+            echo "HTTPS is working! (HTTP $STATUS)"
           else
-            echo "⚠️ Warning: Unexpected HTTP status: $STATUS"
+            echo "Warning: Unexpected HTTP status: $STATUS"
             echo "This might be normal on first deployment (SSL cert provisioning)"
             # Don't fail the workflow - Caddy might still be provisioning cert
           fi
@@ -273,17 +222,17 @@ jobs:
       - name: Check current webhook and set if needed
         run: |
           WEBHOOK_URL="https://fitnesschallenge.habitreward.org/telegram/webhook"
-          
+
           echo "Checking current webhook status..."
           CURRENT_WEBHOOK=$(curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getWebhookInfo")
           echo "Current webhook info: $CURRENT_WEBHOOK"
-          
+
           # Check if webhook is already set correctly
           if echo "$CURRENT_WEBHOOK" | grep -q "\"url\":\"$WEBHOOK_URL\""; then
-            echo "✅ Webhook is already set correctly, skipping update"
+            echo "Webhook is already set correctly, skipping update"
           else
             echo "Setting Telegram webhook to: $WEBHOOK_URL"
-            
+
             RESPONSE=$(curl -s -X POST \
               "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/setWebhook" \
               -H "Content-Type: application/json" \
@@ -292,14 +241,14 @@ jobs:
                 \"secret_token\": \"${{ secrets.TELEGRAM_SECRET_TOKEN }}\",
                 \"drop_pending_updates\": true
               }")
-            
+
             echo "Webhook API Response: $RESPONSE"
-            
+
             # Check if webhook was set successfully
             if echo "$RESPONSE" | grep -q '"ok":true'; then
-              echo "✅ Webhook set successfully!"
+              echo "Webhook set successfully!"
             else
-              echo "⚠️ Warning: Webhook might not have been set correctly"
+              echo "Warning: Webhook might not have been set correctly"
               echo "Response: $RESPONSE"
               # Don't fail the workflow - webhook can be set manually if needed
             fi

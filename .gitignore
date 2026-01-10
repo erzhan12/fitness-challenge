@@ -34,5 +34,10 @@ Thumbs.db
 DEPLOYMENT_PROMPT.md
 SUBDOMAIN_PORT_CONFIG.md
 
-# Local SQLite database (Django ORM)
+# Secrets and sensitive files
+secrets.txt
+
+# Database files
+*.sqlite3
+*.db
 data/db.sqlite3
