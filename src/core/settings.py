@@ -54,6 +54,12 @@ DEBUG = os.environ.get("DJANGO_DEBUG", "False").lower() == "true"
 # Allowed hosts (comma-separated in env var)
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
+# CSRF Configuration for Django admin and webhooks
+# Required for Django 4.0+ when using HTTPS in production
+# Set CSRF_TRUSTED_ORIGINS to your domain (e.g., https://yourdomain.com)
+_csrf_origins = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_origins.split(",") if o.strip()]
+
 # URL Configuration
 ROOT_URLCONF = "src.core.urls"
 

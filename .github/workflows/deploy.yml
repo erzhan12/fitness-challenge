@@ -132,6 +132,7 @@ jobs:
               -e DATABASE_URL="sqlite:////app/data/db.sqlite3" \
               -e DJANGO_SECRET_KEY="${{ secrets.DJANGO_SECRET_KEY }}" \
               -e ALLOWED_HOSTS="${{ secrets.ALLOWED_HOSTS }}" \
+              -e CSRF_TRUSTED_ORIGINS="${{ secrets.CSRF_TRUSTED_ORIGINS }}" \
               -e TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
               -e TELEGRAM_SECRET_TOKEN="${{ secrets.TELEGRAM_SECRET_TOKEN }}" \
               -e LLM_API_KEY="${{ secrets.LLM_API_KEY }}" \
