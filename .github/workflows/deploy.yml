@@ -97,6 +97,7 @@ jobs:
             DEPLOY_PATH="$DEPLOY_PATH"
             mkdir -p \$DEPLOY_PATH
             mkdir -p \$DEPLOY_PATH/logs
+            mkdir -p \$DEPLOY_PATH/data
             echo "Deployment directory created at: \$DEPLOY_PATH"
           SETUP
 
@@ -125,6 +126,10 @@ jobs:
               --name fitness-challenge \
               --restart unless-stopped \
               -p 8001:8001 \
+              -v \$DEPLOY_PATH/data:/app/data \
+              -e DATABASE_URL="sqlite:////app/data/db.sqlite3" \
+              -e DJANGO_SECRET_KEY="${{ secrets.DJANGO_SECRET_KEY }}" \
+              -e ALLOWED_HOSTS="${{ secrets.ALLOWED_HOSTS }}" \
               -e TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
               -e TELEGRAM_SECRET_TOKEN="${{ secrets.TELEGRAM_SECRET_TOKEN }}" \
               -e LLM_API_KEY="${{ secrets.LLM_API_KEY }}" \
