@@ -14,7 +14,7 @@ if not django_settings.configured:
 
 from django.db.models import Sum
 
-from .models import ExerciseType, ExerciseChallenge, ExerciseLog, UserStats
+from .models import ExerciseType, ExerciseChallenge, ExerciseLog, UserStats, AppSettings
 
 
 class ExerciseTypeRepository:
@@ -308,8 +308,94 @@ class UserStatsRepository:
         return stats.last_logged_date
 
 
+class AppSettingsRepository:
+    """Repository for AppSettings operations (singleton pattern)."""
+
+    @sync_to_async
+    def get_singleton(self) -> AppSettings:
+        """Get or create the singleton AppSettings instance."""
+        settings, created = AppSettings.objects.get_or_create(id=1)
+        return settings
+
+    @sync_to_async
+    def set_is_reminder_active(self, is_active: bool) -> AppSettings:
+        """Set the is_reminder_active flag."""
+        settings, created = AppSettings.objects.get_or_create(id=1)
+        settings.is_reminder_active = is_active
+        settings.save(update_fields=["is_reminder_active"])
+        return settings
+
+    @sync_to_async
+    def update_chat_id(self, chat_id: int) -> AppSettings:
+        """Update the telegram_chat_id."""
+        settings, created = AppSettings.objects.get_or_create(id=1)
+        settings.telegram_chat_id = chat_id
+        settings.save(update_fields=["telegram_chat_id"])
+        return settings
+
+    @sync_to_async
+    def mark_hour_sent(self, target_date: date, hour: int) -> AppSettings:
+        """Mark that a reminder was sent for the given hour (21/22/23) on target_date.
+
+        Args:
+            target_date: The date the reminder was sent
+            hour: The hour (21, 22, or 23)
+
+        Returns:
+            Updated settings instance
+        """
+        settings, created = AppSettings.objects.get_or_create(id=1)
+
+        if hour == 21:
+            settings.last_reminder_21_date = target_date
+            field_name = "last_reminder_21_date"
+        elif hour == 22:
+            settings.last_reminder_22_date = target_date
+            field_name = "last_reminder_22_date"
+        elif hour == 23:
+            settings.last_reminder_23_date = target_date
+            field_name = "last_reminder_23_date"
+        else:
+            raise ValueError(f"Invalid hour: {hour}. Must be 21, 22, or 23.")
+
+        settings.save(update_fields=[field_name])
+        return settings
+
+    @sync_to_async
+    def check_already_sent(self, target_date: date, hour: int) -> bool:
+        """Check if reminder was already sent for the given hour on target_date.
+
+        Args:
+            target_date: The date to check
+            hour: The hour (21, 22, or 23)
+
+        Returns:
+            True if already sent, False otherwise
+        """
+        settings, created = AppSettings.objects.get_or_create(id=1)
+
+        if hour == 21:
+            return settings.last_reminder_21_date == target_date
+        elif hour == 22:
+            return settings.last_reminder_22_date == target_date
+        elif hour == 23:
+            return settings.last_reminder_23_date == target_date
+        else:
+            raise ValueError(f"Invalid hour: {hour}. Must be 21, 22, or 23.")
+
+    @sync_to_async
+    def update(self, data: dict) -> AppSettings:
+        """Update settings with arbitrary fields."""
+        settings, created = AppSettings.objects.get_or_create(id=1)
+        for key, value in data.items():
+            setattr(settings, key, value)
+        settings.save()
+        return settings
+
+
 # Module-level singleton instances
 exercise_type_repo = ExerciseTypeRepository()
 challenge_repo = ExerciseChallengeRepository()
 log_repo = ExerciseLogRepository()
 user_stats_repo = UserStatsRepository()
+app_settings_repo = AppSettingsRepository()

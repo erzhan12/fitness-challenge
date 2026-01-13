@@ -157,7 +157,7 @@ def generate_motivational_response(exercise_name: str, stats: Dict[str, Any]) ->
     Today's Count: {stats.get("today_total")}
     Challenge Day: {stats.get("day_number")}
     Streak: {stats.get("streak")}
-    
+
     Write a one-liner.
     """
 
@@ -181,3 +181,71 @@ def generate_motivational_response(exercise_name: str, stats: Dict[str, Any]) ->
             exc_info=True,
         )
         return "Keep crushing it! 💪"
+
+
+def generate_reminder_motivation(context: Dict[str, Any]) -> str:
+    """
+    Generates a short motivational message for evening reminders.
+
+    Args:
+        context: Dictionary containing:
+            - left_challenges_count: Number of incomplete challenges
+            - remaining_total: Sum of remaining reps/minutes across challenges
+            - challenges: List of incomplete challenge details
+            - reminder_hour: Hour of reminder (21/22/23)
+
+    Returns:
+        Short motivational message (1-2 sentences)
+    """
+    system_prompt = """
+    You are a playful but motivating fitness coach bot.
+    Generate a VERY SHORT (1-2 sentences max) motivational reminder message.
+    Tone: Encouraging, slightly playful, but never advising unsafe intensity.
+    Keep it brief and friendly.
+    """
+
+    challenges_info = context.get("challenges", [])
+    challenges_text = "\n".join([
+        f"- {c['emoji']} {c['exercise_name']}: {c['today_total']}/{c['daily_target']} {c['unit']} (need {c['left_reps']} more)"
+        for c in challenges_info
+    ])
+
+    user_content = f"""
+    Time: {context.get("reminder_hour")}:00
+    Incomplete challenges: {context.get("left_challenges_count")}
+    Total remaining: {context.get("remaining_total")} reps/minutes
+
+    Details:
+    {challenges_text}
+
+    Write a short, encouraging reminder message.
+    """
+
+    try:
+        logger.debug(f"Generating reminder motivation for hour {context.get('reminder_hour')}")
+        response = client.chat.completions.create(
+            model=settings.LLM_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.7,
+            max_tokens=60,
+        )
+        result = response.choices[0].message.content.strip()
+        logger.debug(f"Generated reminder: {result}")
+        return result
+    except Exception as e:
+        logger.error(
+            f"Error generating reminder motivation: {type(e).__name__}: {str(e)}",
+            exc_info=True,
+        )
+        # Fallback message
+        hour = context.get("reminder_hour", 21)
+        count = context.get("left_challenges_count", 0)
+        if hour == 23:
+            return "Last call! You've still got time to finish today's challenges! 💪"
+        elif hour == 22:
+            return f"Hey, {count} challenge{'s' if count > 1 else ''} still waiting for you! Let's go! 🔥"
+        else:
+            return f"Evening reminder: You have {count} challenge{'s' if count > 1 else ''} to complete today! 🏋️"

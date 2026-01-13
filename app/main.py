@@ -17,7 +17,7 @@ from django.conf import settings
 from app.routers import telegram, admin
 
 # Import API routers
-from src.api.routers import exercises, challenges, logs, stats, workouts
+from src.api.routers import exercises, challenges, logs, stats, workouts, settings as settings_router
 
 # Configure Logging
 logging.basicConfig(
@@ -46,6 +46,10 @@ openapi_tags = [
     {
         "name": "Workouts",
         "description": "Parse workout messages into structured data.",
+    },
+    {
+        "name": "Settings",
+        "description": "Application settings and preferences.",
     },
     {
         "name": "Jobs",
@@ -91,6 +95,11 @@ async def startup():
     """Initialize Django ORM on application startup."""
     setup_django()
 
+    # Start evening reminder scheduler
+    import asyncio
+    from app.services.reminder_scheduler import start_reminder_scheduler
+    asyncio.create_task(start_reminder_scheduler())
+
 # Mount static files for Django admin FIRST (more specific route)
 # This must come before mounting /admin so /admin/static/... requests are handled here
 static_root = Path(settings.STATIC_ROOT)
@@ -112,6 +121,7 @@ app.include_router(challenges.router, prefix="/api/v1")
 app.include_router(logs.router, prefix="/api/v1")
 app.include_router(stats.router, prefix="/api/v1")
 app.include_router(workouts.router, prefix="/api/v1")
+app.include_router(settings_router.router, prefix="/api/v1")
 
 
 @app.get("/", tags=["Health"])

@@ -22,6 +22,7 @@ from src.core.repositories import (
     challenge_repo,
     log_repo,
     user_stats_repo,
+    app_settings_repo,
 )
 from src.api.models import (
     ExerciseTypeOut,
@@ -37,6 +38,8 @@ from src.api.models import (
     StatsSummaryOut,
     PaginatedLogsResponse,
     PaginationMeta,
+    SettingsOut,
+    SettingsUpdate,
 )
 
 TZ = ZoneInfo(settings.TZ)
@@ -599,4 +602,46 @@ async def get_stats_summary() -> StatsSummaryOut:
         total_reps_all_time=total_reps,
         total_active_days=distinct_days,
         exercise_stats=user_stats,
+    )
+
+
+# =============================================================================
+# Settings
+# =============================================================================
+
+
+async def get_settings() -> SettingsOut:
+    """Get application settings.
+
+    Returns:
+        Current app settings
+    """
+    settings_model = await app_settings_repo.get_singleton()
+    return SettingsOut(
+        is_reminder_active=settings_model.is_reminder_active,
+        telegram_chat_id=settings_model.telegram_chat_id,
+    )
+
+
+async def update_settings(update: SettingsUpdate) -> SettingsOut:
+    """Update application settings.
+
+    Args:
+        update: Settings fields to update
+
+    Returns:
+        Updated settings
+    """
+    update_data = {}
+    if update.is_reminder_active is not None:
+        update_data["is_reminder_active"] = update.is_reminder_active
+
+    if update_data:
+        settings_model = await app_settings_repo.update(update_data)
+    else:
+        settings_model = await app_settings_repo.get_singleton()
+
+    return SettingsOut(
+        is_reminder_active=settings_model.is_reminder_active,
+        telegram_chat_id=settings_model.telegram_chat_id,
     )

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Header, BackgroundTasks, HTTPException
 from app.config import settings
 from app.models import TelegramUpdate
 from app.services.workout_service import process_incoming_message
+from src.core.repositories import app_settings_repo
 import logging
 
 router = APIRouter(prefix="/telegram", tags=["Telegram"])
@@ -25,9 +26,13 @@ async def telegram_webhook(
     if not update.message or not update.message.text:
         return {"status": "ignored", "reason": "no text message"}
 
+    # Auto-capture telegram_chat_id for reminders
+    chat_id = update.message.chat.id
+    background_tasks.add_task(app_settings_repo.update_chat_id, chat_id)
+
     # Process in background to reply fast to Telegram
     background_tasks.add_task(
-        process_incoming_message, update.message.text, update.message.chat.id
+        process_incoming_message, update.message.text, chat_id
     )
 
     return {"status": "ok"}

@@ -595,6 +595,72 @@ Do not rely on `challenge_map` (keyed by exercise type) when processing these en
 
 ---
 
+## Evening Reminders System
+
+The application includes an automated evening reminder system that sends Telegram notifications at 9pm, 10pm, and 11pm for incomplete challenges.
+
+### Components
+
+**Data Layer:**
+- `AppSettings` model (`src/core/models.py`) - Singleton table storing:
+  - `is_reminder_active`: Boolean toggle for reminders
+  - `telegram_chat_id`: Auto-captured from Telegram messages
+  - `last_reminder_21_date`, `last_reminder_22_date`, `last_reminder_23_date`: Idempotency tracking
+- `AppSettingsRepository` (`src/core/repositories.py`) - Async repository with methods:
+  - `get_singleton()`, `set_is_reminder_active()`, `update_chat_id()`, `mark_hour_sent()`, `check_already_sent()`
+
+**Reminder Logic:**
+- `compute_evening_reminder()` (`app/services/workout_service.py`) - Determines incomplete challenges:
+  - Challenges with `daily_target`: incomplete if `today_total < daily_target`
+  - Challenges without `daily_target`: incomplete only if `today_total == 0`
+  - Returns combined HTML message with motivational text
+- `send_evening_reminder()` (`app/services/workout_service.py`) - Sends reminders:
+  - Checks `is_reminder_active` flag
+  - Implements idempotency to avoid duplicate sends
+  - Sends one combined message per hour listing all incomplete challenges
+- `generate_reminder_motivation()` (`app/services/openai_service.py`) - LLM-generated motivation:
+  - Short (1-2 sentences), encouraging tone
+  - Context-aware based on hour and remaining work
+  - Fallback messages if LLM fails
+
+**Scheduler:**
+- `start_reminder_scheduler()` (`app/services/reminder_scheduler.py`) - Background task:
+  - Calculates next reminder time (21:00/22:00/23:00 in `settings.TZ`)
+  - Sleeps until target time
+  - Triggers reminder via `send_evening_reminder()`
+  - Handles errors gracefully with retry logic
+- Started automatically in `app/main.py` startup event
+
+**Settings API:**
+- `GET /api/v1/settings` - Read current reminder settings (public)
+- `PATCH /api/v1/settings` - Toggle `is_reminder_active` (requires API key)
+- Models: `SettingsOut`, `SettingsUpdate` (`src/api/models.py`)
+- Services: `get_settings()`, `update_settings()` (`src/api/services.py`)
+- Router: `src/api/routers/settings.py`
+
+**Auto-capture:**
+- Telegram webhook (`app/routers/telegram.py`) automatically saves `chat_id` to settings when user sends messages
+
+**Legacy Compatibility:**
+- `check_daily_reminders()` updated to support optional `hour` parameter:
+  - `hour=None`: Legacy simple reminder (sends per-challenge messages)
+  - `hour=21/22/23`: New evening reminder with combined message
+
+### Files
+- **Models:** `src/core/models.py` (AppSettings)
+- **Repositories:** `src/core/repositories.py` (AppSettingsRepository)
+- **Reminder Logic:** `app/services/workout_service.py` (compute_evening_reminder, send_evening_reminder)
+- **Scheduler:** `app/services/reminder_scheduler.py`
+- **LLM Integration:** `app/services/openai_service.py` (generate_reminder_motivation)
+- **API:** `src/api/routers/settings.py`, `src/api/services.py`, `src/api/models.py`
+- **Telegram:** `app/routers/telegram.py` (auto-capture chat_id)
+- **Tests:** `tests/api/test_settings.py`
+- **Migration:** `src/core/migrations/0002_add_app_settings.py`
+
+**Last Updated:** Added evening reminders system (2026-01-11)
+
+---
+
 ## Django Admin Panel
 
 The application includes a Django admin panel for managing database records through a web interface.
