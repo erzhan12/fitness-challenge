@@ -12,6 +12,7 @@ from app.models import ExerciseType, ParseResult, ExerciseEntry
 from app.services.openai_service import (
     parse_workout_message,
     generate_motivational_response,
+    generate_reminder_motivation,
 )
 from app.services.deterministic_parser import get_numbers_from_message
 from app.services.telegram_client import send_telegram_message, send_chat_action
@@ -22,6 +23,7 @@ from src.core.repositories import (
     challenge_repo,
     log_repo,
     user_stats_repo,
+    app_settings_repo,
 )
 from src.api.services import (
     compute_exercise_stats,
@@ -613,40 +615,261 @@ async def process_incoming_message(text: str, chat_id: int):
         await typing_task
 
 
-async def check_daily_reminders():
+async def check_daily_reminders(hour: Optional[int] = None):
     """
-    Checks active challenges. If no log for today, send a reminder.
+    Checks active challenges and sends reminders.
+
+    This function serves dual purpose:
+    1. Legacy behavior (hour=None): Send simple "missing you" messages for challenges with no logs
+    2. New behavior (hour in REMINDER_HOURS): Use evening reminder logic with combined message
+
+    Args:
+        hour: Optional reminder hour (must be in REMINDER_HOURS). If provided, uses evening reminder logic.
+              If None, uses legacy simple reminder logic.
     """
     _ensure_orm()
+
+    # If hour is specified, use new evening reminder logic
+    if hour is not None:
+        await send_evening_reminder(hour)
+        return
+
+    # Legacy behavior: simple reminder for challenges with no logs
     today_local = datetime.now(TZ).date()
+
+    # Get chat_id from settings or env
+    app_settings = await app_settings_repo.get_singleton()
+    if not app_settings.is_reminder_active:
+        logger.info("Reminders disabled, skipping legacy reminders")
+        return
 
     challenges = await challenge_repo.get_current_active(today_local)
 
-    # We need the user's chat_id.
-    # Since this is single user, we can just grab the chat_id from the last log or config.
-    # For now, let's assume we can query the last log to get a chat_id (if we stored it, which we didn't).
-    # User didn't ask to store user_id/chat_id in DB schema provided, but we need it to send messages.
-    # OPTION: Store a default CHAT_ID in env, or we rely on 'user_stats' having a user_id if we added it.
-    # Given the constraints, I will assume we put target CHAT_ID in settings for the reminder.
-
-    # Actually, the prompt says "Only one user (me) for now".
-    # So I should add TARGET_CHAT_ID to settings.
-    from app.config import settings
-
-    # Note: You'll need to add TARGET_CHAT_ID to app/config.py manually or via env
-    target_chat_id = getattr(settings, "TARGET_CHAT_ID", None)
-
+    target_chat_id = app_settings.telegram_chat_id
     if not target_chat_id:
-        logger.warning("No TARGET_CHAT_ID set for reminders.")
-        return
+        target_chat_id = settings.TARGET_CHAT_ID
+        if not target_chat_id:
+            logger.warning("No TARGET_CHAT_ID set for reminders.")
+            return
+
+    challenge_ids = [ch.id for ch in challenges]
+    today_counts = await log_repo.get_today_counts_by_challenge_ids(
+        challenge_ids, today_local
+    )
 
     for ch in challenges:
         # Check if logged today
-        today_count = await log_repo.get_today_count(
-            ch.exercise_type_id, today_local, challenge_id=ch.id
-        )
+        today_count = today_counts.get(ch.id, 0)
         if today_count <= 0:
             ex_name = getattr(ch.exercise_type, "display_name", "exercise")
             emoji = getattr(ch.exercise_type, "emoji", "🏋️")
             msg = f"Hey, your {emoji} {ex_name} are missing you today! 🥺"
             await send_telegram_message(target_chat_id, msg)
+
+
+async def compute_evening_reminder(
+    today_local: date, reminder_hour: int
+) -> Tuple[bool, Optional[str], int]:
+    """
+    Compute evening reminder message for incomplete challenges.
+
+    Args:
+        today_local: Current date in local timezone
+        reminder_hour: Hour of reminder (must be in REMINDER_HOURS)
+
+    Returns:
+        Tuple of (should_send, message_html, incomplete_count)
+        - should_send: True if there are incomplete challenges and reminder should be sent
+        - message_html: HTML formatted message, or None if nothing to send
+        - incomplete_count: Number of incomplete challenges
+    """
+    _ensure_orm()
+
+    # Get active challenges for today
+    challenges = await challenge_repo.get_current_active(today_local)
+    if not challenges:
+        return False, None, 0
+
+    challenge_ids = [ch.id for ch in challenges]
+    today_counts = await log_repo.get_today_counts_by_challenge_ids(
+        challenge_ids, today_local
+    )
+
+    # Determine which challenges are incomplete
+    incomplete_challenges = []
+
+    for ch in challenges:
+        daily_target = ch.daily_target
+        today_total = today_counts.get(ch.id, 0)
+
+        # Check if incomplete
+        is_incomplete = False
+        if daily_target is not None:
+            # Has daily target: incomplete if today_total < daily_target
+            is_incomplete = today_total < daily_target
+        else:
+            # No daily target: treat as incomplete only if today_total == 0
+            is_incomplete = today_total == 0
+
+        if is_incomplete:
+            left_reps = 0
+            if daily_target is not None:
+                left_reps = max(0, daily_target - today_total)
+
+            incomplete_challenges.append({
+                "exercise_name": ch.exercise_type.display_name,
+                "emoji": ch.exercise_type.emoji,
+                "unit": ch.exercise_type.unit,
+                "today_total": today_total,
+                "daily_target": daily_target,
+                "left_reps": left_reps,
+            })
+
+    if not incomplete_challenges:
+        return False, None, 0
+
+    # Compute left challenges count and remaining totals by unit
+    left_challenges_count = len(incomplete_challenges)
+
+    # Group remaining work by unit (e.g., {"reps": 50, "minutes": 15})
+    remaining_by_unit: dict[str, int] = {}
+    for ch in incomplete_challenges:
+        if ch["left_reps"] > 0:
+            unit = ch["unit"]
+            remaining_by_unit[unit] = remaining_by_unit.get(unit, 0) + ch["left_reps"]
+
+    # Format remaining summary for LLM (e.g., "50 reps, 15 minutes")
+    if remaining_by_unit:
+        remaining_summary = ", ".join(f"{v} {k}" for k, v in remaining_by_unit.items())
+    else:
+        remaining_summary = "some exercises not started"
+
+    # Build cleaner challenge summaries for LLM context
+    challenge_summaries = []
+    for ch in incomplete_challenges:
+        if ch["daily_target"] is not None:
+            summary = (
+                f"{ch['emoji']} {ch['exercise_name']}: "
+                f"{ch['today_total']}/{ch['daily_target']} {ch['unit']} "
+                f"(need {ch['left_reps']} more)"
+            )
+        else:
+            summary = f"{ch['emoji']} {ch['exercise_name']}: not started today (no daily target)"
+        challenge_summaries.append(summary)
+
+    # Generate motivational message via LLM
+    context = {
+        "left_challenges_count": left_challenges_count,
+        "remaining_summary": remaining_summary,
+        "challenge_summaries": challenge_summaries,
+        "reminder_hour": reminder_hour,
+    }
+    try:
+        motivation = generate_reminder_motivation(context)
+    except Exception as exc:
+        logger.error(
+            "Failed to generate reminder motivation, using safe fallback",
+            exc_info=exc,
+        )
+        motivation = "Time to complete today's challenges! 💪"
+
+    # Build HTML message
+    header_time = f"{reminder_hour}:00"
+    message_lines = [
+        f"<b>🔔 Evening Reminder ({header_time})</b>",
+        "",
+    ]
+
+    for ch in incomplete_challenges:
+        if ch["daily_target"] is not None:
+            unit_display = ch["unit"] if ch["left_reps"] != 1 else ch["unit"].rstrip('s')
+            message_lines.append(
+                f"• {ch['emoji']} <b>{ch['exercise_name']}</b>: "
+                f"{ch['today_total']}/{ch['daily_target']} {ch['unit']} "
+                f"(need {ch['left_reps']} more {unit_display})"
+            )
+        else:
+            # No daily target, just show it's not started
+            message_lines.append(
+                f"• {ch['emoji']} <b>{ch['exercise_name']}</b>: "
+                f"Not started today"
+            )
+
+    message_lines.append("")
+    message_lines.append(f"<i>{motivation}</i>")
+
+    message_html = "\n".join(message_lines)
+
+    return True, message_html, left_challenges_count
+
+
+async def send_evening_reminder(reminder_hour: int):
+    """
+    Send evening reminder at specified hour.
+
+    Checks if reminder is enabled, if already sent today, and if there are incomplete challenges.
+    Sends one combined message via Telegram if needed.
+
+    Args:
+        reminder_hour: Hour to send reminder (must be in REMINDER_HOURS)
+    """
+    _ensure_orm()
+
+    # Get settings
+    app_settings = await app_settings_repo.get_singleton()
+
+    # Check if reminders are active
+    if not app_settings.is_reminder_active:
+        logger.info(f"Reminders disabled, skipping {reminder_hour}:00 reminder")
+        return
+
+    # Check if we have a chat_id
+    chat_id = app_settings.telegram_chat_id
+    if not chat_id:
+        # Fallback to env var if available
+        chat_id = settings.TARGET_CHAT_ID
+        if not chat_id:
+            logger.warning("No telegram_chat_id configured for reminders")
+            return
+
+    # Get today in local timezone
+    today_local = datetime.now(TZ).date()
+
+    # Atomically claim this hour to avoid duplicate sends across workers
+    claimed = await app_settings_repo.try_mark_hour_sent(today_local, reminder_hour)
+    if not claimed:
+        logger.info(f"Reminder for {reminder_hour}:00 already sent/claimed, skipping")
+        return
+
+    try:
+        # Compute reminder message
+        should_send, message_html, incomplete_count = await compute_evening_reminder(
+            today_local, reminder_hour
+        )
+
+        if not should_send:
+            logger.info(
+                f"No incomplete challenges at {reminder_hour}:00, no reminder sent"
+            )
+            return
+
+        # Send reminder
+        logger.info(
+            f"Sending {reminder_hour}:00 reminder: {incomplete_count} incomplete challenge(s)"
+        )
+        result = await send_telegram_message(chat_id, message_html, parse_mode="HTML")
+
+        # If Telegram send failed, clear the claim to allow retry
+        if result is None:
+            await app_settings_repo.clear_hour_sent(today_local, reminder_hour)
+            logger.warning(
+                f"Telegram send failed for {reminder_hour}:00 reminder, will retry next run"
+            )
+        else:
+            logger.info(f"Marked {reminder_hour}:00 reminder as sent")
+    except Exception:
+        await app_settings_repo.clear_hour_sent(today_local, reminder_hour)
+        logger.exception(
+            "Unexpected error during reminder computation/send; claim cleared"
+        )
+        raise

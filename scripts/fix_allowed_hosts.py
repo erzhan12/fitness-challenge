@@ -87,7 +87,7 @@ def fix_allowed_hosts(ngrok_domain):
     print("\n⚠️  Note: This is for Django projects only.")
     print("For FastAPI, this script does nothing - FastAPI doesn't use ALLOWED_HOSTS.")
     print("\nTo restart FastAPI server:")
-    print("uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload")
+    print("uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload")
 
     return True
 

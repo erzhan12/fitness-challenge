@@ -9,7 +9,7 @@
 
 ### Environment Setup
 1. Application running locally or on test server
-2. API accessible at base URL (e.g., `http://localhost:8000`)
+2. API accessible at base URL (e.g., `http://localhost:8001`)
 3. Valid API key for authenticated endpoints
 4. Tool for API testing (curl, Postman, HTTPie, or similar)
 5. Database with test data (or ability to create it)
@@ -24,7 +24,7 @@ You'll need:
 ### Environment Variables
 ```bash
 export API_KEY="your-api-key-here"
-export BASE_URL="http://localhost:8000"
+export BASE_URL="http://localhost:8001"
 ```
 
 ---

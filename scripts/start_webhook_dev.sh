@@ -53,6 +53,15 @@ fi
 
 print_msg $GREEN "✅ ngrok is installed"
 
+# Check if make is available
+if ! command -v make &> /dev/null; then
+    print_msg $RED "❌ Error: make is not installed"
+    print_msg $YELLOW "Install make:"
+    print_msg $YELLOW "  macOS: Usually pre-installed, or install Xcode Command Line Tools"
+    print_msg $YELLOW "  Linux: sudo apt-get install build-essential (Ubuntu/Debian)"
+    exit 1
+fi
+
 # Check if uvicorn is available
 if ! uv run python -c "import uvicorn" 2>/dev/null; then
     print_msg $YELLOW "⚠️ uvicorn not found, installing dependencies..."
@@ -76,7 +85,7 @@ print_msg $GREEN "STEP 1: Start ngrok tunnel"
 print_msg $BLUE "----------------------------------------"
 echo "Open a NEW terminal window and run:"
 echo ""
-print_msg $YELLOW "    ngrok http 8000"
+print_msg $YELLOW "    ngrok http 8001"
 echo ""
 read -p "Press ENTER when ngrok is running..."
 
@@ -140,13 +149,13 @@ print_msg $BLUE "----------------------------------------"
 echo "Open ANOTHER NEW terminal window and run:"
 echo ""
 print_msg $YELLOW "    cd $PROJECT_ROOT"
-print_msg $YELLOW "    uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+print_msg $YELLOW "    make api"
 echo ""
 read -p "Press ENTER when the server is running..."
 
 # Test if server is running
 print_msg $BLUE "Testing server connection..."
-if curl -s -o /dev/null -w "%{http_code}" "http://localhost:8000/telegram/webhook" | grep -q "400\|403\|405"; then
+if curl -s -o /dev/null -w "%{http_code}" "http://localhost:8001/telegram/webhook" | grep -q "400\|403\|405"; then
     print_msg $GREEN "✅ Server is running"
 else
     print_msg $YELLOW "⚠️ Server might not be running, but continuing..."

@@ -37,6 +37,17 @@ Create manual step by step commands to check logs
 - [X] Add unit tests covering ambiguous inputs and fallback-to-LLM behavior
 - [X] Add validation check: if user entered any number that could be considered as 0 (e.g., 0, 0.0, 0.00, 0.1, 0.01, 0.001, or any value <= 0), don't log it, instead show message that it should be greater than 0 and integer
 
+### Daily Challenge Completion Indicator
+- [ ] Track completion status for each challenge per user per day
+- [ ] Add logic to check if challenge target is met (in `src/api/services.py`)
+- [ ] Display ✅ (green check mark) in Telegram workout response when daily target is completed
+- [ ] Format: `✅ Push-ups: 50/50 reps` (show check mark before the challenge name when completed)
+- [ ] Keep challenge in list even when completed, but highlight with green indicator
+- [ ] Add visual distinction for completed vs pending challenges (emoji or styling)
+- [ ] Update `/start` command to show completion status for the day
+- [ ] Reset indicator at midnight for each timezone
+- [ ] Add unit tests in `tests/api/test_services.py`
+
 ### Motivational Insights
 - [ ] Create weekly aggregation function in `src/api/services.py`
 - [ ] Implement OpenAI prompt for personalized summaries

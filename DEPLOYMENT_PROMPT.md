@@ -56,9 +56,9 @@ Dockerfile:
     - a final slim stage for running the app in production with Uvicorn.
   - Ensure the production image:
     - does NOT run tests on container startup
-    - exposes the correct port (usually `8000`)
+    - exposes the correct port (usually `8001`)
     - runs something like:
-      - `uvicorn app.main:app --host 0.0.0.0 --port 8000`
+      - `uvicorn app.main:app --host 0.0.0.0 --port 8001`
       - (adjust module path to match my codebase)
 
 ==================================================
@@ -104,9 +104,9 @@ Tasks:
    - Copies only what’s needed into final stage (code + dependencies).
    - Sets:
      - `ENV` or `ENV VARS` placeholders (e.g. `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, etc.)
-   - Exposes port `8000`.
+   - Exposes port `8001`.
    - Uses `CMD` with Uvicorn:
-     - `uvicorn <module_path>:app --host 0.0.0.0 --port 8000`.
+     - `uvicorn <module_path>:app --host 0.0.0.0 --port 8001`.
 
 3. Make sure:
    - `.env` is **not** baked into the image.
@@ -143,7 +143,7 @@ Provide **explicit shell commands** for:
    - Clone the repo OR (if using GHCR only) log into GHCR with a PAT and `docker login ghcr.io`.
    - Pull the image: `docker pull ghcr.io/<username>/<repo>:latest`.
    - Run the container:
-     - Map internal port `8000` to local port (e.g. `localhost:8000`), NOT directly to 80/443 because we’ll use a reverse proxy.
+     - Map internal port `8001` to local port (e.g. `localhost:8001`), NOT directly to 80/443 because we’ll use a reverse proxy.
 
 Explain each step in comments or short text.
 
@@ -163,13 +163,13 @@ Tasks:
 
      - Domain: `fitnesschallenge.habitreward.org`
      - Listen on HTTPS (Caddy should automatically get Let’s Encrypt certs).
-     - Reverse proxy to the Docker container on `localhost:8000`.
+     - Reverse proxy to the Docker container on `localhost:8001`.
 
    - The `Caddyfile` should look roughly like:
 
      ```
      fitnesschallenge.habitreward.org {
-         reverse_proxy localhost:8000
+         reverse_proxy localhost:8001
      }
      ```
 

@@ -1,10 +1,16 @@
 # ruff: noqa: E402
 
+import asyncio
 import logging
+import os
+from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
+from typing import Optional
+
 from fastapi import FastAPI
-from fastapi.middleware.wsgi import WSGIMiddleware
 from fastapi.staticfiles import StaticFiles
+from a2wsgi import WSGIMiddleware
 
 # Configure Django ORM before importing modules that touch Django models.
 from src.core import setup_django
@@ -17,13 +23,17 @@ from django.conf import settings
 from app.routers import telegram, admin
 
 # Import API routers
-from src.api.routers import exercises, challenges, logs, stats, workouts
+from src.api.routers import exercises, challenges, logs, stats, workouts, settings as settings_router
 
 # Configure Logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+logger = logging.getLogger(__name__)
+
+# Module-level variable to track scheduler task
+_scheduler_task: Optional[asyncio.Task] = None
 
 # OpenAPI tags metadata
 openapi_tags = [
@@ -48,6 +58,10 @@ openapi_tags = [
         "description": "Parse workout messages into structured data.",
     },
     {
+        "name": "Settings",
+        "description": "Application settings and preferences.",
+    },
+    {
         "name": "Jobs",
         "description": "Internal job triggers (admin only).",
     },
@@ -57,7 +71,37 @@ openapi_tags = [
     },
 ]
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle - startup and shutdown."""
+    global _scheduler_task
+
+    # Startup
+    logger.info("Application starting up...")
+
+    # Start scheduler (optionally gated by env var for testing/dev)
+    if os.getenv("ENABLE_REMINDER_SCHEDULER", "true").lower() == "true":
+        from app.services.reminder_scheduler import start_reminder_scheduler
+        _scheduler_task = asyncio.create_task(start_reminder_scheduler())
+        logger.info("Evening reminder scheduler started")
+    else:
+        logger.info("Reminder scheduler disabled via ENABLE_REMINDER_SCHEDULER=false")
+
+    yield
+
+    # Shutdown
+    logger.info("Application shutting down...")
+    if _scheduler_task is not None:
+        _scheduler_task.cancel()
+        try:
+            await _scheduler_task
+        except asyncio.CancelledError:
+            logger.info("Scheduler task cancelled successfully")
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Fitness Challenge API",
     description="""
 A REST API for tracking fitness challenges and workout progress.
@@ -86,11 +130,6 @@ Read-only endpoints (GET) are accessible without authentication.
 )
 
 
-@app.on_event("startup")
-async def startup():
-    """Initialize Django ORM on application startup."""
-    setup_django()
-
 # Mount static files for Django admin FIRST (more specific route)
 # This must come before mounting /admin so /admin/static/... requests are handled here
 static_root = Path(settings.STATIC_ROOT)
@@ -112,6 +151,7 @@ app.include_router(challenges.router, prefix="/api/v1")
 app.include_router(logs.router, prefix="/api/v1")
 app.include_router(stats.router, prefix="/api/v1")
 app.include_router(workouts.router, prefix="/api/v1")
+app.include_router(settings_router.router, prefix="/api/v1")
 
 
 @app.get("/", tags=["Health"])
@@ -120,7 +160,25 @@ def health_check():
     return {"status": "ok", "version": "0.1.0"}
 
 
+@app.get("/health/scheduler", tags=["Health"])
+async def scheduler_health():
+    from app.services import reminder_scheduler as scheduler
+
+    last_heartbeat = scheduler.last_scheduler_heartbeat
+    if last_heartbeat is None:
+        return {"status": "not_started"}
+
+    now = datetime.now(scheduler.TZ)
+    age_seconds = (now - last_heartbeat).total_seconds()
+    status = "healthy" if age_seconds <= 300 else "stale"
+    return {
+        "status": status,
+        "last_heartbeat": last_heartbeat.isoformat(),
+        "age_seconds": age_seconds,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

@@ -86,3 +86,25 @@ class UserStats(models.Model):
 
     def __str__(self):
         return f"{self.exercise_type.name} stats: {self.all_time_total} total"
+
+
+class AppSettings(models.Model):
+    """Application settings (singleton pattern for single-user app).
+
+    Stores reminder preferences and idempotency tracking for evening reminders.
+    Future-proofed for multi-user by keeping extensible schema.
+    """
+    is_reminder_active = models.BooleanField(default=True)
+    telegram_chat_id = models.BigIntegerField(null=True, blank=True)
+
+    # Idempotency: track last date each reminder was sent
+    last_reminder_21_date = models.DateField(null=True, blank=True)
+    last_reminder_22_date = models.DateField(null=True, blank=True)
+    last_reminder_23_date = models.DateField(null=True, blank=True)
+
+    class Meta:
+        db_table = "app_settings"
+        verbose_name_plural = "App settings"
+
+    def __str__(self):
+        return f"App Settings (reminders: {'ON' if self.is_reminder_active else 'OFF'})"

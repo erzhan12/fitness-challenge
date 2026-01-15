@@ -155,7 +155,7 @@ fitnesschallenge.habitreward.org {
 ```
 # Existing app (keep this!)
 habitreward.org {
-    reverse_proxy localhost:8000
+    reverse_proxy localhost:8001
 }
 
 # Your new fitness challenge app (add this)

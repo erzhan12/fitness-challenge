@@ -339,6 +339,32 @@ class PaginatedLogsResponse(BaseModel):
 
 
 # =============================================================================
+# Settings
+# =============================================================================
+
+
+class SettingsOut(BaseModel):
+    """JSON representation of app settings."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    is_reminder_active: bool = Field(
+        ..., description="Whether evening reminders are enabled"
+    )
+    telegram_chat_id: Optional[int] = Field(
+        None, description="Telegram chat ID for sending reminders"
+    )
+
+
+class SettingsUpdate(BaseModel):
+    """Request model for updating app settings."""
+
+    is_reminder_active: Optional[bool] = Field(
+        None, description="Whether to enable or disable evening reminders"
+    )
+
+
+# =============================================================================
 # Error Response
 # =============================================================================
 
