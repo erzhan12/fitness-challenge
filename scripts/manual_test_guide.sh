@@ -15,7 +15,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-BASE_URL="${BASE_URL:-http://localhost:8000}"
+BASE_URL="${BASE_URL:-http://localhost:8001}"
 API_KEY="${API_KEY:-}"
 
 # Helper functions
@@ -95,7 +95,7 @@ check_prerequisites() {
     # Check if server is running
     if ! curl -s -f "$BASE_URL/" > /dev/null 2>&1; then
         print_error "Cannot connect to $BASE_URL"
-        print_info "Please start the server with: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+        print_info "Please start the server with: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload"
         exit 1
     fi
     print_success "Server is running at $BASE_URL"

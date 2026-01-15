@@ -15,11 +15,9 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str
     LLM_MODEL: str
 
-    # Supabase
-    SUPABASE_URL: str
-    SUPABASE_KEY: (
-        str  # service_role key preferred for backend, or anon if using RLS carefully
-    )
+    # Supabase (migration-only; optional at runtime)
+    SUPABASE_URL: str | None = None
+    SUPABASE_KEY: str | None = None  # service_role preferred for migration
 
     # Internal
     ADMIN_API_KEY: str  # For securing cron endpoints

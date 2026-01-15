@@ -18,11 +18,11 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 
-def test_webhook_endpoint(base_url="http://localhost:8000"):
+def test_webhook_endpoint(base_url="http://localhost:8001"):
     """Test the webhook endpoint.
 
     Args:
-        base_url (str): Base URL to test (default: http://localhost:8000)
+        base_url (str): Base URL to test (default: http://localhost:8001)
     """
     webhook_url = f"{base_url}/telegram/webhook"
 
@@ -49,7 +49,7 @@ def test_webhook_endpoint(base_url="http://localhost:8000"):
     except httpx.ConnectError:
         print("❌ FAIL - Connection refused")
         print("   Is the server running?")
-        print("   Start with: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload")
+        print("   Start with: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload")
         return False
     except httpx.TimeoutException:
         print("❌ FAIL - Request timeout")

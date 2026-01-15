@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import ExerciseType, ExerciseChallenge, ExerciseLog, UserStats
+from .models import ExerciseType, ExerciseChallenge, ExerciseLog, UserStats, AppSettings
 
 
 @admin.register(ExerciseType)
@@ -83,3 +83,29 @@ class UserStatsAdmin(admin.ModelAdmin):
         "longest_streak",
         "last_logged_date",
     ]
+
+
+@admin.register(AppSettings)
+class AppSettingsAdmin(admin.ModelAdmin):
+    list_display = [
+        "id",
+        "is_reminder_active",
+        "telegram_chat_id",
+        "last_reminder_21_date",
+        "last_reminder_22_date",
+        "last_reminder_23_date",
+    ]
+    list_editable = ["is_reminder_active"]
+    readonly_fields = [
+        "last_reminder_21_date",
+        "last_reminder_22_date",
+        "last_reminder_23_date",
+    ]
+
+    def has_add_permission(self, request):
+        """Prevent creating multiple settings instances (singleton pattern)."""
+        return not AppSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        """Prevent deleting the settings instance."""
+        return False

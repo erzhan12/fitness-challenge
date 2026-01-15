@@ -138,7 +138,7 @@ STEP 1: Start ngrok tunnel
 ----------------------------------------
 Open a NEW terminal window and run:
 
-    ngrok http 8000
+    ngrok http 8001
 
 Press ENTER when ngrok is running...
 [User presses ENTER]
@@ -151,7 +151,7 @@ STEP 2: Start FastAPI server
 Open ANOTHER NEW terminal window and run:
 
     cd /Users/erzhan/Data/PROJ/fitness-challenge
-    uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 
 Press ENTER when the server is running...
 [User presses ENTER]
@@ -237,7 +237,7 @@ Testing localhost (default)
 ============================================================
 🧪 WEBHOOK ENDPOINT TEST
 ============================================================
-Testing: http://localhost:8000/telegram/webhook
+Testing: http://localhost:8001/telegram/webhook
 ============================================================
 
 Test 1: GET request (should return 400 or 405)
@@ -343,7 +343,7 @@ Next steps:
 2. The webhook should now work correctly
 
 To restart FastAPI server:
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
 #### When to Use
@@ -425,7 +425,7 @@ Confirm password: ********
 ✅ Password reset successfully for user 'admin'!
 
 You can now login to Django admin at:
-  http://localhost:8000/admin/
+  http://localhost:8001/admin/
 
   Username: admin
   Password: (the password you just set)
@@ -485,10 +485,10 @@ Username: staff_user
 
 # Option 2: Manual setup
 # Terminal 1:
-ngrok http 8000
+ngrok http 8001
 
 # Terminal 2:
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 
 # Terminal 3:
 uv run python scripts/set_webhook.py
@@ -555,14 +555,14 @@ brew install ngrok
 
 The script tries to auto-detect the ngrok URL from the ngrok API. If this fails:
 
-1. Make sure ngrok is running on port 8000
+1. Make sure ngrok is running on port 8001
 2. Check ngrok web interface: http://127.0.0.1:4040
 3. Manually enter the URL when prompted
 4. Or update `.env` manually and run `set_webhook.py`
 
 ### Webhook Set But Bot Not Responding
 
-1. Check server is running: `curl http://localhost:8000/telegram/webhook`
+1. Check server is running: `curl http://localhost:8001/telegram/webhook`
 2. Check ngrok tunnel: visit http://127.0.0.1:4040
 3. Check webhook info: `uv run python scripts/set_webhook.py --info`
 4. Check server logs in uvicorn terminal
