@@ -241,6 +241,12 @@ class ExerciseStatsOut(BaseModel):
         0, description="Number of reps needed to catch up (if behind)"
     )
 
+    # Completion status
+    is_daily_complete: bool = Field(
+        default=False,
+        description="True if daily target is met for this challenge (or has any activity if no daily target)",
+    )
+
 
 class UserStatsOut(BaseModel):
     """User-level aggregated stats per exercise type."""

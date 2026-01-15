@@ -150,6 +150,91 @@ def calculate_status(
     return status
 
 
+def _is_daily_complete(today_total: int, daily_target: Optional[int]) -> bool:
+    """Check if daily target is met for a challenge.
+
+    Args:
+        today_total: Total reps/minutes logged today
+        daily_target: Daily target (if set), or None
+
+    Returns:
+        True if daily target is met, False otherwise
+    """
+    if daily_target is None:
+        # No daily target: complete if any activity (today_total > 0)
+        return today_total > 0
+    else:
+        # Has daily target: complete if meets or exceeds it
+        return today_total >= daily_target
+
+
+def _format_progress_bar(progress_percent: float, is_daily_complete: bool) -> str:
+    """Format progress bar with appropriate emoji based on completion status.
+
+    Args:
+        progress_percent: Progress percentage (0-100)
+        is_daily_complete: Whether daily target is met
+
+    Returns:
+        Formatted progress bar string, e.g. "[🟨🟨🟨🟨🟨⬜⬜⬜⬜⬜]"
+    """
+    progress_fraction = progress_percent / 100.0  # Convert to 0-1 range
+    filled_blocks = int(progress_fraction * 10)
+    empty_blocks = 10 - filled_blocks
+
+    if is_daily_complete:
+        # Daily complete: use green blocks
+        bar = "🟩" * filled_blocks + "⬜" * empty_blocks
+    else:
+        # Not daily complete: use yellow blocks
+        bar = "🟨" * filled_blocks + "⬜" * empty_blocks
+
+    return f"[{bar}]"
+
+
+async def _check_all_challenges_complete(
+    challenges_data: List[Dict],
+    today_local: date,
+) -> bool:
+    """Check if all active challenges are completed for the day.
+
+    Args:
+        challenges_data: List of active challenge dicts
+        today_local: Current date in local timezone
+
+    Returns:
+        True if all active challenges are complete, False otherwise
+    """
+    if not challenges_data:
+        return False
+
+    challenge_ids = [c["id"] for c in challenges_data]
+    today_counts = await log_repo.get_today_counts_by_challenge_ids(
+        challenge_ids, today_local
+    )
+
+    for challenge in challenges_data:
+        challenge_id = challenge["id"]
+        today_total = today_counts.get(challenge_id, 0)
+        daily_target = challenge.get("daily_target")
+
+        # Check if this challenge is incomplete
+        is_incomplete = False
+        if daily_target is not None:
+            # Has daily target: incomplete if today_total < daily_target
+            is_incomplete = today_total < daily_target
+        else:
+            # No daily target: treat as incomplete only if today_total == 0
+            is_incomplete = today_total == 0
+
+        # If any challenge is incomplete, return False
+        if is_incomplete:
+            return False
+
+    # All challenges are complete
+    return True
+
+
 async def get_exercise_stats_and_message(
     etype: ExerciseType,
     challenge: Optional[Dict],
@@ -157,14 +242,14 @@ async def get_exercise_stats_and_message(
     added_count: int = 0,
 ) -> Tuple[str, Dict[str, Any]]:
     """Get stats and format HTML message using the shared stats helper.
-    
+
     This now calls compute_exercise_stats from src.api.services to ensure
     consistent business logic between Telegram and REST API.
     """
     # Convert ExerciseType to dict format expected by compute_exercise_stats
     # Use model_dump() to get all fields from the Pydantic model
     etype_dict = etype.model_dump()
-    
+
     # Use the shared stats helper with pre-fetched data to avoid duplicate queries
     stats_out = await compute_exercise_stats(
         exercise_type_id=etype.id,
@@ -173,14 +258,15 @@ async def get_exercise_stats_and_message(
         etype=etype_dict,
         challenge=challenge,
     )
-    
+
+    # Check if daily target is met
+    daily_complete = _is_daily_complete(stats_out.today_total, stats_out.daily_target)
+
     # Format the HTML message from the stats
-    progress_percent = stats_out.progress_percent / 100.0  # Convert to 0-1 range
-    filled_blocks = int(progress_percent * 10)
-    bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
-    
+    bar = _format_progress_bar(stats_out.progress_percent, daily_complete)
+
     unit_label = "min" if etype.unit in ["minutes", "min"] else ""
-    
+
     # Differentiate formatting based on added_count
     if added_count > 0:
         if unit_label:
@@ -195,9 +281,9 @@ async def get_exercise_stats_and_message(
         f"Day {stats_out.day_number}/{stats_out.total_days} • "
         f"Today: {stats_out.today_total} • "
         f"Total: {stats_out.cumulative_total}/{stats_out.target_total}\n"
-        f"[{bar}] {int(stats_out.progress_percent)}%\n"
+        f"{bar} {int(stats_out.progress_percent)}%\n"
     )
-    
+
     # Add catch-up / ahead / on-track message
     if stats_out.catch_up_reps > 0:
         msg_part += f"Need {stats_out.catch_up_reps} more to catch up!\n"
@@ -215,7 +301,7 @@ async def get_exercise_stats_and_message(
             msg_part += f"You're doing great — you are {ahead_reps} reps ahead!\n"
         elif stats_out.today_total == stats_out.daily_target:
             msg_part += "You're doing great — you're on track!\n"
-    
+
     # Return stats dict for backward compatibility with existing code
     stats = {
         "cumulative_total": stats_out.cumulative_total,
@@ -227,8 +313,9 @@ async def get_exercise_stats_and_message(
         "daily_target": stats_out.daily_target,
         "challenge_id": stats_out.challenge_id,
         "catch_up_reps": stats_out.catch_up_reps,
+        "is_daily_complete": daily_complete,
     }
-    
+
     return msg_part, stats
 
 
@@ -598,8 +685,17 @@ async def process_incoming_message(text: str, chat_id: int):
             )
             response_map[etype.id] = msg_part
 
+        # Check if all active challenges are complete for the day
+        all_complete = await _check_all_challenges_complete(challenges_data, today_local)
+
         # Final Response Assembly
         final_parts = []
+
+        # Prepend daily completion indicator if all challenges are complete
+        if all_complete:
+            final_parts.append("✅ <b>Day Complete!</b>")
+            final_parts.append("")  # Add blank line for spacing
+
         for et in exercise_types:
             if et.id in response_map:
                 final_parts.append(response_map[et.id])
