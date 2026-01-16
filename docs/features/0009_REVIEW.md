@@ -57,7 +57,16 @@ NEEDS CHANGES — The implementation now follows the updated behavior in `RULES.
 
 ---
 
+## Performance Notes
+
+### N+1 query pattern in daily completion aggregation
+- **Where:** `app/services/workout_service.py`:209-213
+- **Issue:** `_check_all_challenges_complete()` calls `log_repo.get_cumulative_count()` inside a loop (1 query per challenge).
+- **Impact:** Extra DB round-trips (e.g., 5 challenges = 5 queries). Likely fine for typical usage, but scales poorly as challenges grow.
+- **Recommendation:** Consider batching or pre-fetching cumulative counts per challenge in a single query.
+
+---
+
 ## Optional Cleanups
 
 - Consider clamping `day_number` to the challenge window in `_check_all_challenges_complete()` to mirror `compute_exercise_stats()` and avoid potential drift if dates fall outside the active range (`app/services/workout_service.py`:199-213).
-

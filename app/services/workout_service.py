@@ -33,6 +33,7 @@ from src.api.services import (
 
 logger = logging.getLogger(__name__)
 TZ = ZoneInfo(settings.TZ)
+PROGRESS_BAR_WIDTH = 10
 
 
 def _ensure_orm():
@@ -189,6 +190,11 @@ async def _check_all_challenges_complete(
     if not challenges_data:
         return False
 
+    challenge_ids = [c["id"] for c in challenges_data]
+    cumulative_counts = await log_repo.get_cumulative_counts_by_challenge_ids(
+        challenge_ids, today_local
+    )
+
     for challenge in challenges_data:
         challenge_id = challenge["id"]
         start_date = challenge["start_date"]
@@ -206,11 +212,7 @@ async def _check_all_challenges_complete(
         day_number = max(1, min((today_local - start_date).days + 1, total_days))
 
         # Get cumulative total for this challenge up to today
-        cumulative_total = await log_repo.get_cumulative_count(
-            exercise_type_id=challenge["exercise_type_id"],
-            challenge_id=challenge_id,
-            up_to_date=today_local
-        )
+        cumulative_total = cumulative_counts.get(challenge_id, 0)
 
         # Check if on track using the updated _is_daily_complete logic
         is_complete = _is_daily_complete(
@@ -258,8 +260,8 @@ async def get_exercise_stats_and_message(
 
     # Format the HTML message from the stats
     progress_percent = stats_out.progress_percent / 100.0  # Convert to 0-1 range
-    filled_blocks = int(progress_percent * 10)
-    bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
+    filled_blocks = int(progress_percent * PROGRESS_BAR_WIDTH)
+    bar = "█" * filled_blocks + "░" * (PROGRESS_BAR_WIDTH - filled_blocks)
 
     unit_label = "min" if etype.unit in ["minutes", "min"] else ""
 
