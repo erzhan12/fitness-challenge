@@ -150,88 +150,82 @@ def calculate_status(
     return status
 
 
-def _is_daily_complete(today_total: int, daily_target: Optional[int]) -> bool:
-    """Check if daily target is met for a challenge.
+def _is_daily_complete(
+    cumulative_total: int,
+    target_total: int,
+    day_number: int,
+    total_days: int,
+    daily_target: Optional[int]
+) -> bool:
+    """Check if on track with cumulative progress for a challenge.
 
     Args:
-        today_total: Total reps/minutes logged today
+        cumulative_total: Total reps/minutes logged so far
+        target_total: Total target for the challenge
+        day_number: Current day number in the challenge
+        total_days: Total days in the challenge
         daily_target: Daily target (if set), or None
 
     Returns:
-        True if daily target is met, False otherwise
+        True if cumulative progress is on track or ahead, False if behind
     """
-    if daily_target is None:
-        # No daily target: complete if any activity (today_total > 0)
-        return today_total > 0
-    else:
-        # Has daily target: complete if meets or exceeds it
-        return today_total >= daily_target
-
-
-def _format_progress_bar(progress_percent: float, is_daily_complete: bool) -> str:
-    """Format progress bar with appropriate emoji based on completion status.
-
-    Args:
-        progress_percent: Progress percentage (0-100)
-        is_daily_complete: Whether daily target is met
-
-    Returns:
-        Formatted progress bar string, e.g. "[🟨🟨🟨🟨🟨⬜⬜⬜⬜⬜]"
-    """
-    progress_fraction = progress_percent / 100.0  # Convert to 0-1 range
-    filled_blocks = int(progress_fraction * 10)
-    empty_blocks = 10 - filled_blocks
-
-    if is_daily_complete:
-        # Daily complete: use green blocks
-        bar = "🟩" * filled_blocks + "⬜" * empty_blocks
-    else:
-        # Not daily complete: use yellow blocks
-        bar = "🟨" * filled_blocks + "⬜" * empty_blocks
-
-    return f"[{bar}]"
+    expected = calculate_expected_progress(target_total, day_number, total_days, daily_target)
+    return cumulative_total >= expected
 
 
 async def _check_all_challenges_complete(
     challenges_data: List[Dict],
     today_local: date,
 ) -> bool:
-    """Check if all active challenges are completed for the day.
+    """Check if all active challenges are on track with cumulative progress.
 
     Args:
         challenges_data: List of active challenge dicts
         today_local: Current date in local timezone
 
     Returns:
-        True if all active challenges are complete, False otherwise
+        True if all active challenges are on track or ahead, False if any are behind
     """
     if not challenges_data:
         return False
 
-    challenge_ids = [c["id"] for c in challenges_data]
-    today_counts = await log_repo.get_today_counts_by_challenge_ids(
-        challenge_ids, today_local
-    )
-
     for challenge in challenges_data:
         challenge_id = challenge["id"]
-        today_total = today_counts.get(challenge_id, 0)
+        start_date = challenge["start_date"]
+        if isinstance(start_date, str):
+            start_date = date.fromisoformat(start_date)
+        end_date = challenge["end_date"]
+        if isinstance(end_date, str):
+            end_date = date.fromisoformat(end_date)
+
+        target_total = challenge["target_total"]
         daily_target = challenge.get("daily_target")
 
-        # Check if this challenge is incomplete
-        is_incomplete = False
-        if daily_target is not None:
-            # Has daily target: incomplete if today_total < daily_target
-            is_incomplete = today_total < daily_target
-        else:
-            # No daily target: treat as incomplete only if today_total == 0
-            is_incomplete = today_total == 0
+        # Calculate day number
+        day_number = (today_local - start_date).days + 1
+        total_days = (end_date - start_date).days + 1
 
-        # If any challenge is incomplete, return False
-        if is_incomplete:
+        # Get cumulative total for this challenge up to today
+        cumulative_total = await log_repo.get_cumulative_count(
+            exercise_type_id=challenge["exercise_type_id"],
+            challenge_id=challenge_id,
+            up_to_date=today_local
+        )
+
+        # Check if on track using the updated _is_daily_complete logic
+        is_complete = _is_daily_complete(
+            cumulative_total=cumulative_total,
+            target_total=target_total,
+            day_number=day_number,
+            total_days=total_days,
+            daily_target=daily_target
+        )
+
+        # If any challenge is not complete (behind), return False
+        if not is_complete:
             return False
 
-    # All challenges are complete
+    # All challenges are complete (on track or ahead)
     return True
 
 
@@ -259,22 +253,27 @@ async def get_exercise_stats_and_message(
         challenge=challenge,
     )
 
-    # Check if daily target is met
-    daily_complete = _is_daily_complete(stats_out.today_total, stats_out.daily_target)
+    # Reuse computed daily completion flag from shared stats helper
+    daily_complete = stats_out.is_daily_complete
 
     # Format the HTML message from the stats
-    bar = _format_progress_bar(stats_out.progress_percent, daily_complete)
+    progress_percent = stats_out.progress_percent / 100.0  # Convert to 0-1 range
+    filled_blocks = int(progress_percent * 10)
+    bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
 
     unit_label = "min" if etype.unit in ["minutes", "min"] else ""
+
+    # Add checkmark if this challenge is caught up (no deficit)
+    checkmark = "✅ " if daily_complete else ""
 
     # Differentiate formatting based on added_count
     if added_count > 0:
         if unit_label:
-            header = f"{etype.emoji} <b>{etype.display_name}</b>: +{added_count} {unit_label}"
+            header = f"{checkmark}{etype.emoji} <b>{etype.display_name}</b>: +{added_count} {unit_label}"
         else:
-            header = f"{etype.emoji} <b>{etype.display_name}</b>: +{added_count}"
+            header = f"{checkmark}{etype.emoji} <b>{etype.display_name}</b>: +{added_count}"
     else:
-        header = f"{etype.emoji} <b>{etype.display_name}</b>"
+        header = f"{checkmark}{etype.emoji} <b>{etype.display_name}</b>"
 
     msg_part = (
         f"{header}\n"

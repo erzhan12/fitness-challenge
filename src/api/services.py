@@ -389,14 +389,9 @@ async def compute_exercise_stats(
         min(100.0, (new_cumulative / target_total) * 100) if target_total > 0 else 0
     )
 
-    # Determine if daily target is complete
-    daily_complete = False
-    if daily_target is None:
-        # No daily target: complete if any activity (today_total > 0)
-        daily_complete = new_today_total > 0
-    else:
-        # Has daily target: complete if meets or exceeds it
-        daily_complete = new_today_total >= daily_target
+    # Determine if on track with cumulative progress (not just today's target)
+    expected = calculate_expected_progress(target_total, day_number, total_days, daily_target)
+    daily_complete = new_cumulative >= expected
 
     return ExerciseStatsOut(
         exercise_type_id=exercise_type_id,

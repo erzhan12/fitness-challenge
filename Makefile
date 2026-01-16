@@ -1,4 +1,4 @@
-.PHONY: test lint api
+.PHONY: test lint api dev ngrok
 
 test:
 	uv run pytest tests/ -v
@@ -10,3 +10,8 @@ lint:
 api:
 	uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 
+dev:
+	./scripts/start_webhook_dev.sh
+
+ngrok:
+	ngrok http 8001

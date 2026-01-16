@@ -712,3 +712,115 @@ The admin panel is integrated with FastAPI using WSGI middleware:
 - `app/main.py` - FastAPI integration with WSGI middleware
 
 **Last Updated:** Added Django admin panel setup (2026-01-09)
+
+---
+
+## Visual Completion Indicators
+
+The application displays visual indicators for challenge and daily completion status.
+
+### Progress Bar Display
+
+**Progress Bar Format:**
+- Filled blocks (█) for completed portions
+- Light shade blocks (░) for remaining work
+- Example: `[████░░░░░░] 40%`
+- Bar always uses the same visual style regardless of completion status
+
+**Per-Challenge Checkmark:**
+- Each challenge shows a ✅ checkmark before its emoji when caught up
+- Checkmark appears when `cumulative_total >= expected_progress` for that specific challenge
+- Example: `✅ 🔥 Push-ups: +50` means this challenge has no deficit
+
+### Completion Logic
+
+**Individual Challenge Completion:**
+- A challenge is "complete" when cumulative progress is on track or ahead of expected progress
+- Expected progress = `(target_total / total_days) * day_number` (or `daily_target * day_number` if daily_target is set)
+- Complete when `cumulative_total >= expected_progress`
+- This means you need to catch up any deficit before a challenge is considered complete
+
+**Daily Completion (All Challenges):**
+- Shows `✅ Day Complete!` on first line when ALL active challenges are on track or ahead
+- Does NOT show if any challenge is behind schedule
+- Each challenge must have caught up to expected cumulative progress
+
+### Implementation Details
+
+**Files Modified:**
+- `app/services/workout_service.py`:
+  - `_is_daily_complete()` - Check if cumulative progress is on track (compares cumulative_total vs expected_progress)
+  - `_check_all_challenges_complete()` - Check if all challenges are on track with cumulative progress
+  - Updated `get_exercise_stats_and_message()` - Generate simple progress bar using █ and ░ characters
+
+- `src/api/services.py`:
+  - `compute_exercise_stats()` - Compute `is_daily_complete` flag based on cumulative progress vs expected
+
+- `src/api/models.py`:
+  - `ExerciseStatsOut` - Added `is_daily_complete: bool` field (True when cumulative_total >= expected_progress)
+
+### Example Telegram Messages
+
+**When Both Challenges Behind (No Checkmarks, No "Day Complete"):**
+```
+💪 Push-ups: +111
+Day 10/30 • Today: 111 • Total: 232/1500
+[█░░░░░░░░░] 15%
+Need 268 more to catch up!
+
+🧑‍💻 app: +10
+Day 15/31 • Today: 10 • Total: 35/90
+[███░░░░░░░] 38%
+Need 10 more to catch up!
+```
+*Note: No checkmarks because both challenges are still behind expected cumulative progress*
+
+**When One Challenge Caught Up (Partial Completion):**
+```
+✅ 💪 Push-ups: +268
+Day 10/30 • Today: 268 • Total: 500/1500
+[███░░░░░░░] 33%
+You're doing great — you're on track!
+
+🧑‍💻 app: +2
+Day 15/31 • Today: 2 • Total: 37/90
+[████░░░░░░] 41%
+Need 8 more to catch up!
+```
+*Note: Push-ups has checkmark (caught up), but no "Day Complete" header yet because app is still behind*
+
+**When All Challenges Caught Up:**
+```
+✅ Day Complete!
+
+✅ 💪 Push-ups: +50
+Day 10/30 • Today: 50 • Total: 500/1500
+[███░░░░░░░] 33%
+You're doing great — you're on track!
+
+✅ 🧑‍💻 app: +8
+Day 15/31 • Today: 8 • Total: 45/90
+[█████░░░░░] 50%
+You're doing great — you're on track!
+```
+*Note: All challenges have checkmarks AND "Day Complete" header shows because all are caught up*
+
+### API Response
+
+The REST API returns the `is_daily_complete` flag in `ExerciseStatsOut`:
+```json
+{
+  "exercise_type_id": 1,
+  "exercise_type_name": "Push-ups",
+  "cumulative_total": 500,
+  "target_total": 1500,
+  "day_number": 10,
+  "total_days": 30,
+  "daily_target": 50,
+  "is_daily_complete": true,
+  ...
+}
+```
+*Note: `is_daily_complete: true` means cumulative_total (500) >= expected_progress (500), indicating the challenge is on track*
+
+**Last Updated:** Added per-challenge checkmarks when caught up; completion logic checks cumulative progress (2026-01-16)
