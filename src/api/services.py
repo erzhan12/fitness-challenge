@@ -389,6 +389,10 @@ async def compute_exercise_stats(
         min(100.0, (new_cumulative / target_total) * 100) if target_total > 0 else 0
     )
 
+    # Determine if on track with cumulative progress (not just today's target)
+    expected = calculate_expected_progress(target_total, day_number, total_days, daily_target)
+    daily_complete = new_cumulative >= expected
+
     return ExerciseStatsOut(
         exercise_type_id=exercise_type_id,
         exercise_type_name=etype["display_name"],
@@ -404,6 +408,7 @@ async def compute_exercise_stats(
         progress_percent=round(progress_percent, 1),
         status=status,
         catch_up_reps=catch_up_reps,
+        is_daily_complete=daily_complete,
     )
 
 

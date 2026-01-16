@@ -201,6 +201,21 @@ class ExerciseLogRepository:
         return result["total"] or 0
 
     @sync_to_async
+    def get_cumulative_counts_by_challenge_ids(
+        self, challenge_ids: List[int], up_to_date: Optional[date] = None
+    ) -> dict[int, int]:
+        """Get per-challenge cumulative totals up to an optional date."""
+        if not challenge_ids:
+            return {}
+
+        queryset = ExerciseLog.objects.filter(challenge_id__in=challenge_ids)
+        if up_to_date is not None:
+            queryset = queryset.filter(date__lte=up_to_date)
+
+        rows = queryset.values("challenge_id").annotate(total=Sum("count"))
+        return {row["challenge_id"]: row["total"] or 0 for row in rows}
+
+    @sync_to_async
     def get_today_count(
         self, exercise_type_id: int, date: date, challenge_id: Optional[int] = None
     ) -> int:

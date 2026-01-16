@@ -241,6 +241,12 @@ class ExerciseStatsOut(BaseModel):
         0, description="Number of reps needed to catch up (if behind)"
     )
 
+    # Completion status
+    is_daily_complete: bool = Field(
+        default=False,
+        description="True if cumulative progress is on track or ahead of expected progress for this challenge",
+    )
+
 
 class UserStatsOut(BaseModel):
     """User-level aggregated stats per exercise type."""
