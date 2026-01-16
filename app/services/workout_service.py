@@ -201,9 +201,9 @@ async def _check_all_challenges_complete(
         target_total = challenge["target_total"]
         daily_target = challenge.get("daily_target")
 
-        # Calculate day number
-        day_number = (today_local - start_date).days + 1
+        # Calculate day number and clamp to challenge window
         total_days = (end_date - start_date).days + 1
+        day_number = max(1, min((today_local - start_date).days + 1, total_days))
 
         # Get cumulative total for this challenge up to today
         cumulative_total = await log_repo.get_cumulative_count(

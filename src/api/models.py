@@ -244,7 +244,7 @@ class ExerciseStatsOut(BaseModel):
     # Completion status
     is_daily_complete: bool = Field(
         default=False,
-        description="True if daily target is met for this challenge (or has any activity if no daily target)",
+        description="True if cumulative progress is on track or ahead of expected progress for this challenge",
     )
 
 
