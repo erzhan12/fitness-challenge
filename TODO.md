@@ -48,6 +48,94 @@ Create manual step by step commands to check logs
 - [ ] Reset indicator at midnight for each timezone
 - [ ] Add unit tests in `tests/api/test_services.py`
 
+### LLM-Powered Exercise Type Creation
+- [ ] Create `/api/v1/exercises/create-from-prompt` endpoint (POST) that accepts natural language text describing an exercise
+- [ ] Create LLM parsing service to extract exercise details from natural language input
+- [ ] Parse exercise description into JSON format with fields: name, aliases (array), description (optional), category (optional)
+- [ ] Validate parsed data (check for duplicates, validate format)
+- [ ] If exercise already exists, return existing exercise details or suggest similar exercises
+- [ ] Save parsed exercise type to database via existing exercise creation endpoint
+- [ ] Return created exercise details in response
+- [ ] Handle error cases (invalid format, missing required fields, duplicate names)
+- [ ] Add Pydantic models for request/response bodies (prompt text input, parsed exercise output)
+- [ ] Add unit tests in `tests/services/test_openai_service.py` for LLM exercise parsing
+- [ ] Add API endpoint tests in `tests/api/test_exercises.py`
+
+### LLM-Powered Challenge Creation
+- [ ] Create `/api/v1/challenges/create-from-prompt` endpoint (POST) that accepts natural language text and uses LLM to parse and create challenge
+- [ ] Create LLM parsing service to extract challenge details from natural language input
+- [ ] Parse challenge description into JSON format with fields: exercise_type, duration_days, start_date, target_type (total/daily), target_value
+  - LLM can extract either `target_total` (e.g., "2000 reps total") or `daily_target` (e.g., "50 pushups daily")
+  - If only one is provided, calculate the other; if both provided, validate consistency
+- [ ] Validate parsed data and check if exercise type exists in database
+- [ ] If exercise type doesn't exist, return error response with message prompting user to choose from existing exercise types or create new using `/new_exercise` command
+- [ ] Save parsed challenge to database via existing challenge creation endpoint
+- [ ] Return created challenge details in response
+- [ ] Handle error cases (invalid format, missing fields, date parsing errors, exercise type not found)
+- [ ] Add Pydantic models for request/response bodies (prompt text input, parsed challenge output)
+- [ ] Add unit tests in `tests/services/test_openai_service.py` for LLM challenge parsing
+- [ ] Add API endpoint tests in `tests/api/test_challenges.py`
+
+### Challenge Creation via Telegram
+- [ ] Add Telegram command `/new_challenge` in `app/routers/telegram.py`
+- [ ] Implement interactive flow: send prompt message asking user to describe challenge in natural language
+- [ ] Format prompt message: "Please text a message in the following format: pushups challenge for 30 days starting from tomorrow (or another specific date) 2000 reps in total (or daily 50 pushups)"
+- [ ] Call `/api/v1/challenges/create-from-prompt` endpoint with user's natural language input
+- [ ] Handle response from LLM-powered endpoint (success, validation errors, exercise type not found)
+- [ ] If exercise type doesn't exist, send message prompting user to choose from existing exercise types or create new using `/new_exercise` command
+- [ ] Send confirmation message with challenge details
+- [ ] Handle error cases (invalid format, LLM parsing failures, date parsing errors)
+- [ ] Add integration tests for full Telegram flow
+
+### Exercise Type Creation via Telegram
+- [ ] Add Telegram command `/new_exercise` in `app/routers/telegram.py`
+- [ ] Implement interactive flow: send prompt message asking user to describe exercise in natural language
+- [ ] Format prompt message: "Please describe the exercise you want to create (e.g., 'pushups' or 'barbell bench press' or 'running 5km')"
+- [ ] Call `/api/v1/exercises/create-from-prompt` endpoint with user's natural language input
+- [ ] Handle response from LLM-powered endpoint (success, validation errors, duplicate detection)
+- [ ] If exercise already exists, show existing exercise details and suggest using it
+- [ ] Send confirmation message with created exercise details (name, aliases)
+- [ ] Handle error cases (invalid format, LLM parsing failures)
+- [ ] Add integration tests for full Telegram flow
+
+### Challenge Target Fields Refactoring (Remove Redundant daily_target)
+- [ ] Remove `daily_target` database field from `ExerciseChallenge` model
+- [ ] Make `daily_target` a computed property based on `target_total` and `total_days`
+- [ ] Calculation formula:
+  - `daily_target = ceil(target_total / total_days)` for days 1 through (total_days - 1)
+  - `last_day_target = target_total - daily_target * (total_days - 1)`
+  - Example: 1000 total, 30 days → daily_target = 34, last day = 14
+- [ ] Add computed property method `get_daily_target(day_number: int)` that returns:
+  - `ceil(target_total / total_days)` for days 1 to (total_days - 1)
+  - `target_total - ceil(target_total / total_days) * (total_days - 1)` for the last day
+- [ ] Update database migration to remove `daily_target` column
+- [ ] Update all code that reads/writes `daily_target` to use computed value
+- [ ] Update `calculate_expected_progress()` function to use computed daily_target
+- [ ] Update `calculate_status_and_deficit()` function to use computed daily_target
+- [ ] Update API models (`ExerciseChallengeOut`, `ExerciseChallengeCreate`, `ExerciseChallengeUpdate`) to:
+  - Remove `daily_target` from required/optional fields in create/update
+  - Add `daily_target` as computed/read-only field in response models
+- [ ] Update `ExerciseStatsOut` to compute `daily_target` dynamically
+- [ ] Update LLM challenge parsing to accept either `target_total` or `daily_target` (or both):
+  - If only `target_total` provided: calculate `daily_target = ceil(target_total / total_days)`
+  - If only `daily_target` provided: calculate `target_total = daily_target * total_days`
+  - If both provided: validate they're consistent (within rounding tolerance), use `target_total` as source of truth if mismatch
+  - This allows LLM to provide whichever is more natural from user input (e.g., "50 pushups daily" vs "2000 reps total")
+- [ ] Update Telegram commands and responses to use computed `daily_target`
+- [ ] Update all services (`src/api/services.py`, `app/services/workout_service.py`) to compute daily_target
+- [ ] Update completion logic to handle last day correctly (use `get_daily_target(day_number)`)
+- [ ] Add validation: ensure `target_total > 0` and `total_days > 0`
+- [ ] Add edge case handling: if `target_total < total_days`, ensure last day doesn't go negative
+- [ ] Update all unit tests to use computed `daily_target` instead of stored value
+- [ ] Add tests for `get_daily_target()` method with various scenarios:
+  - Divisible totals (e.g., 900 total, 30 days → 30 per day)
+  - Non-divisible totals (e.g., 1000 total, 30 days → 34 per day, last day 14)
+  - Edge cases (small totals, single day challenges)
+- [ ] Update integration tests in `tests/api/test_challenges.py`
+- [ ] Update documentation (RULES.md) to reflect new calculation approach
+- [ ] Create migration script to handle existing data (compute and validate before removing column)
+- [ ] Add API endpoint tests to verify computed `daily_target` in responses
+
 ### Motivational Insights
 - [ ] Create weekly aggregation function in `src/api/services.py`
 - [ ] Implement OpenAI prompt for personalized summaries
