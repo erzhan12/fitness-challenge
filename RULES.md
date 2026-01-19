@@ -824,3 +824,147 @@ The REST API returns the `is_daily_complete` flag in `ExerciseStatsOut`:
 *Note: `is_daily_complete: true` means cumulative_total (500) >= expected_progress (500), indicating the challenge is on track*
 
 **Last Updated:** Added per-challenge checkmarks when caught up; completion logic checks cumulative progress (2026-01-16)
+
+---
+
+## Multi-User Support Architecture (Feature 0010)
+
+The application is being migrated from single-user to multi-user support. This section documents the architecture decisions and implementation patterns.
+
+### Phase Overview
+
+**Phase 1 - Data Layer (COMPLETE):** Django models `AppUser` and `UserSettings` with migrations
+**Phase 2 - Repository Layer (COMPLETE):** All repository methods accept optional `user_id` parameter
+**Phase 3 - REST API (COMPLETE):** `/api/v1/users` endpoints + `get_current_user` dependency
+**Phase 4 - Telegram Registration (TODO):** Auto-registration + approval flow
+**Phase 5 - User-Scoped Operations (TODO):** Stats, logs, challenges scoped per user
+**Phase 6 - Testing & Docs (TODO):** Comprehensive tests + updated documentation
+
+### Database Models
+
+#### AppUser (`src/core/models.py`)
+- Fields: `id`, `telegram_user_id` (unique), `username`, `first_name`, `timezone`, `status` (pending/approved/rejected), `created_at`, `approved_at`
+- Uses `TextChoices` for status: `AppUser.Status.PENDING`, `AppUser.Status.APPROVED`, `AppUser.Status.REJECTED`
+- Property: `is_approved` returns `status == Status.APPROVED`
+- Auto-created with each user registration; status defaults to PENDING
+
+#### UserSettings (`src/core/models.py`)
+- One-to-One relationship with `AppUser`
+- Fields: `user_id` (FK), `telegram_chat_id`, `is_reminder_active`, `last_reminder_21_date/22_date/23_date`
+- Per-user idempotency tracking for evening reminders (replaces singleton AppSettings logic)
+
+#### Updated Models
+- `ExerciseType`: Added `user_id` FK (nullable for migration); unique constraint changed to `(user, name)`
+- `ExerciseChallenge`: Added `user_id` FK (nullable for migration)
+- `ExerciseLog`: Added `user_id` FK (nullable for migration)
+- `UserStats`: Changed from `OneToOne(ExerciseType)` to `ForeignKey(ExerciseType)` + added `user_id` FK; unique constraint is `(user, exercise_type)`
+
+### Repository Layer Pattern
+
+All repositories in `src/core/repositories.py` follow this pattern:
+
+**New Repositories:**
+- `AppUserRepository`: User CRUD + approval/rejection
+- `UserSettingsRepository`: Per-user settings (mirrors old AppSettingsRepository but scoped)
+
+**Updated Methods:**
+All existing repository methods accept optional `user_id` parameter (default `None` for backward compat):
+
+```python
+# Pattern: method signature
+async def get_by_id(self, id: int, user_id: Optional[int] = None) -> Optional[Model]:
+    queryset = Model.objects.filter(id=id)
+    if user_id is not None:
+        queryset = queryset.filter(user_id=user_id)  # Ownership verification
+    return queryset.get()
+```
+
+**Key Repositories Updated:**
+- `ExerciseTypeRepository`: `get_all()`, `get_by_id()`, `get_by_name()`, `update()`, `get_by_ids()` all accept optional `user_id`
+- `ExerciseChallengeRepository`: `get_all()`, `get_by_id()`, `get_active_for_type()`, `get_current_active()`, `update()` accept optional `user_id`
+- `ExerciseLogRepository`: All query methods accept optional `user_id` for filtering
+- `UserStatsRepository`: `get_all()`, `get_by_exercise_type()`, `get_or_create()`, `increment_total()`, `decrement_total()`, `sync_last_logged_date()` accept optional `user_id`
+
+**Ownership Verification:**
+The `get_by_id()` and `delete()` methods verify user ownership when `user_id` is provided, preventing cross-user data access.
+
+### REST API Layer
+
+#### API Models (`src/api/models.py`)
+- `UserOut` - User profile response with status, timezone, timestamps
+- `UserCreate` - Registration request (telegram_user_id required)
+- `UserUpdate` - Profile update (partial)
+- `UserSettingsOut` - Settings with reminder flags
+- `UserSettingsUpdate` - Settings update (partial)
+- `UserWithSettingsOut` - Combined user + settings response
+
+#### Authentication Dependency (`src/api/security.py`)
+- `get_current_user()` - Extracts `X-Telegram-User-Id` header, verifies user exists and is approved (403 if not)
+- `get_current_user_optional()` - Same but returns None if header missing (for public endpoints)
+
+**Usage:**
+```python
+async def get_profile(current_user: AppUser = Depends(get_current_user)):
+    # current_user.id, current_user.telegram_user_id, etc.
+```
+
+#### Users Router (`src/api/routers/users.py`)
+- `POST /api/v1/users` - Register (auto-pending)
+- `GET /api/v1/users/me` - Get profile + settings (requires X-Telegram-User-Id header)
+- `PATCH /api/v1/users/me` - Update profile (requires X-Telegram-User-Id header)
+- `GET/PATCH /api/v1/users/me/settings` - Settings management (requires X-Telegram-User-Id header)
+- `GET /api/v1/users` - Admin: list all users (requires API key)
+- `POST /api/v1/users/{id}/approve` - Admin: approve user (requires API key)
+- `POST /api/v1/users/{id}/reject` - Admin: reject user (requires API key)
+
+### Data Migration
+
+**Migration Files:**
+- `0003_add_multi_user_support.py` - Schema: creates AppUser + UserSettings, adds user_id FKs
+- `0004_backfill_default_user.py` - Data: creates default user (telegram_user_id=0) and assigns all existing data to it
+
+**Backfill Logic:**
+1. Creates AppUser with telegram_user_id=0 (system user for legacy data)
+2. Copies AppSettings singleton values to UserSettings for default user
+3. Updates all ExerciseType/Challenge/Log/Stats rows to reference default user
+
+### Key Architectural Decisions
+
+1. **Optional user_id parameters:** All repository methods accept optional `user_id` to maintain backward compatibility during migration. Once user_id is required in models, we can gradually enforce it in services/routers.
+
+2. **Separate AppUser model:** We use a dedicated `AppUser` model instead of extending Django's `auth_user` to avoid custom auth migrations and keep user management clean.
+
+3. **X-Telegram-User-Id header:** Uses explicit header for user context (not JWT/tokens yet) to align with Telegram bot integration. Can be extended to JWT later.
+
+4. **Per-user idempotency:** `UserSettingsRepository` replaces the singleton `AppSettingsRepository` pattern for reminder idempotency, storing `last_reminder_*_date` per user.
+
+5. **Approval flow:** Users start in `pending` status and must be manually approved by admin. This prevents unauthorized access during beta.
+
+### Files to Update in Next Phases
+
+**Phase 4 - Telegram Integration:**
+- `app/routers/telegram.py` - Extract telegram_user_id from webhook
+- `app/services/workout_service.py` - Registration gating + user context
+- `app/config.py` - Add SUPERUSER_TELEGRAM_IDS config
+
+**Phase 5 - User-Scoped Operations:**
+- `src/api/services.py` - Thread user_id through all functions
+- `src/api/routers/*.py` - Add get_current_user dependency to endpoints
+- `app/services/reminder_scheduler.py` - Per-user reminder iteration
+
+**Phase 6 - Testing & Docs:**
+- `tests/api/conftest.py` - Add user fixtures
+- `README.md`, `docs/features/0010_*.md` - Update documentation
+- Comprehensive multi-user isolation tests
+
+### Testing Notes
+
+During Phase 1-3, backward compatibility is maintained:
+- All 174 existing tests continue to pass
+- user_id parameters are optional
+- Legacy single-user queries work without user_id
+- Migration backfill ensures existing data is accessible
+
+**For future tests:** Use `X-Telegram-User-Id` header for authenticated endpoints. Mock `get_current_user` in test fixtures to inject test users.
+
+**Last Updated:** Implemented Phases 1-3 of multi-user support (2026-01-19)

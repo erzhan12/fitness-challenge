@@ -23,7 +23,7 @@ from django.conf import settings
 from app.routers import telegram, admin
 
 # Import API routers
-from src.api.routers import exercises, challenges, logs, stats, workouts, settings as settings_router
+from src.api.routers import exercises, challenges, logs, stats, workouts, settings as settings_router, users
 
 # Configure Logging
 logging.basicConfig(
@@ -60,6 +60,10 @@ openapi_tags = [
     {
         "name": "Settings",
         "description": "Application settings and preferences.",
+    },
+    {
+        "name": "Users",
+        "description": "User registration, profile, and settings management.",
     },
     {
         "name": "Jobs",
@@ -152,6 +156,7 @@ app.include_router(logs.router, prefix="/api/v1")
 app.include_router(stats.router, prefix="/api/v1")
 app.include_router(workouts.router, prefix="/api/v1")
 app.include_router(settings_router.router, prefix="/api/v1")
+app.include_router(users.router, prefix="/api/v1")
 
 
 @app.get("/", tags=["Health"])

@@ -1,8 +1,77 @@
 from django.db import models
 
 
+class AppUser(models.Model):
+    """Application user model for multi-user support.
+
+    Separate from Django's auth.User to avoid custom auth migrations.
+    Users are identified by their Telegram user ID.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending Approval"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
+    telegram_user_id = models.BigIntegerField(unique=True)
+    username = models.CharField(max_length=100, null=True, blank=True)
+    first_name = models.CharField(max_length=100, null=True, blank=True)
+    timezone = models.CharField(max_length=50, default="Asia/Almaty")
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "app_users"
+
+    def __str__(self):
+        name = self.first_name or self.username or str(self.telegram_user_id)
+        return f"{name} ({self.status})"
+
+    @property
+    def is_approved(self):
+        return self.status == self.Status.APPROVED
+
+
+class UserSettings(models.Model):
+    """Per-user settings for reminders and preferences.
+
+    One-to-one relationship with AppUser.
+    """
+    user = models.OneToOneField(
+        AppUser,
+        on_delete=models.CASCADE,
+        related_name="settings"
+    )
+    telegram_chat_id = models.BigIntegerField(null=True, blank=True)
+    is_reminder_active = models.BooleanField(default=True)
+
+    # Idempotency: track last date each reminder was sent (per-user)
+    last_reminder_21_date = models.DateField(null=True, blank=True)
+    last_reminder_22_date = models.DateField(null=True, blank=True)
+    last_reminder_23_date = models.DateField(null=True, blank=True)
+
+    class Meta:
+        db_table = "user_settings"
+        verbose_name_plural = "User settings"
+
+    def __str__(self):
+        return f"Settings for {self.user}"
+
+
 class ExerciseType(models.Model):
-    name = models.CharField(max_length=100, unique=True)
+    user = models.ForeignKey(
+        AppUser,
+        on_delete=models.CASCADE,
+        related_name="exercise_types",
+        null=True,  # Nullable for migration; will be made required after backfill
+        blank=True
+    )
+    name = models.CharField(max_length=100)  # Unique per user, not globally
     display_name = models.CharField(max_length=100)
     emoji = models.CharField(max_length=10)
     unit = models.CharField(max_length=20, default="reps")
@@ -11,12 +80,25 @@ class ExerciseType(models.Model):
 
     class Meta:
         db_table = "exercise_types"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "name"],
+                name="unique_exercise_type_per_user"
+            )
+        ]
 
     def __str__(self):
         return f"{self.emoji} {self.display_name}"
 
 
 class ExerciseChallenge(models.Model):
+    user = models.ForeignKey(
+        AppUser,
+        on_delete=models.CASCADE,
+        related_name="challenges",
+        null=True,  # Nullable for migration; will be made required after backfill
+        blank=True
+    )
     exercise_type = models.ForeignKey(
         ExerciseType,
         on_delete=models.CASCADE,
@@ -38,6 +120,13 @@ class ExerciseChallenge(models.Model):
 
 
 class ExerciseLog(models.Model):
+    user = models.ForeignKey(
+        AppUser,
+        on_delete=models.CASCADE,
+        related_name="logs",
+        null=True,  # Nullable for migration; will be made required after backfill
+        blank=True
+    )
     exercise_type = models.ForeignKey(
         ExerciseType,
         on_delete=models.CASCADE,
@@ -69,7 +158,18 @@ class ExerciseLog(models.Model):
 
 
 class UserStats(models.Model):
-    exercise_type = models.OneToOneField(
+    """Per-user stats for each exercise type.
+
+    Changed from OneToOne(ExerciseType) to (user, exercise_type) for multi-user support.
+    """
+    user = models.ForeignKey(
+        AppUser,
+        on_delete=models.CASCADE,
+        related_name="stats",
+        null=True,  # Nullable for migration; will be made required after backfill
+        blank=True
+    )
+    exercise_type = models.ForeignKey(
         ExerciseType,
         on_delete=models.CASCADE,
         related_name="user_stats"
@@ -83,9 +183,16 @@ class UserStats(models.Model):
     class Meta:
         db_table = "user_stats"
         verbose_name_plural = "User stats"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "exercise_type"],
+                name="unique_stats_per_user_exercise"
+            )
+        ]
 
     def __str__(self):
-        return f"{self.exercise_type.name} stats: {self.all_time_total} total"
+        user_name = self.user.first_name if self.user else "Unknown"
+        return f"{user_name} - {self.exercise_type.name}: {self.all_time_total} total"
 
 
 class AppSettings(models.Model):

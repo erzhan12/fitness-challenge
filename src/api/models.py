@@ -371,6 +371,83 @@ class SettingsUpdate(BaseModel):
 
 
 # =============================================================================
+# Users
+# =============================================================================
+
+
+class UserOut(BaseModel):
+    """JSON representation of a user."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(..., description="Unique identifier for the user")
+    telegram_user_id: int = Field(..., description="Telegram user ID")
+    username: Optional[str] = Field(None, description="Telegram username")
+    first_name: Optional[str] = Field(None, description="User's first name")
+    timezone: str = Field(..., description="User's timezone")
+    status: str = Field(..., description="User status: pending, approved, or rejected")
+    created_at: dt.datetime = Field(..., description="Account creation timestamp")
+    approved_at: Optional[dt.datetime] = Field(None, description="Approval timestamp")
+
+
+class UserCreate(BaseModel):
+    """Request model for creating/registering a user."""
+
+    telegram_user_id: int = Field(
+        ..., description="Telegram user ID", examples=[123456789]
+    )
+    username: Optional[str] = Field(
+        None, description="Telegram username", examples=["john_doe"]
+    )
+    first_name: Optional[str] = Field(
+        None, description="User's first name", examples=["John"]
+    )
+    timezone: str = Field(
+        "Asia/Almaty", description="User's timezone", examples=["Asia/Almaty"]
+    )
+
+
+class UserUpdate(BaseModel):
+    """Request model for updating a user profile."""
+
+    username: Optional[str] = Field(None, description="Telegram username")
+    first_name: Optional[str] = Field(None, description="User's first name")
+    timezone: Optional[str] = Field(None, description="User's timezone")
+
+
+class UserSettingsOut(BaseModel):
+    """JSON representation of user settings."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: int = Field(..., description="User ID")
+    telegram_chat_id: Optional[int] = Field(
+        None, description="Telegram chat ID for sending messages"
+    )
+    is_reminder_active: bool = Field(
+        ..., description="Whether evening reminders are enabled"
+    )
+
+
+class UserSettingsUpdate(BaseModel):
+    """Request model for updating user settings."""
+
+    is_reminder_active: Optional[bool] = Field(
+        None, description="Whether to enable or disable evening reminders"
+    )
+    telegram_chat_id: Optional[int] = Field(
+        None, description="Telegram chat ID"
+    )
+
+
+class UserWithSettingsOut(BaseModel):
+    """User profile with settings."""
+
+    user: UserOut = Field(..., description="User profile")
+    settings: Optional[UserSettingsOut] = Field(None, description="User settings")
+
+
+# =============================================================================
 # Error Response
 # =============================================================================
 

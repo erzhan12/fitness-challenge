@@ -1,20 +1,96 @@
 from django.contrib import admin
-from .models import ExerciseType, ExerciseChallenge, ExerciseLog, UserStats, AppSettings
+from .models import (
+    AppUser,
+    UserSettings,
+    ExerciseType,
+    ExerciseChallenge,
+    ExerciseLog,
+    UserStats,
+    AppSettings,
+)
+
+
+class UserSettingsInline(admin.StackedInline):
+    """Inline for editing UserSettings on AppUser page."""
+    model = UserSettings
+    can_delete = False
+    verbose_name_plural = "Settings"
+
+
+@admin.register(AppUser)
+class AppUserAdmin(admin.ModelAdmin):
+    list_display = [
+        "id",
+        "telegram_user_id",
+        "username",
+        "first_name",
+        "timezone",
+        "status",
+        "created_at",
+        "approved_at",
+    ]
+    list_filter = ["status", "timezone", "created_at"]
+    search_fields = ["telegram_user_id", "username", "first_name"]
+    list_editable = ["status"]
+    ordering = ["-created_at"]
+    readonly_fields = ["created_at"]
+    inlines = [UserSettingsInline]
+
+    actions = ["approve_users", "reject_users"]
+
+    @admin.action(description="Approve selected users")
+    def approve_users(self, request, queryset):
+        from django.utils import timezone
+        updated = queryset.filter(status=AppUser.Status.PENDING).update(
+            status=AppUser.Status.APPROVED,
+            approved_at=timezone.now()
+        )
+        self.message_user(request, f"{updated} user(s) approved.")
+
+    @admin.action(description="Reject selected users")
+    def reject_users(self, request, queryset):
+        updated = queryset.filter(status=AppUser.Status.PENDING).update(
+            status=AppUser.Status.REJECTED
+        )
+        self.message_user(request, f"{updated} user(s) rejected.")
+
+
+@admin.register(UserSettings)
+class UserSettingsAdmin(admin.ModelAdmin):
+    list_display = [
+        "user",
+        "telegram_chat_id",
+        "is_reminder_active",
+        "last_reminder_21_date",
+        "last_reminder_22_date",
+        "last_reminder_23_date",
+    ]
+    list_filter = ["is_reminder_active"]
+    search_fields = ["user__telegram_user_id", "user__username", "user__first_name"]
+    list_editable = ["is_reminder_active"]
+    raw_id_fields = ["user"]
+    readonly_fields = [
+        "last_reminder_21_date",
+        "last_reminder_22_date",
+        "last_reminder_23_date",
+    ]
 
 
 @admin.register(ExerciseType)
 class ExerciseTypeAdmin(admin.ModelAdmin):
-    list_display = ["name", "display_name", "emoji", "unit", "is_active"]
-    list_filter = ["is_active", "unit"]
-    search_fields = ["name", "display_name", "aliases"]
+    list_display = ["name", "display_name", "emoji", "unit", "user", "is_active"]
+    list_filter = ["is_active", "unit", "user"]
+    search_fields = ["name", "display_name", "aliases", "user__username", "user__first_name"]
     list_editable = ["is_active"]
-    ordering = ["name"]
+    ordering = ["user", "name"]
+    raw_id_fields = ["user"]
 
 
 @admin.register(ExerciseChallenge)
 class ExerciseChallengeAdmin(admin.ModelAdmin):
     list_display = [
         "challenge_name",
+        "user",
         "exercise_type",
         "start_date",
         "end_date",
@@ -23,17 +99,24 @@ class ExerciseChallengeAdmin(admin.ModelAdmin):
         "is_active",
         "is_default",
     ]
-    list_filter = ["is_active", "is_default", "start_date", "end_date"]
-    search_fields = ["challenge_name", "exercise_type__name", "exercise_type__display_name"]
+    list_filter = ["is_active", "is_default", "user", "start_date", "end_date"]
+    search_fields = [
+        "challenge_name",
+        "exercise_type__name",
+        "exercise_type__display_name",
+        "user__username",
+        "user__first_name",
+    ]
     list_editable = ["is_active", "is_default"]
     date_hierarchy = "start_date"
-    ordering = ["-start_date"]
-    raw_id_fields = ["exercise_type"]
+    ordering = ["user", "-start_date"]
+    raw_id_fields = ["user", "exercise_type"]
 
 
 @admin.register(ExerciseLog)
 class ExerciseLogAdmin(admin.ModelAdmin):
     list_display = [
+        "user",
         "exercise_type",
         "challenge",
         "date",
@@ -44,6 +127,7 @@ class ExerciseLogAdmin(admin.ModelAdmin):
         "timestamp",
     ]
     list_filter = [
+        "user",
         "exercise_type",
         "status",
         "date",
@@ -53,18 +137,21 @@ class ExerciseLogAdmin(admin.ModelAdmin):
         "exercise_type__name",
         "exercise_type__display_name",
         "challenge__challenge_name",
+        "user__username",
+        "user__first_name",
         "raw_message",
         "notes",
     ]
     date_hierarchy = "date"
-    ordering = ["-timestamp"]
-    raw_id_fields = ["exercise_type", "challenge"]
+    ordering = ["user", "-timestamp"]
+    raw_id_fields = ["user", "exercise_type", "challenge"]
     readonly_fields = ["timestamp", "cumulative_total", "day_number", "status"]
 
 
 @admin.register(UserStats)
 class UserStatsAdmin(admin.ModelAdmin):
     list_display = [
+        "user",
         "exercise_type",
         "all_time_total",
         "best_daily_count",
@@ -72,10 +159,15 @@ class UserStatsAdmin(admin.ModelAdmin):
         "longest_streak",
         "last_logged_date",
     ]
-    list_filter = ["last_logged_date"]
-    search_fields = ["exercise_type__name", "exercise_type__display_name"]
-    ordering = ["-all_time_total"]
-    raw_id_fields = ["exercise_type"]
+    list_filter = ["user", "last_logged_date"]
+    search_fields = [
+        "exercise_type__name",
+        "exercise_type__display_name",
+        "user__username",
+        "user__first_name",
+    ]
+    ordering = ["user", "-all_time_total"]
+    raw_id_fields = ["user", "exercise_type"]
     readonly_fields = [
         "all_time_total",
         "best_daily_count",

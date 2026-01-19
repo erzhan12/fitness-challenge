@@ -1,6 +1,5 @@
 # Fitness Challenge Bot - TODO
 
-Add SSH settings to PyCharm
 Create manual step by step commands to check logs
 
 ## Quick Wins (High Impact, Low Effort)
@@ -150,15 +149,16 @@ Create manual step by step commands to check logs
 
 ### Multi-User Support
 - [ ] Design database schema (users, user_settings tables)
-- [ ] Add `users` table (telegram_user_id, username, first_name, timezone, created_at, settings)
-- [ ] Add `user_id` foreign key to exercise_logs, exercise_challenges
+- [ ] Add `users` table (telegram_user_id, username, first_name, timezone, created_at, settings) (django already has Users table, think about extending it or creating additional model with one to one reference type)
+- [ ] Add `user_id` foreign key to exercise_logs, exercise_challenges, exercise_types (other models if needed)
 - [ ] Create `/api/v1/users` endpoints (POST register, GET profile, PATCH update)
-- [ ] Implement user registration flow in Telegram
+- [ ] Implement user registration flow in Telegram - send message to a superuser and wait for approval, once they approves then continue register
 - [ ] Update all stats calculations to be user-scoped
 - [ ] Add user context to all API endpoints
 - [ ] Create database migration scripts
 - [ ] Add comprehensive unit tests
 - [ ] Update existing tests to work with multi-user
+- [ ] Update all existing documentation
 
 ### Leaderboards
 - [ ] Create `/api/v1/leaderboards` endpoint with filters
