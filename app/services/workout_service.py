@@ -27,6 +27,7 @@ from src.core.repositories import (
     app_user_repo,
     user_settings_repo,
 )
+from src.core.validators import validate_telegram_user_id
 from src.api.services import (
     compute_exercise_stats,
     list_current_active_challenges,
@@ -702,6 +703,7 @@ async def process_incoming_message(
 
             try:
                 target_telegram_user_id = int(parts[1])
+                validate_telegram_user_id(target_telegram_user_id)
                 target_user = await app_user_repo.approve_by_telegram_user_id(target_telegram_user_id)
 
                 if not target_user:
@@ -732,10 +734,10 @@ async def process_incoming_message(
                     )
                     await send_telegram_message(target_settings.telegram_chat_id, approval_notification)
 
-            except ValueError:
+            except ValueError as e:
                 await send_telegram_message(
                     chat_id,
-                    f"❌ Invalid Telegram User ID: {parts[1]}\nMust be a number."
+                    f"❌ Invalid Telegram User ID: {parts[1]}\n{str(e)}"
                 )
             return
 
@@ -760,6 +762,7 @@ async def process_incoming_message(
 
             try:
                 target_telegram_user_id = int(parts[1])
+                validate_telegram_user_id(target_telegram_user_id)
                 target_user = await app_user_repo.reject_by_telegram_user_id(target_telegram_user_id)
 
                 if not target_user:
@@ -787,10 +790,10 @@ async def process_incoming_message(
                     )
                     await send_telegram_message(target_settings.telegram_chat_id, rejection_notification)
 
-            except ValueError:
+            except ValueError as e:
                 await send_telegram_message(
                     chat_id,
-                    f"❌ Invalid Telegram User ID: {parts[1]}\nMust be a number."
+                    f"❌ Invalid Telegram User ID: {parts[1]}\n{str(e)}"
                 )
             return
 
