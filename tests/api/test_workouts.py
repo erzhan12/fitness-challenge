@@ -10,7 +10,7 @@ class TestParseWorkout:
     """Tests for POST /api/v1/workouts/parse."""
 
     def test_parse_workout_success(
-        self, client, auth_headers, mock_repos, exercise_type_model, challenge_model
+        self, client, auth_and_user_headers, mock_repos, exercise_type_model, challenge_model
     ):
         mock_repos["exercise_type"].get_all.return_value = [exercise_type_model]
         mock_repos["challenge"].get_all.return_value = [challenge_model]
@@ -37,7 +37,7 @@ class TestParseWorkout:
             response = client.post(
                 "/api/v1/workouts/parse",
                 json={"text": "25 pushups"},
-                headers=auth_headers,
+                headers=auth_and_user_headers,
             )
 
         assert response.status_code == 200
@@ -51,7 +51,7 @@ class TestParseWorkout:
     def test_parse_workout_multiple_exercises(
         self,
         client,
-        auth_headers,
+        auth_and_user_headers,
         mock_repos,
         exercise_type_model,
         exercise_type_model_2,
@@ -92,14 +92,14 @@ class TestParseWorkout:
             response = client.post(
                 "/api/v1/workouts/parse",
                 json={"text": "20 pushups and 30 squats"},
-                headers=auth_headers,
+                headers=auth_and_user_headers,
             )
 
         assert response.status_code == 200
         data = response.json()
         assert len(data["entries"]) == 2
 
-    def test_parse_workout_invalid_message(self, client, auth_headers, mock_repos):
+    def test_parse_workout_invalid_message(self, client, auth_and_user_headers, mock_repos):
         mock_repos["exercise_type"].get_all.return_value = []
         mock_repos["challenge"].get_all.return_value = []
         mock_repos["challenge"].get_current_active.return_value = []
@@ -117,7 +117,7 @@ class TestParseWorkout:
             response = client.post(
                 "/api/v1/workouts/parse",
                 json={"text": "random gibberish"},
-                headers=auth_headers,
+                headers=auth_and_user_headers,
             )
 
         assert response.status_code == 200
@@ -130,19 +130,19 @@ class TestParseWorkout:
         response = client.post("/api/v1/workouts/parse", json={"text": "25 pushups"})
         assert response.status_code == 401
 
-    def test_parse_workout_forbidden(self, client, invalid_auth_headers):
+    def test_parse_workout_forbidden(self, client, invalid_auth_headers, user_context_headers):
         response = client.post(
             "/api/v1/workouts/parse",
             json={"text": "25 pushups"},
-            headers=invalid_auth_headers,
+            headers={**invalid_auth_headers, **user_context_headers},
         )
         assert response.status_code == 403
 
-    def test_parse_workout_missing_text(self, client, auth_headers):
-        response = client.post("/api/v1/workouts/parse", json={}, headers=auth_headers)
+    def test_parse_workout_missing_text(self, client, auth_and_user_headers, mock_repos):
+        response = client.post("/api/v1/workouts/parse", json={}, headers=auth_and_user_headers)
         assert response.status_code == 422
 
-    def test_parse_workout_empty_text(self, client, auth_headers, mock_repos):
+    def test_parse_workout_empty_text(self, client, auth_and_user_headers, mock_repos):
         mock_repos["exercise_type"].get_all.return_value = []
         mock_repos["challenge"].get_all.return_value = []
         mock_repos["challenge"].get_current_active.return_value = []
@@ -160,14 +160,14 @@ class TestParseWorkout:
             response = client.post(
                 "/api/v1/workouts/parse",
                 json={"text": ""},
-                headers=auth_headers,
+                headers=auth_and_user_headers,
             )
 
         # Empty string is valid input, parser should handle it
         assert response.status_code == 200
 
     def test_parse_workout_with_duration(
-        self, client, auth_headers, mock_repos, mock_exercise_type_data
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
     ):
         plank_type = {
             **mock_exercise_type_data,
@@ -201,7 +201,7 @@ class TestParseWorkout:
             response = client.post(
                 "/api/v1/workouts/parse",
                 json={"text": "2 min plank"},
-                headers=auth_headers,
+                headers=auth_and_user_headers,
             )
 
         assert response.status_code == 200
@@ -209,7 +209,7 @@ class TestParseWorkout:
         assert data["entries"][0]["duration_seconds"] == 120
 
     def test_parse_workout_response_format(
-        self, client, auth_headers, mock_repos, exercise_type_model
+        self, client, auth_and_user_headers, mock_repos, exercise_type_model
     ):
         mock_repos["exercise_type"].get_all.return_value = [exercise_type_model]
         mock_repos["challenge"].get_all.return_value = []
@@ -236,7 +236,7 @@ class TestParseWorkout:
             response = client.post(
                 "/api/v1/workouts/parse",
                 json={"text": "25 pushups"},
-                headers=auth_headers,
+                headers=auth_and_user_headers,
             )
 
         assert response.status_code == 200
@@ -256,7 +256,7 @@ class TestParseWorkout:
     def test_parse_workout_multi_number_mapping(
         self,
         client,
-        auth_headers,
+        auth_and_user_headers,
         mock_repos,
         exercise_type_model,
         exercise_type_model_2,
@@ -299,7 +299,7 @@ class TestParseWorkout:
             response = client.post(
                 "/api/v1/workouts/parse",
                 json={"text": "50 30"},
-                headers=auth_headers,
+                headers=auth_and_user_headers,
             )
 
         assert response.status_code == 200

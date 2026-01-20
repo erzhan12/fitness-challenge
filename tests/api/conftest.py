@@ -16,6 +16,7 @@ from src.core.models import (  # noqa: E402
     ExerciseChallenge as ExerciseChallengeModel,
     ExerciseLog as ExerciseLogModel,
     UserStats as UserStatsModel,
+    AppUser as AppUserModel,
 )
 
 
@@ -41,6 +42,24 @@ def auth_headers(api_key):
 def invalid_auth_headers():
     """Return authorization headers with invalid token."""
     return {"Authorization": "Bearer invalid-key-12345"}
+
+
+@pytest.fixture
+def test_telegram_user_id():
+    """Return a test Telegram user ID."""
+    return 123456789
+
+
+@pytest.fixture
+def user_context_headers(test_telegram_user_id):
+    """Return headers with X-Telegram-User-Id for user context."""
+    return {"X-Telegram-User-Id": str(test_telegram_user_id)}
+
+
+@pytest.fixture
+def auth_and_user_headers(auth_headers, user_context_headers):
+    """Return combined auth and user context headers for write operations."""
+    return {**auth_headers, **user_context_headers}
 
 
 # =============================================================================
@@ -121,6 +140,21 @@ def mock_user_stats_data():
         "current_streak": 7,
         "longest_streak": 14,
         "last_logged_date": "2024-01-15",
+    }
+
+
+@pytest.fixture
+def mock_app_user_data(test_telegram_user_id):
+    """Sample AppUser data."""
+    return {
+        "id": 1,
+        "telegram_user_id": test_telegram_user_id,
+        "username": "testuser",
+        "first_name": "Test",
+        "timezone": "Asia/Almaty",
+        "status": "approved",
+        "created_at": "2024-01-01T00:00:00+05:00",
+        "approved_at": "2024-01-01T00:00:00+05:00",
     }
 
 
@@ -209,6 +243,20 @@ def make_user_stats_model(
     return model
 
 
+def make_app_user_model(data: dict) -> AppUserModel:
+    model = AppUserModel(
+        id=data.get("id"),
+        telegram_user_id=data["telegram_user_id"],
+        username=data.get("username"),
+        first_name=data.get("first_name"),
+        timezone=data.get("timezone", "Asia/Almaty"),
+        status=data.get("status", "approved"),
+        created_at=_parse_datetime(data.get("created_at", "2024-01-01T00:00:00+05:00")),
+        approved_at=_parse_datetime(data.get("approved_at")) if data.get("approved_at") else None,
+    )
+    return model
+
+
 @pytest.fixture
 def exercise_type_model(mock_exercise_type_data):
     return make_exercise_type_model(mock_exercise_type_data)
@@ -237,11 +285,27 @@ def user_stats_model(mock_user_stats_data, exercise_type_model):
 
 
 @pytest.fixture
-def mock_repos():
-    """Mock all repository instances used by src.api.services."""
+def app_user_model(mock_app_user_data):
+    return make_app_user_model(mock_app_user_data)
+
+
+@pytest.fixture
+def mock_repos(app_user_model):
+    """Mock all repository instances used by src.api.services and security."""
+    # Create a mock exercise type model for default returns
+    default_exercise_type = make_exercise_type_model({
+        "id": 1,
+        "name": "pushups",
+        "display_name": "Push-ups",
+        "emoji": "💪",
+        "unit": "reps",
+        "aliases": ["push-up", "push up"],
+        "is_active": True,
+    })
+
     exercise_type_repo = Mock()
     exercise_type_repo.get_all = AsyncMock(return_value=[])
-    exercise_type_repo.get_by_id = AsyncMock(return_value=None)
+    exercise_type_repo.get_by_id = AsyncMock(return_value=default_exercise_type)  # Return default exercise type
     exercise_type_repo.get_by_name = AsyncMock(return_value=None)
     exercise_type_repo.create = AsyncMock(return_value=None)
     exercise_type_repo.update = AsyncMock(return_value=None)
@@ -273,14 +337,19 @@ def mock_repos():
     user_stats_repo.decrement_total = AsyncMock(return_value=None)
     user_stats_repo.sync_last_logged_date = AsyncMock(return_value=None)
 
-    with patch("src.api.services.exercise_type_repo", exercise_type_repo), patch(
-        "src.api.services.challenge_repo", challenge_repo
-    ), patch("src.api.services.log_repo", log_repo), patch(
-        "src.api.services.user_stats_repo", user_stats_repo
-    ):
+    app_user_repo = Mock()
+    app_user_repo.get_by_telegram_user_id = AsyncMock(return_value=app_user_model)
+    app_user_repo.get_or_create_by_telegram_user_id = AsyncMock(return_value=(app_user_model, False))
+
+    with patch("src.api.services.exercise_type_repo", exercise_type_repo), \
+         patch("src.api.services.challenge_repo", challenge_repo), \
+         patch("src.api.services.log_repo", log_repo), \
+         patch("src.api.services.user_stats_repo", user_stats_repo), \
+         patch("src.api.security.app_user_repo", app_user_repo):
         yield {
             "exercise_type": exercise_type_repo,
             "challenge": challenge_repo,
             "log": log_repo,
             "user_stats": user_stats_repo,
+            "app_user": app_user_repo,
         }

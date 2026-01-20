@@ -22,7 +22,7 @@ from src.core.repositories import (
     challenge_repo,
     log_repo,
     user_stats_repo,
-    app_settings_repo,
+    user_settings_repo,
 )
 from src.api.models import (
     ExerciseTypeOut,
@@ -76,6 +76,7 @@ def _model_to_dict(model) -> Dict[str, Any]:
 
 
 async def list_exercise_types(
+    user_id: int,
     is_active: Optional[bool] = True,
     challenge_only: bool = False,
 ) -> List[ExerciseTypeOut]:
@@ -85,41 +86,58 @@ async def list_exercise_types(
         is_active: Filter by active status (None = all)
         challenge_only: If True, only return types with active challenges
     """
-    types = await exercise_type_repo.get_all(is_active=is_active)
+    types = await exercise_type_repo.get_all(is_active=is_active, user_id=user_id)
     exercise_types = [ExerciseTypeOut(**_model_to_dict(t)) for t in types]
 
     if challenge_only:
         # Get exercise type IDs with active challenges
-        challenges = await challenge_repo.get_all(filters={"is_active": True})
+        challenges = await challenge_repo.get_all(
+            filters={"is_active": True},
+            user_id=user_id,
+        )
         active_type_ids = {c.exercise_type_id for c in challenges}
         exercise_types = [et for et in exercise_types if et.id in active_type_ids]
 
     return exercise_types
 
 
-async def get_exercise_type(exercise_type_id: int) -> Optional[ExerciseTypeOut]:
+async def get_exercise_type(
+    exercise_type_id: int,
+    user_id: int,
+) -> Optional[ExerciseTypeOut]:
     """Get a single exercise type by ID."""
-    etype = await exercise_type_repo.get_by_id(exercise_type_id)
+    etype = await exercise_type_repo.get_by_id(exercise_type_id, user_id=user_id)
     if etype:
         return ExerciseTypeOut(**_model_to_dict(etype))
     return None
 
 
-async def create_exercise_type(data: ExerciseTypeCreate) -> ExerciseTypeOut:
+async def create_exercise_type(
+    data: ExerciseTypeCreate,
+    user_id: int,
+) -> ExerciseTypeOut:
     """Create a new exercise type."""
-    created = await exercise_type_repo.create(data.model_dump())
+    insert_data = data.model_dump()
+    insert_data["user_id"] = user_id
+    created = await exercise_type_repo.create(insert_data)
     return ExerciseTypeOut(**_model_to_dict(created))
 
 
 async def update_exercise_type(
-    exercise_type_id: int, data: ExerciseTypeUpdate
+    exercise_type_id: int,
+    data: ExerciseTypeUpdate,
+    user_id: int,
 ) -> Optional[ExerciseTypeOut]:
     """Update an exercise type."""
     update_data = data.model_dump(exclude_unset=True)
     if not update_data:
-        return await get_exercise_type(exercise_type_id)
+        return await get_exercise_type(exercise_type_id, user_id)
 
-    updated = await exercise_type_repo.update(exercise_type_id, update_data)
+    updated = await exercise_type_repo.update(
+        exercise_type_id,
+        update_data,
+        user_id=user_id,
+    )
     if updated:
         return ExerciseTypeOut(**_model_to_dict(updated))
     return None
@@ -140,6 +158,7 @@ def _enrich_challenge(challenge_data: Dict[str, Any], today: date) -> Dict[str, 
 
 
 async def list_challenges(
+    user_id: int,
     exercise_type_id: Optional[int] = None,
     is_active: Optional[bool] = None,
     starts_before: Optional[date] = None,
@@ -154,7 +173,10 @@ async def list_challenges(
     if is_active is not None:
         filters["is_active"] = is_active
 
-    challenges = await challenge_repo.get_all(filters=filters if filters else None)
+    challenges = await challenge_repo.get_all(
+        filters=filters if filters else None,
+        user_id=user_id,
+    )
 
     # Apply date filters in Python (since repo doesn't support these yet)
     filtered_challenges = []
@@ -173,10 +195,16 @@ async def list_challenges(
     ]
 
 
-async def list_current_active_challenges(target_date: Optional[date] = None) -> List[Dict[str, Any]]:
+async def list_current_active_challenges(
+    target_date: Optional[date] = None,
+    user_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
     """List active challenges valid for the target date (default: today)."""
     current_date = target_date or datetime.now(TZ).date()
-    challenges = await challenge_repo.get_current_active(current_date)
+    challenges = await challenge_repo.get_current_active(
+        current_date,
+        user_id=user_id,
+    )
     return [_model_to_dict(c) for c in challenges]
 
 
@@ -217,17 +245,22 @@ def get_ordered_challenges(challenges: List[Dict[str, Any]]) -> List[Dict[str, A
     return ordered
 
 
-async def get_challenge(challenge_id: int) -> Optional[ExerciseChallengeOut]:
+async def get_challenge(
+    challenge_id: int,
+    user_id: int,
+) -> Optional[ExerciseChallengeOut]:
     """Get a single challenge by ID."""
     today = datetime.now(TZ).date()
-    challenge = await challenge_repo.get_by_id(challenge_id)
+    challenge = await challenge_repo.get_by_id(challenge_id, user_id=user_id)
     if challenge:
         return ExerciseChallengeOut(**_enrich_challenge(_model_to_dict(challenge), today))
     return None
 
 
 async def get_active_challenge_for_type(
-    exercise_type_id: int, target_date: Optional[date] = None
+    exercise_type_id: int,
+    target_date: Optional[date] = None,
+    user_id: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     """Get the active challenge for an exercise type on a given date.
 
@@ -236,33 +269,47 @@ async def get_active_challenge_for_type(
     current_date = target_date or datetime.now(TZ).date()
 
     # Try to find challenge that wraps the current date
-    challenge = await challenge_repo.get_active_for_type(exercise_type_id, current_date)
+    challenge = await challenge_repo.get_active_for_type(
+        exercise_type_id,
+        current_date,
+        user_id=user_id,
+    )
     if challenge:
         return _model_to_dict(challenge)
 
     return None
 
 
-async def create_challenge(data: ExerciseChallengeCreate) -> ExerciseChallengeOut:
+async def create_challenge(
+    data: ExerciseChallengeCreate,
+    user_id: int,
+) -> ExerciseChallengeOut:
     """Create a new challenge."""
     today = datetime.now(TZ).date()
 
     insert_data = data.model_dump()
+    insert_data["user_id"] = user_id
     created = await challenge_repo.create(insert_data)
     return ExerciseChallengeOut(**_enrich_challenge(_model_to_dict(created), today))
 
 
 async def update_challenge(
-    challenge_id: int, data: ExerciseChallengeUpdate
+    challenge_id: int,
+    data: ExerciseChallengeUpdate,
+    user_id: int,
 ) -> Optional[ExerciseChallengeOut]:
     """Update a challenge."""
     today = datetime.now(TZ).date()
 
     update_data = data.model_dump(exclude_unset=True)
     if not update_data:
-        return await get_challenge(challenge_id)
+        return await get_challenge(challenge_id, user_id)
 
-    updated = await challenge_repo.update(challenge_id, update_data)
+    updated = await challenge_repo.update(
+        challenge_id,
+        update_data,
+        user_id=user_id,
+    )
     if updated:
         return ExerciseChallengeOut(**_enrich_challenge(_model_to_dict(updated), today))
     return None
@@ -317,6 +364,7 @@ async def compute_exercise_stats(
     added_count: int = 0,
     etype: Optional[Dict[str, Any]] = None,
     challenge: Optional[Dict[str, Any]] = None,
+    user_id: Optional[int] = None,
 ) -> ExerciseStatsOut:
     """Compute stats for an exercise type within its challenge context.
 
@@ -334,14 +382,21 @@ async def compute_exercise_stats(
 
     # Get exercise type (only if not provided)
     if etype is None:
-        etype_model = await exercise_type_repo.get_by_id(exercise_type_id)
+        etype_model = await exercise_type_repo.get_by_id(
+            exercise_type_id,
+            user_id=user_id,
+        )
         if not etype_model:
             raise ValueError(f"Exercise type {exercise_type_id} not found")
         etype = _model_to_dict(etype_model)
 
     # Get challenge (only if not provided)
     if challenge is None:
-        challenge = await get_active_challenge_for_type(exercise_type_id, today_local)
+        challenge = await get_active_challenge_for_type(
+            exercise_type_id,
+            user_id=user_id,
+            target_date=today_local,
+        )
 
     # Default values
     challenge_id = None
@@ -364,7 +419,10 @@ async def compute_exercise_stats(
 
     # Query cumulative total
     current_total = await log_repo.get_cumulative_count(
-        exercise_type_id, challenge_id, today_local
+        exercise_type_id,
+        challenge_id,
+        today_local,
+        user_id=user_id,
     )
     new_cumulative = current_total + added_count
 
@@ -380,7 +438,10 @@ async def compute_exercise_stats(
 
     # Today's total
     current_today_total = await log_repo.get_today_count(
-        exercise_type_id, today_local, challenge_id
+        exercise_type_id,
+        today_local,
+        challenge_id,
+        user_id=user_id,
     )
     new_today_total = current_today_total + added_count
 
@@ -413,14 +474,23 @@ async def compute_exercise_stats(
 
 
 async def get_all_exercise_stats(
+    user_id: int,
     target_date: Optional[date] = None,
     challenge_only: bool = True,
 ) -> List[ExerciseStatsOut]:
     """Get stats for all exercises (optionally limited to those with challenges)."""
-    exercise_types = await list_exercise_types(is_active=True, challenge_only=challenge_only)
+    exercise_types = await list_exercise_types(
+        user_id=user_id,
+        is_active=True,
+        challenge_only=challenge_only,
+    )
     stats = []
     for et in exercise_types:
-        stat = await compute_exercise_stats(et.id, target_date)
+        stat = await compute_exercise_stats(
+            et.id,
+            user_id=user_id,
+            target_date=target_date,
+        )
         stats.append(stat)
     return stats
 
@@ -431,6 +501,7 @@ async def get_all_exercise_stats(
 
 
 async def list_logs(
+    user_id: int,
     exercise_type_id: Optional[int] = None,
     challenge_id: Optional[int] = None,
     date_from: Optional[date] = None,
@@ -452,7 +523,8 @@ async def list_logs(
     logs_models, total = await log_repo.get_all(
         filters=filters if filters else None,
         limit=limit,
-        offset=offset
+        offset=offset,
+        user_id=user_id,
     )
 
     # Transform data
@@ -476,9 +548,9 @@ async def list_logs(
     )
 
 
-async def get_log(log_id: int) -> Optional[ExerciseLogOut]:
+async def get_log(log_id: int, user_id: int) -> Optional[ExerciseLogOut]:
     """Get a single log entry by ID."""
-    log_model = await log_repo.get_by_id(log_id)
+    log_model = await log_repo.get_by_id(log_id, user_id=user_id)
     if log_model:
         log = ExerciseLogOut(**_model_to_dict(log_model))
         if log_model.exercise_type:
@@ -487,7 +559,10 @@ async def get_log(log_id: int) -> Optional[ExerciseLogOut]:
     return None
 
 
-async def create_log(data: ExerciseLogCreate) -> Tuple[ExerciseLogOut, ExerciseStatsOut]:
+async def create_log(
+    data: ExerciseLogCreate,
+    user_id: int,
+) -> Tuple[ExerciseLogOut, ExerciseStatsOut]:
     """Create a new log entry and update stats.
 
     Returns:
@@ -497,15 +572,24 @@ async def create_log(data: ExerciseLogCreate) -> Tuple[ExerciseLogOut, ExerciseS
     log_date = data.date or today_local
 
     # Get exercise type
-    etype = await get_exercise_type(data.exercise_type_id)
+    etype = await get_exercise_type(data.exercise_type_id, user_id)
     if not etype:
         raise ValueError(f"Exercise type {data.exercise_type_id} not found")
 
     # Get challenge
-    challenge = await get_active_challenge_for_type(data.exercise_type_id, log_date)
+    challenge = await get_active_challenge_for_type(
+        data.exercise_type_id,
+        user_id=user_id,
+        target_date=log_date,
+    )
 
     # Compute stats before insertion to get cumulative values
-    stats = await compute_exercise_stats(data.exercise_type_id, log_date, added_count=data.count)
+    stats = await compute_exercise_stats(
+        data.exercise_type_id,
+        user_id=user_id,
+        target_date=log_date,
+        added_count=data.count,
+    )
 
     # Build log data
     challenge_id = None
@@ -520,6 +604,7 @@ async def create_log(data: ExerciseLogCreate) -> Tuple[ExerciseLogOut, ExerciseS
             raw_message += f" - {data.notes}"
 
     log_data = {
+        "user_id": user_id,
         "exercise_type_id": data.exercise_type_id,
         "challenge_id": challenge_id,
         "date": log_date,
@@ -538,19 +623,27 @@ async def create_log(data: ExerciseLogCreate) -> Tuple[ExerciseLogOut, ExerciseS
     created_log = ExerciseLogOut(**_model_to_dict(created_log_model))
 
     # Update user_stats
-    await user_stats_repo.increment_total(data.exercise_type_id, data.count, log_date)
+    await user_stats_repo.increment_total(
+        data.exercise_type_id,
+        data.count,
+        log_date,
+        user_id=user_id,
+    )
 
     return created_log, stats
 
 
-async def delete_log(log_id: int) -> Tuple[Optional[ExerciseLogOut], Optional[ExerciseStatsOut]]:
+async def delete_log(
+    log_id: int,
+    user_id: int,
+) -> Tuple[Optional[ExerciseLogOut], Optional[ExerciseStatsOut]]:
     """Delete a log entry and update stats.
 
     Returns:
         Tuple of (deleted_log, updated_stats) or (None, None) if not found
     """
     # Get the log entry first
-    log = await get_log(log_id)
+    log = await get_log(log_id, user_id)
     if not log:
         return None, None
 
@@ -558,14 +651,21 @@ async def delete_log(log_id: int) -> Tuple[Optional[ExerciseLogOut], Optional[Ex
     count_to_remove = log.count
 
     # Delete the log
-    await log_repo.delete(log_id)
+    await log_repo.delete(log_id, user_id=user_id)
 
     # Update user_stats
-    await user_stats_repo.decrement_total(exercise_type_id, count_to_remove)
-    await user_stats_repo.sync_last_logged_date(exercise_type_id)
+    await user_stats_repo.decrement_total(
+        exercise_type_id,
+        count_to_remove,
+        user_id=user_id,
+    )
+    await user_stats_repo.sync_last_logged_date(
+        exercise_type_id,
+        user_id=user_id,
+    )
 
     # Compute updated stats
-    stats = await compute_exercise_stats(exercise_type_id)
+    stats = await compute_exercise_stats(exercise_type_id, user_id=user_id)
 
     return log, stats
 
@@ -575,9 +675,9 @@ async def delete_log(log_id: int) -> Tuple[Optional[ExerciseLogOut], Optional[Ex
 # =============================================================================
 
 
-async def list_user_stats() -> List[UserStatsOut]:
+async def list_user_stats(user_id: int) -> List[UserStatsOut]:
     """List all user stats."""
-    stats_models = await user_stats_repo.get_all()
+    stats_models = await user_stats_repo.get_all(user_id=user_id)
 
     stats = []
     for stat_model in stats_models:
@@ -590,17 +690,20 @@ async def list_user_stats() -> List[UserStatsOut]:
     return stats
 
 
-async def get_stats_summary() -> StatsSummaryOut:
+async def get_stats_summary(user_id: int) -> StatsSummaryOut:
     """Get overall stats summary."""
     # Get all user stats
-    user_stats = await list_user_stats()
+    user_stats = await list_user_stats(user_id)
 
     # Calculate totals
     total_reps = sum(s.all_time_total for s in user_stats)
 
     # Count distinct days with activity
     # Note: This is a simplified version - could be optimized with a raw query
-    all_logs, _ = await log_repo.get_all(limit=10000)  # Get all logs
+    all_logs, _ = await log_repo.get_all(
+        limit=10000,
+        user_id=user_id,
+    )  # Get all logs
     distinct_days = len(set(log.date for log in all_logs))
 
     return StatsSummaryOut(
@@ -615,21 +718,21 @@ async def get_stats_summary() -> StatsSummaryOut:
 # =============================================================================
 
 
-async def get_settings() -> SettingsOut:
-    """Get application settings.
+async def get_settings(user_id: int) -> SettingsOut:
+    """Get current user settings.
 
     Returns:
-        Current app settings
+        Current user settings
     """
-    settings_model = await app_settings_repo.get_singleton()
+    settings_model = await user_settings_repo.get_or_create(user_id)
     return SettingsOut(
         is_reminder_active=settings_model.is_reminder_active,
         telegram_chat_id=settings_model.telegram_chat_id,
     )
 
 
-async def update_settings(update: SettingsUpdate) -> SettingsOut:
-    """Update application settings.
+async def update_settings(update: SettingsUpdate, user_id: int) -> SettingsOut:
+    """Update current user settings.
 
     Args:
         update: Settings fields to update
@@ -641,10 +744,12 @@ async def update_settings(update: SettingsUpdate) -> SettingsOut:
     if update.is_reminder_active is not None:
         update_data["is_reminder_active"] = update.is_reminder_active
 
+    settings_model = await user_settings_repo.get_or_create(user_id)
+
     if update_data:
-        settings_model = await app_settings_repo.update(update_data)
-    else:
-        settings_model = await app_settings_repo.get_singleton()
+        updated = await user_settings_repo.update(user_id, update_data)
+        if updated:
+            settings_model = updated
 
     return SettingsOut(
         is_reminder_active=settings_model.is_reminder_active,

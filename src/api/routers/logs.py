@@ -18,7 +18,8 @@ from src.api.services import (
     delete_log,
     get_exercise_type,
 )
-from src.api.security import verify_api_key
+from src.api.security import verify_api_key, get_current_user
+from src.core.models import AppUser
 
 router = APIRouter(prefix="/logs", tags=["Logs"])
 
@@ -74,9 +75,11 @@ async def list_all_logs(
     ),
     limit: int = Query(50, ge=1, le=100, description="Number of items per page"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
+    current_user: AppUser = Depends(get_current_user),
 ) -> PaginatedLogsResponse:
     """List exercise logs with pagination and filters."""
     return await list_logs(
+        user_id=current_user.id,
         exercise_type_id=exercise_type_id,
         challenge_id=challenge_id,
         date_from=date_from,
@@ -95,9 +98,12 @@ async def list_all_logs(
         404: {"model": ErrorResponse, "description": "Log entry not found"},
     },
 )
-async def get_single_log(log_id: int) -> ExerciseLogOut:
+async def get_single_log(
+    log_id: int,
+    current_user: AppUser = Depends(get_current_user),
+) -> ExerciseLogOut:
     """Get a single log entry by its ID."""
-    result = await get_log(log_id)
+    result = await get_log(log_id, user_id=current_user.id)
     if not result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -158,11 +164,12 @@ async def get_single_log(log_id: int) -> ExerciseLogOut:
 )
 async def create_new_log(
     data: ExerciseLogCreate,
+    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
 ) -> ExerciseLogCreateResponse:
     """Create a new log entry."""
     # Validate exercise type exists
-    etype = await get_exercise_type(data.exercise_type_id)
+    etype = await get_exercise_type(data.exercise_type_id, user_id=current_user.id)
     if not etype:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -170,7 +177,7 @@ async def create_new_log(
         )
 
     try:
-        log, stats = await create_log(data)
+        log, stats = await create_log(data, user_id=current_user.id)
         return ExerciseLogCreateResponse(log=log, stats=stats)
     except ValueError as e:
         raise HTTPException(
@@ -203,10 +210,11 @@ async def create_new_log(
 )
 async def delete_single_log(
     log_id: int,
+    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
 ) -> ExerciseLogCreateResponse:
     """Delete a log entry."""
-    log, stats = await delete_log(log_id)
+    log, stats = await delete_log(log_id, user_id=current_user.id)
     if not log:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

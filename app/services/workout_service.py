@@ -18,13 +18,18 @@ from app.services.deterministic_parser import get_numbers_from_message
 from app.services.telegram_client import send_telegram_message, send_chat_action
 from app.config import settings
 from src.core import setup_django
+from django.core.exceptions import ObjectDoesNotExist
+from django.utils import timezone
 from src.core.repositories import (
     exercise_type_repo,
     challenge_repo,
     log_repo,
     user_stats_repo,
     app_settings_repo,
+    app_user_repo,
+    user_settings_repo,
 )
+from src.core.validators import validate_telegram_user_id
 from src.api.services import (
     compute_exercise_stats,
     list_current_active_challenges,
@@ -34,6 +39,7 @@ from src.api.services import (
 logger = logging.getLogger(__name__)
 TZ = ZoneInfo(settings.TZ)
 PROGRESS_BAR_WIDTH = 10
+REGISTRATION_THROTTLE_SECONDS = 60
 
 
 def _ensure_orm():
@@ -83,17 +89,21 @@ async def keep_typing(chat_id: int, stop_event: asyncio.Event):
     logger.debug(f"Stopped typing indicator for chat_id {chat_id}")
 
 
-async def get_exercise_types() -> List[ExerciseType]:
+async def get_exercise_types(user_id: Optional[int] = None) -> List[ExerciseType]:
     _ensure_orm()
-    types = await exercise_type_repo.get_all(is_active=True)
+    types = await exercise_type_repo.get_all(is_active=True, user_id=user_id)
     return [_to_app_exercise_type(t) for t in types]
 
 
 async def get_active_challenge(
-    exercise_type_id: int, current_date: date
+    exercise_type_id: int, current_date: date, user_id: Optional[int] = None
 ) -> Optional[Dict[str, Any]]:
     _ensure_orm()
-    challenge = await challenge_repo.get_active_for_type(exercise_type_id, current_date)
+    challenge = await challenge_repo.get_active_for_type(
+        exercise_type_id,
+        current_date,
+        user_id=user_id,
+    )
     if challenge:
         return _challenge_model_to_dict(challenge)
     return None
@@ -177,6 +187,7 @@ def _is_daily_complete(
 async def _check_all_challenges_complete(
     challenges_data: List[Dict],
     today_local: date,
+    user_id: Optional[int] = None,
 ) -> bool:
     """Check if all active challenges are on track with cumulative progress.
 
@@ -192,7 +203,9 @@ async def _check_all_challenges_complete(
 
     challenge_ids = [c["id"] for c in challenges_data]
     cumulative_counts = await log_repo.get_cumulative_counts_by_challenge_ids(
-        challenge_ids, today_local
+        challenge_ids,
+        today_local,
+        user_id=user_id,
     )
 
     for challenge in challenges_data:
@@ -236,6 +249,7 @@ async def get_exercise_stats_and_message(
     challenge: Optional[Dict],
     today_local: date,
     added_count: int = 0,
+    user_id: Optional[int] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Get stats and format HTML message using the shared stats helper.
 
@@ -253,6 +267,7 @@ async def get_exercise_stats_and_message(
         added_count=added_count,
         etype=etype_dict,
         challenge=challenge,
+        user_id=user_id,
     )
 
     # Reuse computed daily completion flag from shared stats helper
@@ -320,10 +335,10 @@ async def get_exercise_stats_and_message(
     return msg_part, stats
 
 
-async def get_recent_logs(chat_id: int, limit: int = 5) -> str:
+async def get_recent_logs(user_id: int, limit: int = 5) -> str:
     """Get recent log entries for the user."""
     _ensure_orm()
-    logs, _ = await log_repo.get_all(limit=limit, offset=0)
+    logs, _ = await log_repo.get_all(limit=limit, offset=0, user_id=user_id)
 
     if not logs:
         return "No logs found."
@@ -353,10 +368,10 @@ async def get_recent_logs(chat_id: int, limit: int = 5) -> str:
     return "\n".join(lines)
 
 
-async def delete_log_entry(log_id: int, chat_id: int) -> str:
+async def delete_log_entry(log_id: int, user_id: int) -> str:
     """Delete a log entry and update related stats."""
     _ensure_orm()
-    log_entry = await log_repo.get_by_id(log_id)
+    log_entry = await log_repo.get_by_id(log_id, user_id=user_id)
     if not log_entry:
         return f"❌ Log entry {log_id} not found."
 
@@ -369,12 +384,16 @@ async def delete_log_entry(log_id: int, chat_id: int) -> str:
         "emoji": getattr(log_entry.exercise_type, "emoji", "🏋️"),
     }
 
-    deleted = await log_repo.delete(log_id)
+    deleted = await log_repo.delete(log_id, user_id=user_id)
     if not deleted:
         return f"❌ Failed to delete log entry {log_id}."
 
-    await user_stats_repo.decrement_total(exercise_type_id, count_to_remove)
-    await user_stats_repo.sync_last_logged_date(exercise_type_id)
+    await user_stats_repo.decrement_total(
+        exercise_type_id,
+        count_to_remove,
+        user_id=user_id,
+    )
+    await user_stats_repo.sync_last_logged_date(exercise_type_id, user_id=user_id)
 
     return (
         f"✅ Deleted log entry {log_id}\n"
@@ -383,15 +402,15 @@ async def delete_log_entry(log_id: int, chat_id: int) -> str:
     )
 
 
-async def undo_last_log(chat_id: int) -> str:
+async def undo_last_log(user_id: int) -> str:
     """Undo the most recent log entry."""
     _ensure_orm()
-    logs, _ = await log_repo.get_all(limit=1, offset=0)
+    logs, _ = await log_repo.get_all(limit=1, offset=0, user_id=user_id)
     if not logs:
         return "❌ No logs found to undo."
 
     log_id = logs[0].id
-    return await delete_log_entry(log_id, chat_id)
+    return await delete_log_entry(log_id, user_id)
 
 
 def determine_default_exercise(challenges_data: List[Dict], exercise_types: List[ExerciseType]) -> str:
@@ -431,7 +450,72 @@ def determine_default_exercise(challenges_data: List[Dict], exercise_types: List
         return "pushups"
 
 
-async def process_incoming_message(text: str, chat_id: int):
+async def notify_superusers_of_new_registration(user):
+    """
+    Send approval request notifications to all configured superusers.
+
+    This function is called when a new user registers via Telegram. It sends each
+    superuser a message with the new user's details and approval/rejection commands.
+
+    Args:
+        user: The newly registered AppUser instance
+    """
+    if not settings.SUPERUSER_TELEGRAM_IDS:
+        logger.debug("No superusers configured, skipping registration notification")
+        return
+
+    notification_message = (
+        f"🔔 <b>New User Registration Request</b>\n\n"
+        f"<b>Telegram ID:</b> <code>{user.telegram_user_id}</code>\n"
+        f"<b>Username:</b> {user.username or 'N/A'}\n"
+        f"<b>Name:</b> {user.first_name or 'N/A'}\n"
+        f"<b>Registered:</b> {user.created_at.strftime('%Y-%m-%d %H:%M') if user.created_at else 'N/A'}\n\n"
+        f"<b>Actions:</b>\n"
+        f"Approve: <code>/approve {user.telegram_user_id}</code>\n"
+        f"Reject: <code>/reject {user.telegram_user_id}</code>"
+    )
+
+    superusers = await app_user_repo.get_by_telegram_user_ids(
+        settings.SUPERUSER_TELEGRAM_IDS
+    )
+    superusers_by_telegram_id = {
+        superuser.telegram_user_id: superuser for superuser in superusers
+    }
+
+    # Send to each superuser
+    for superuser_id in settings.SUPERUSER_TELEGRAM_IDS:
+        try:
+            # Get superuser's UserSettings to find their chat_id
+            superuser = superusers_by_telegram_id.get(superuser_id)
+            if not superuser:
+                logger.warning(f"Superuser {superuser_id} not found in database")
+                continue
+
+            # Get superuser's chat_id from UserSettings
+            try:
+                user_settings = superuser.settings
+            except ObjectDoesNotExist:
+                user_settings = None
+            if not user_settings or not user_settings.telegram_chat_id:
+                logger.warning(
+                    f"Superuser {superuser_id} (user_id={superuser.id}) has no telegram_chat_id in UserSettings"
+                )
+                continue
+
+            # Send notification
+            await send_telegram_message(user_settings.telegram_chat_id, notification_message)
+            logger.info(f"Sent registration notification to superuser {superuser_id}")
+        except Exception as e:
+            logger.error(f"Failed to notify superuser {superuser_id}: {e}")
+
+
+async def process_incoming_message(
+    text: str,
+    chat_id: int,
+    telegram_user_id: int,
+    first_name: str,
+    username: Optional[str] = None
+):
     # Send typing action immediately
     await send_chat_action(chat_id, "typing")
 
@@ -442,8 +526,122 @@ async def process_incoming_message(text: str, chat_id: int):
     try:
         _ensure_orm()
 
+        app_settings = await app_settings_repo.get_singleton()
+
+        user = await app_user_repo.get_by_telegram_user_id(telegram_user_id)
+        created = False
+
+        if not user:
+            if not app_settings.is_registration_open:
+                await send_telegram_message(
+                    chat_id,
+                    "🚫 <b>Registrations are currently closed.</b>\n\n"
+                    "Please try again later.",
+                )
+                return
+
+            # Auto-register user or get existing user
+            user, created = await app_user_repo.get_or_create_by_telegram_user_id(
+                telegram_user_id=telegram_user_id,
+                defaults={
+                    "username": username,
+                    "first_name": first_name,
+                }
+            )
+
+        # If new user, log registration and notify superusers
+        if created:
+            logger.info(f"New user registered: telegram_user_id={telegram_user_id}, user_id={user.id}, status=pending")
+            # Notify superusers of the new registration (non-blocking)
+            if app_settings.is_registration_open:
+                await notify_superusers_of_new_registration(user)
+
+        # Update user fields if they've changed (refreshes stale Telegram data)
+        # Check if username or first_name have been updated in Telegram
+        fields_to_update = {}
+        if user.username != username:
+            fields_to_update["username"] = username
+        if user.first_name != first_name:
+            fields_to_update["first_name"] = first_name
+
+        if fields_to_update:
+            await app_user_repo.update(user.id, fields_to_update)
+            # Refresh user object with updated fields
+            user, _ = await app_user_repo.get_or_create_by_telegram_user_id(telegram_user_id)
+
+        # Update telegram_chat_id for all users (creates UserSettings if needed)
+        # This ensures existing users get their chat_id refreshed on every message
+        await user_settings_repo.update_chat_id(user.id, chat_id)
+
+        if not user.is_approved:
+            now = timezone.now()
+            if user.last_registration_attempt_at:
+                elapsed_seconds = (now - user.last_registration_attempt_at).total_seconds()
+                if elapsed_seconds < REGISTRATION_THROTTLE_SECONDS:
+                    await send_telegram_message(
+                        chat_id,
+                        "⏳ <b>Please wait before trying again.</b>\n\n"
+                        "You can send one message per minute while your account is pending.",
+                    )
+                    return
+
+            await app_user_repo.update(
+                user.id,
+                {"last_registration_attempt_at": now},
+            )
+            user.last_registration_attempt_at = now
+
         # Handle commands
         text_lower = text.strip().lower()
+
+        # Handle /status command BEFORE approval gate - allow all users to check status
+        if text_lower == "/status":
+            status_emoji = {
+                "pending": "⏳",
+                "approved": "✅",
+                "rejected": "🚫"
+            }.get(user.status, "❓")
+
+            status_text = {
+                "pending": "Pending Approval",
+                "approved": "Approved",
+                "rejected": "Rejected"
+            }.get(user.status, "Unknown")
+
+            status_message = (
+                f"{status_emoji} <b>Registration Status</b>\n\n"
+                f"<b>Status:</b> {status_text}\n"
+                f"<b>Telegram ID:</b> <code>{telegram_user_id}</code>\n"
+                f"<b>Username:</b> {user.username or 'N/A'}\n"
+                f"<b>Registered:</b> {user.created_at.strftime('%Y-%m-%d %H:%M')}"
+            )
+
+            if user.approved_at:
+                status_message += f"\n<b>Approved:</b> {user.approved_at.strftime('%Y-%m-%d %H:%M')}"
+
+            await send_telegram_message(chat_id, status_message)
+            return
+
+        # Check if user is approved - gate all other commands
+        if not user.is_approved:
+            if user.status == "pending":
+                pending_message = (
+                    "⏳ <b>Registration Pending</b>\n\n"
+                    "Thank you for registering! Your account is pending approval.\n"
+                    "You'll be notified once you're approved and can start tracking workouts.\n\n"
+                    f"Your Telegram ID: <code>{telegram_user_id}</code>\n\n"
+                    "You can use <code>/status</code> to check your approval status."
+                )
+                await send_telegram_message(chat_id, pending_message)
+            elif user.status == "rejected":
+                rejected_message = (
+                    "🚫 <b>Access Denied</b>\n\n"
+                    "Your registration request has been rejected.\n"
+                    "Please contact the administrator for more information.\n\n"
+                    "You can use <code>/status</code> to see details."
+                )
+                await send_telegram_message(chat_id, rejected_message)
+            return
 
         if text_lower == "/start":
             welcome_message = (
@@ -455,17 +653,66 @@ async def process_incoming_message(text: str, chat_id: int):
                 "• <code>2 min plank</code>\n"
                 "• <code>20 pushups and 30 squats</code>\n\n"
                 "<b>Commands:</b>\n"
+                "• <code>/status</code> - Check your registration status\n"
                 "• <code>/undo</code> - Remove last log entry\n"
                 "• <code>/recent [N]</code> - Show recent logs (default: 5)\n"
-                "• <code>/delete &lt;id&gt;</code> - Delete a specific log\n\n"
-                "I'll track your progress and keep you motivated! 💪"
+                "• <code>/delete &lt;id&gt;</code> - Delete a specific log\n"
             )
+
+            # Add superuser commands if applicable
+            if telegram_user_id in settings.SUPERUSER_TELEGRAM_IDS:
+                welcome_message += (
+                    "\n<b>Admin Commands:</b>\n"
+                    "• <code>/approve &lt;telegram_user_id&gt;</code> - Approve user\n"
+                    "• <code>/reject &lt;telegram_user_id&gt;</code> - Reject user\n"
+                )
+
+            welcome_message += "\nI'll track your progress and keep you motivated! 💪"
+
             await send_telegram_message(chat_id, welcome_message)
+            return
+
+        # Handle /registration command - superuser only
+        if text_lower.startswith("/registration"):
+            if telegram_user_id not in settings.SUPERUSER_TELEGRAM_IDS:
+                await send_telegram_message(
+                    chat_id,
+                    "🚫 <b>Permission Denied</b>\n\n"
+                    "Only superusers can manage registration.",
+                )
+                return
+
+            parts = text_lower.split()
+            if len(parts) == 1 or parts[1] == "status":
+                status_text = "ON ✅" if app_settings.is_registration_open else "OFF 🚫"
+                await send_telegram_message(
+                    chat_id,
+                    f"Registration is {status_text}.",
+                )
+                return
+
+            if parts[1] not in ("on", "off"):
+                await send_telegram_message(
+                    chat_id,
+                    "❌ Usage: <code>/registration on</code> or <code>/registration off</code>\n"
+                    "Use <code>/registration status</code> to check current state.",
+                )
+                return
+
+            is_open = parts[1] == "on"
+            app_settings = await app_settings_repo.update(
+                {"is_registration_open": is_open}
+            )
+            status_text = "ON ✅" if app_settings.is_registration_open else "OFF 🚫"
+            await send_telegram_message(
+                chat_id,
+                f"Registration is now {status_text}.",
+            )
             return
 
         # Handle /undo command
         if text_lower == "/undo":
-            result = await undo_last_log(chat_id)
+            result = await undo_last_log(user.id)
             await send_telegram_message(chat_id, result)
             return
 
@@ -479,7 +726,7 @@ async def process_incoming_message(text: str, chat_id: int):
                     limit = max(1, min(limit, 20))  # Clamp between 1 and 20
                 except ValueError:
                     pass
-            result = await get_recent_logs(chat_id, limit)
+            result = await get_recent_logs(user.id, limit)
             await send_telegram_message(chat_id, result)
             return
 
@@ -496,7 +743,7 @@ async def process_incoming_message(text: str, chat_id: int):
 
             try:
                 log_id = int(parts[1])
-                result = await delete_log_entry(log_id, chat_id)
+                result = await delete_log_entry(log_id, user.id)
                 await send_telegram_message(chat_id, result)
             except ValueError:
                 await send_telegram_message(
@@ -504,11 +751,157 @@ async def process_incoming_message(text: str, chat_id: int):
                 )
             return
 
+        # Handle /status command - show registration status
+        if text_lower == "/status":
+            status_emoji = {
+                "pending": "⏳",
+                "approved": "✅",
+                "rejected": "🚫"
+            }.get(user.status, "❓")
+
+            status_text = {
+                "pending": "Pending Approval",
+                "approved": "Approved",
+                "rejected": "Rejected"
+            }.get(user.status, "Unknown")
+
+            status_message = (
+                f"{status_emoji} <b>Registration Status</b>\n\n"
+                f"<b>Status:</b> {status_text}\n"
+                f"<b>Telegram ID:</b> <code>{telegram_user_id}</code>\n"
+                f"<b>Username:</b> {user.username or 'N/A'}\n"
+                f"<b>Registered:</b> {user.created_at.strftime('%Y-%m-%d %H:%M')}"
+            )
+
+            if user.approved_at:
+                status_message += f"\n<b>Approved:</b> {user.approved_at.strftime('%Y-%m-%d %H:%M')}"
+
+            await send_telegram_message(chat_id, status_message)
+            return
+
+        # Handle /approve command - superuser only
+        if text_lower.startswith("/approve"):
+            if telegram_user_id not in settings.SUPERUSER_TELEGRAM_IDS:
+                await send_telegram_message(
+                    chat_id,
+                    "🚫 <b>Permission Denied</b>\n\n"
+                    "Only superusers can approve users."
+                )
+                return
+
+            parts = text_lower.split()
+            if len(parts) < 2:
+                await send_telegram_message(
+                    chat_id,
+                    "❌ Usage: <code>/approve &lt;telegram_user_id&gt;</code>\n"
+                    "Example: <code>/approve 123456789</code>"
+                )
+                return
+
+            try:
+                target_telegram_user_id = int(parts[1])
+                validate_telegram_user_id(target_telegram_user_id)
+                target_user = await app_user_repo.approve_by_telegram_user_id(target_telegram_user_id)
+
+                if not target_user:
+                    await send_telegram_message(
+                        chat_id,
+                        f"❌ User with Telegram ID <code>{target_telegram_user_id}</code> not found."
+                    )
+                    return
+
+                await send_telegram_message(
+                    chat_id,
+                    f"✅ <b>User Approved</b>\n\n"
+                    f"<b>User:</b> {target_user.first_name} (@{target_user.username or 'N/A'})\n"
+                    f"<b>Telegram ID:</b> <code>{target_telegram_user_id}</code>\n"
+                    f"<b>Status:</b> Approved"
+                )
+
+                # Notify the approved user
+                target_settings = await user_settings_repo.get_by_user_id(target_user.id)
+                if target_settings and target_settings.telegram_chat_id:
+                    approval_notification = (
+                        "🎉 <b>Congratulations!</b>\n\n"
+                        "Your account has been approved! You can now start tracking your workouts.\n\n"
+                        "Send me a workout like:\n"
+                        "• <code>20 pushups</code>\n"
+                        "• <code>30 squats</code>\n\n"
+                        "Type /start to see all available commands. Let's get started! 💪"
+                    )
+                    await send_telegram_message(target_settings.telegram_chat_id, approval_notification)
+
+            except ValueError as e:
+                await send_telegram_message(
+                    chat_id,
+                    f"❌ Invalid Telegram User ID: {parts[1]}\n{str(e)}"
+                )
+            return
+
+        # Handle /reject command - superuser only
+        if text_lower.startswith("/reject"):
+            if telegram_user_id not in settings.SUPERUSER_TELEGRAM_IDS:
+                await send_telegram_message(
+                    chat_id,
+                    "🚫 <b>Permission Denied</b>\n\n"
+                    "Only superusers can reject users."
+                )
+                return
+
+            parts = text_lower.split()
+            if len(parts) < 2:
+                await send_telegram_message(
+                    chat_id,
+                    "❌ Usage: <code>/reject &lt;telegram_user_id&gt;</code>\n"
+                    "Example: <code>/reject 123456789</code>"
+                )
+                return
+
+            try:
+                target_telegram_user_id = int(parts[1])
+                validate_telegram_user_id(target_telegram_user_id)
+                target_user = await app_user_repo.reject_by_telegram_user_id(target_telegram_user_id)
+
+                if not target_user:
+                    await send_telegram_message(
+                        chat_id,
+                        f"❌ User with Telegram ID <code>{target_telegram_user_id}</code> not found."
+                    )
+                    return
+
+                await send_telegram_message(
+                    chat_id,
+                    f"🚫 <b>User Rejected</b>\n\n"
+                    f"<b>User:</b> {target_user.first_name} (@{target_user.username or 'N/A'})\n"
+                    f"<b>Telegram ID:</b> <code>{target_telegram_user_id}</code>\n"
+                    f"<b>Status:</b> Rejected"
+                )
+
+                # Notify the rejected user
+                target_settings = await user_settings_repo.get_by_user_id(target_user.id)
+                if target_settings and target_settings.telegram_chat_id:
+                    rejection_notification = (
+                        "🚫 <b>Registration Update</b>\n\n"
+                        "Your registration request has been rejected.\n"
+                        "Please contact the administrator for more information."
+                    )
+                    await send_telegram_message(target_settings.telegram_chat_id, rejection_notification)
+
+            except ValueError as e:
+                await send_telegram_message(
+                    chat_id,
+                    f"❌ Invalid Telegram User ID: {parts[1]}\n{str(e)}"
+                )
+            return
+
         # 1. Get Definitions (filtered by active challenges)
         today_local = datetime.now(TZ).date()
 
         # Fetch active challenges within current date range
-        challenges_data = await list_current_active_challenges(today_local)
+        challenges_data = await list_current_active_challenges(
+            today_local,
+            user_id=user.id,
+        )
 
         # Determine relevant exercise type IDs
         challenge_type_ids = list({c["exercise_type_id"] for c in challenges_data})
@@ -521,10 +914,13 @@ async def process_incoming_message(text: str, chat_id: int):
             # This implies if they have challenges, restrict to them.
             # If they have ZERO challenges, maybe showing nothing is correct, or fallback.
             # Let's fallback to get_exercise_types() (all active) if NO challenges exist at all.
-            exercise_types = await get_exercise_types()
+            exercise_types = await get_exercise_types(user.id)
             challenge_map = {}
         else:
-            types_models = await exercise_type_repo.get_by_ids(challenge_type_ids)
+            types_models = await exercise_type_repo.get_by_ids(
+                challenge_type_ids,
+                user_id=user.id,
+            )
             types_models = [t for t in types_models if t.is_active]
             types_models.sort(key=lambda x: x.id)
             exercise_types = [_to_app_exercise_type(t) for t in types_models]
@@ -625,7 +1021,11 @@ async def process_incoming_message(text: str, chat_id: int):
             # Use Helper to get stats and message
             # Pass pre-fetched challenge to avoid duplicate query
             msg_part, stats = await get_exercise_stats_and_message(
-                etype, challenge, today_local, added_count=entry.count
+                etype,
+                challenge,
+                today_local,
+                added_count=entry.count,
+                user_id=user.id,
             )
 
             # Store response map keyed by index or something unique?
@@ -644,6 +1044,7 @@ async def process_incoming_message(text: str, chat_id: int):
 
             # Insert Log
             log_data = {
+                "user_id": user.id,
                 "exercise_type_id": etype.id,
                 "challenge_id": stats["challenge_id"],
                 "date": today_local,
@@ -657,7 +1058,12 @@ async def process_incoming_message(text: str, chat_id: int):
                 "notes": entry.notes,
             }
             await log_repo.create(log_data)
-            await user_stats_repo.increment_total(etype.id, entry.count, today_local)
+            await user_stats_repo.increment_total(
+                etype.id,
+                entry.count,
+                today_local,
+                user_id=user.id,
+            )
 
             # Generate Witty Comment (using stats from helper)
             if challenge:
@@ -682,12 +1088,20 @@ async def process_incoming_message(text: str, chat_id: int):
 
             # Use Helper
             msg_part, _ = await get_exercise_stats_and_message(
-                etype, challenge, today_local, added_count=0
+                etype,
+                challenge,
+                today_local,
+                added_count=0,
+                user_id=user.id,
             )
             response_map[etype.id] = msg_part
 
         # Check if all active challenges are complete for the day
-        all_complete = await _check_all_challenges_complete(challenges_data, today_local)
+        all_complete = await _check_all_challenges_complete(
+            challenges_data,
+            today_local,
+            user_id=user.id,
+        )
 
         # Final Response Assembly
         final_parts = []

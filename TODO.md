@@ -1,6 +1,5 @@
 # Fitness Challenge Bot - TODO
 
-Add SSH settings to PyCharm
 Create manual step by step commands to check logs
 
 ## Quick Wins (High Impact, Low Effort)
@@ -148,17 +147,63 @@ Create manual step by step commands to check logs
 
 ## Next Phase (High Impact, Medium Effort)
 
-### Multi-User Support
-- [ ] Design database schema (users, user_settings tables)
-- [ ] Add `users` table (telegram_user_id, username, first_name, timezone, created_at, settings)
-- [ ] Add `user_id` foreign key to exercise_logs, exercise_challenges
-- [ ] Create `/api/v1/users` endpoints (POST register, GET profile, PATCH update)
-- [ ] Implement user registration flow in Telegram
-- [ ] Update all stats calculations to be user-scoped
-- [ ] Add user context to all API endpoints
-- [ ] Create database migration scripts
-- [ ] Add comprehensive unit tests
-- [ ] Update existing tests to work with multi-user
+### Multi-User Support (Feature 0010)
+**Branch:** `feat/0010-multi-user-phase-1-3`
+
+#### Phase 1 - Data Layer ✅ COMPLETE
+- [x] Design database schema (AppUser, UserSettings tables)
+- [x] Add `AppUser` table (telegram_user_id, username, first_name, timezone, status, created_at, approved_at)
+- [x] Add `UserSettings` table (1:1 with AppUser, telegram_chat_id, is_reminder_active, idempotency tracking)
+- [x] Add `user_id` foreign key to ExerciseType, ExerciseChallenge, ExerciseLog, UserStats
+- [x] Update unique constraints (ExerciseType(user, name), UserStats(user, exercise_type))
+- [x] Create Django migrations and backfill script
+- [x] Update Django admin with user model registration and filtering
+
+#### Phase 2 - Repository Layer ✅ COMPLETE
+- [x] Create AppUserRepository (CRUD, approve, reject, get_by_telegram_user_id)
+- [x] Create UserSettingsRepository (per-user settings, idempotency tracking)
+- [x] Update all repository methods with optional user_id parameter
+- [x] Add ownership verification in get_by_id/delete operations
+- [x] Maintain backward compatibility (user_id optional, defaults to None)
+
+#### Phase 3 - REST API ✅ COMPLETE
+- [x] Add Pydantic models (UserOut, UserCreate, UserUpdate, UserSettings*)
+- [x] Create get_current_user dependency (X-Telegram-User-Id header validation)
+- [x] Create `/api/v1/users` router with endpoints:
+  - [x] POST /users (register, auto-pending)
+  - [x] GET /users/me (profile + settings)
+  - [x] PATCH /users/me (update profile)
+  - [x] GET/PATCH /users/me/settings (settings management)
+  - [x] GET /users, POST /users/{id}/approve|reject (admin)
+- [x] Register router in app/main.py
+- [x] Add OpenAPI documentation tags
+- [x] Update RULES.md with comprehensive architecture section
+- [x] All 174 tests pass, backward compatibility maintained
+
+#### Phase 4 - Telegram Registration Flow ⏳ TODO
+- [ ] Extract telegram_user_id in webhook (app/routers/telegram.py)
+- [ ] Auto-register new users with pending status
+- [ ] Create approval/rejection command handlers (/approve, /reject)
+- [ ] Notify users on approval/rejection
+- [ ] Add SUPERUSER_TELEGRAM_IDS configuration
+- [ ] Integrate registration gating in workout_service.py
+
+#### Phase 5 - User-Scoped Operations ⏳ TODO
+- [ ] Thread user_id through all API services (src/api/services.py)
+- [ ] Update all routers to use get_current_user dependency
+- [ ] Make stats calculations user-scoped
+- [ ] Make log operations user-scoped
+- [ ] Update reminder scheduler for per-user iteration
+- [ ] Update reminder idempotency (per-user, not singleton)
+
+#### Phase 6 - Testing & Documentation ⏳ TODO
+- [ ] Add user fixtures to tests/api/conftest.py
+- [ ] Create multi-user isolation tests
+- [ ] Add integration tests for approval flow
+- [ ] Update existing tests to use user context
+- [ ] Update README.md with multi-user setup instructions
+- [ ] Update docs/features/0010_REVIEW.md with completion report
+- [ ] Document X-Telegram-User-Id header usage in docs
 
 ### Leaderboards
 - [ ] Create `/api/v1/leaderboards` endpoint with filters
@@ -328,4 +373,6 @@ Create manual step by step commands to check logs
 
 ---
 
-**Last Updated:** 2025-12-10
+**Last Updated:** 2026-01-19
+**Current Work:** Feature 0010 Phases 1-3 complete (branch: feat/0010-multi-user-phase-1-3)
+**Next Phase:** Phase 4 - Telegram Registration Flow

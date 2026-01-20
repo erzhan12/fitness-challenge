@@ -15,7 +15,8 @@ from src.api.services import (
     create_exercise_type,
     update_exercise_type,
 )
-from src.api.security import verify_api_key
+from src.api.security import verify_api_key, get_current_user
+from src.core.models import AppUser
 
 router = APIRouter(prefix="/exercises", tags=["Exercises"])
 
@@ -56,9 +57,14 @@ async def list_exercises(
         False,
         description="Only return exercise types with at least one active challenge",
     ),
+    current_user: AppUser = Depends(get_current_user),
 ) -> List[ExerciseTypeOut]:
     """List all exercise types with optional filters."""
-    return await list_exercise_types(is_active=is_active, challenge_only=challenge_only)
+    return await list_exercise_types(
+        user_id=current_user.id,
+        is_active=is_active,
+        challenge_only=challenge_only,
+    )
 
 
 @router.get(
@@ -70,9 +76,12 @@ async def list_exercises(
         404: {"model": ErrorResponse, "description": "Exercise type not found"},
     },
 )
-async def get_exercise(exercise_type_id: int) -> ExerciseTypeOut:
+async def get_exercise(
+    exercise_type_id: int,
+    current_user: AppUser = Depends(get_current_user),
+) -> ExerciseTypeOut:
     """Get a single exercise type by its ID."""
-    result = await get_exercise_type(exercise_type_id)
+    result = await get_exercise_type(exercise_type_id, user_id=current_user.id)
     if not result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -95,10 +104,11 @@ async def get_exercise(exercise_type_id: int) -> ExerciseTypeOut:
 )
 async def create_exercise(
     data: ExerciseTypeCreate,
+    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
 ) -> ExerciseTypeOut:
     """Create a new exercise type."""
-    return await create_exercise_type(data)
+    return await create_exercise_type(data, user_id=current_user.id)
 
 
 @router.patch(
@@ -117,14 +127,18 @@ async def create_exercise(
 async def update_exercise(
     exercise_type_id: int,
     data: ExerciseTypeUpdate,
+    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
 ) -> ExerciseTypeOut:
     """Update an exercise type (partial update)."""
-    result = await update_exercise_type(exercise_type_id, data)
+    result = await update_exercise_type(
+        exercise_type_id,
+        data,
+        user_id=current_user.id,
+    )
     if not result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Exercise type {exercise_type_id} not found",
         )
     return result
-

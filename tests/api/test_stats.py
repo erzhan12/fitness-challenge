@@ -11,7 +11,7 @@ class TestGetExercisesStats:
     """Tests for GET /api/v1/stats/exercises."""
 
     def test_get_all_exercises_stats_success(
-        self, client, mock_repos, exercise_type_model, challenge_model
+        self, client, mock_repos, exercise_type_model, challenge_model, user_context_headers
     ):
         mock_repos["exercise_type"].get_all.return_value = [exercise_type_model]
         mock_repos["challenge"].get_all.return_value = [challenge_model]
@@ -37,20 +37,20 @@ class TestGetExercisesStats:
             "src.api.services.compute_exercise_stats",
             new=AsyncMock(return_value=stats_out),
         ):
-            response = client.get("/api/v1/stats/exercises")
+            response = client.get("/api/v1/stats/exercises", headers=user_context_headers)
 
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data, list)
 
-    def test_get_exercises_stats_empty(self, client, mock_repos):
+    def test_get_exercises_stats_empty(self, client, mock_repos, user_context_headers):
         mock_repos["exercise_type"].get_all.return_value = []
-        response = client.get("/api/v1/stats/exercises")
+        response = client.get("/api/v1/stats/exercises", headers=user_context_headers)
         assert response.status_code == 200
         assert response.json() == []
 
     def test_get_exercises_stats_with_target_date(
-        self, client, mock_repos, exercise_type_model, challenge_model
+        self, client, mock_repos, exercise_type_model, challenge_model, user_context_headers
     ):
         mock_repos["exercise_type"].get_all.return_value = [exercise_type_model]
         mock_repos["challenge"].get_all.return_value = [challenge_model]
@@ -74,13 +74,13 @@ class TestGetExercisesStats:
 
         compute_mock = AsyncMock(return_value=stats_out)
         with patch("src.api.services.compute_exercise_stats", new=compute_mock):
-            response = client.get("/api/v1/stats/exercises?target_date=2024-01-15")
+            response = client.get("/api/v1/stats/exercises?target_date=2024-01-15", headers=user_context_headers)
 
         assert response.status_code == 200
         compute_mock.assert_awaited()
 
     def test_get_exercises_stats_challenge_only_param(
-        self, client, mock_repos, exercise_type_model
+        self, client, mock_repos, exercise_type_model, user_context_headers
     ):
         mock_repos["exercise_type"].get_all.return_value = [exercise_type_model]
 
@@ -105,7 +105,7 @@ class TestGetExercisesStats:
             "src.api.services.compute_exercise_stats",
             new=AsyncMock(return_value=stats_out),
         ):
-            response = client.get("/api/v1/stats/exercises?challenge_only=false")
+            response = client.get("/api/v1/stats/exercises?challenge_only=false", headers=user_context_headers)
 
         assert response.status_code == 200
 
@@ -196,7 +196,7 @@ class TestGetStatsSummary:
     """Tests for GET /api/v1/stats/summary."""
 
     def test_get_stats_summary_success(
-        self, client, mock_repos, mock_user_stats_data, exercise_type_model
+        self, client, mock_repos, mock_user_stats_data, exercise_type_model, user_context_headers
     ):
         stats_model = make_user_stats_model(mock_user_stats_data, exercise_type=exercise_type_model)
         mock_repos["user_stats"].get_all.return_value = [stats_model]
@@ -223,7 +223,7 @@ class TestGetStatsSummary:
         )
         mock_repos["log"].get_all.return_value = ([log1, log2], 2)
 
-        response = client.get("/api/v1/stats/summary")
+        response = client.get("/api/v1/stats/summary", headers=user_context_headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -231,11 +231,11 @@ class TestGetStatsSummary:
         assert "total_active_days" in data
         assert "exercise_stats" in data
 
-    def test_get_stats_summary_empty(self, client, mock_repos):
+    def test_get_stats_summary_empty(self, client, mock_repos, user_context_headers):
         mock_repos["user_stats"].get_all.return_value = []
         mock_repos["log"].get_all.return_value = ([], 0)
 
-        response = client.get("/api/v1/stats/summary")
+        response = client.get("/api/v1/stats/summary", headers=user_context_headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -244,7 +244,7 @@ class TestGetStatsSummary:
         assert data["exercise_stats"] == []
 
     def test_get_stats_summary_aggregation(
-        self, client, mock_repos, mock_exercise_type_data, mock_exercise_type_data_2
+        self, client, mock_repos, mock_exercise_type_data, mock_exercise_type_data_2, user_context_headers
     ):
         ex1 = make_exercise_type_model(mock_exercise_type_data)
         ex2 = make_exercise_type_model(mock_exercise_type_data_2)
@@ -297,7 +297,7 @@ class TestGetStatsSummary:
             )
         mock_repos["log"].get_all.return_value = (logs, len(logs))
 
-        response = client.get("/api/v1/stats/summary")
+        response = client.get("/api/v1/stats/summary", headers=user_context_headers)
 
         assert response.status_code == 200
         data = response.json()

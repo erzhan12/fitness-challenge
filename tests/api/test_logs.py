@@ -9,11 +9,11 @@ from src.api.models import ExerciseStatsOut
 class TestListLogs:
     """Tests for GET /api/v1/logs."""
 
-    def test_list_logs_success(self, client, mock_repos, log_model):
+    def test_list_logs_success(self, client, mock_repos, log_model, user_context_headers):
         """Test successful listing of logs."""
         mock_repos["log"].get_all.return_value = ([log_model], 1)
 
-        response = client.get("/api/v1/logs")
+        response = client.get("/api/v1/logs", headers=user_context_headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -22,44 +22,44 @@ class TestListLogs:
         assert len(data["data"]) == 1
         assert data["data"][0]["count"] == 25
 
-    def test_list_logs_empty(self, client, mock_repos):
+    def test_list_logs_empty(self, client, mock_repos, user_context_headers):
         """Test listing when no logs exist."""
         mock_repos["log"].get_all.return_value = ([], 0)
 
-        response = client.get("/api/v1/logs")
+        response = client.get("/api/v1/logs", headers=user_context_headers)
 
         assert response.status_code == 200
         data = response.json()
         assert data["data"] == []
         assert data["pagination"]["total"] == 0
 
-    def test_list_logs_filter_exercise_type(self, client, mock_repos):
+    def test_list_logs_filter_exercise_type(self, client, mock_repos, user_context_headers):
         """Test filtering by exercise type ID."""
         mock_repos["log"].get_all.return_value = ([], 0)
 
-        response = client.get("/api/v1/logs?exercise_type_id=1")
+        response = client.get("/api/v1/logs?exercise_type_id=1", headers=user_context_headers)
 
         assert response.status_code == 200
         mock_repos["log"].get_all.assert_awaited_once_with(
-            filters={"exercise_type_id": 1}, limit=50, offset=0
+            filters={"exercise_type_id": 1}, limit=50, offset=0, user_id=1
         )
 
-    def test_list_logs_filter_challenge(self, client, mock_repos):
+    def test_list_logs_filter_challenge(self, client, mock_repos, user_context_headers):
         """Test filtering by challenge ID."""
         mock_repos["log"].get_all.return_value = ([], 0)
 
-        response = client.get("/api/v1/logs?challenge_id=1")
+        response = client.get("/api/v1/logs?challenge_id=1", headers=user_context_headers)
 
         assert response.status_code == 200
         mock_repos["log"].get_all.assert_awaited_once_with(
-            filters={"challenge_id": 1}, limit=50, offset=0
+            filters={"challenge_id": 1}, limit=50, offset=0, user_id=1
         )
 
-    def test_list_logs_filter_date_range(self, client, mock_repos):
+    def test_list_logs_filter_date_range(self, client, mock_repos, user_context_headers):
         """Test filtering by date range."""
         mock_repos["log"].get_all.return_value = ([], 0)
 
-        response = client.get("/api/v1/logs?date_from=2024-01-01&date_to=2024-01-31")
+        response = client.get("/api/v1/logs?date_from=2024-01-01&date_to=2024-01-31", headers=user_context_headers)
 
         assert response.status_code == 200
         mock_repos["log"].get_all.assert_awaited_once_with(
@@ -69,13 +69,14 @@ class TestListLogs:
             },
             limit=50,
             offset=0,
+            user_id=1,
         )
 
-    def test_list_logs_pagination(self, client, mock_repos):
+    def test_list_logs_pagination(self, client, mock_repos, user_context_headers):
         """Test pagination parameters."""
         mock_repos["log"].get_all.return_value = ([], 100)
 
-        response = client.get("/api/v1/logs?limit=10&offset=20")
+        response = client.get("/api/v1/logs?limit=10&offset=20", headers=user_context_headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -83,12 +84,12 @@ class TestListLogs:
         assert data["pagination"]["offset"] == 20
 
     def test_list_logs_includes_exercise_type(
-        self, client, mock_repos, log_model
+        self, client, mock_repos, log_model, user_context_headers
     ):
         """Test that exercise type details are included in response."""
         mock_repos["log"].get_all.return_value = ([log_model], 1)
 
-        response = client.get("/api/v1/logs")
+        response = client.get("/api/v1/logs", headers=user_context_headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -99,22 +100,22 @@ class TestListLogs:
 class TestGetLog:
     """Tests for GET /api/v1/logs/{log_id}."""
 
-    def test_get_log_success(self, client, mock_repos, log_model):
+    def test_get_log_success(self, client, mock_repos, log_model, user_context_headers):
         """Test successful retrieval of single log."""
         mock_repos["log"].get_by_id.return_value = log_model
 
-        response = client.get("/api/v1/logs/123")
+        response = client.get("/api/v1/logs/123", headers=user_context_headers)
 
         assert response.status_code == 200
         data = response.json()
         assert data["id"] == 123
         assert data["count"] == 25
 
-    def test_get_log_not_found(self, client, mock_repos):
+    def test_get_log_not_found(self, client, mock_repos, user_context_headers):
         """Test 404 when log doesn't exist."""
         mock_repos["log"].get_by_id.return_value = None
 
-        response = client.get("/api/v1/logs/999")
+        response = client.get("/api/v1/logs/999", headers=user_context_headers)
 
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
@@ -126,7 +127,7 @@ class TestCreateLog:
     def test_create_log_success(
         self,
         client,
-        auth_headers,
+        auth_and_user_headers,
         mock_repos,
         log_model,
         exercise_type_model,
@@ -164,7 +165,7 @@ class TestCreateLog:
                 "notes": "Morning workout",
             }
 
-            response = client.post("/api/v1/logs", json=create_data, headers=auth_headers)
+            response = client.post("/api/v1/logs", json=create_data, headers=auth_and_user_headers)
 
             assert response.status_code == 201
             data = response.json()
@@ -183,7 +184,7 @@ class TestCreateLog:
 
         assert response.status_code == 401
 
-    def test_create_log_forbidden(self, client, invalid_auth_headers):
+    def test_create_log_forbidden(self, client, invalid_auth_headers, user_context_headers):
         """Test 403 when invalid API key provided."""
         create_data = {
             "exercise_type_id": 1,
@@ -191,12 +192,12 @@ class TestCreateLog:
         }
 
         response = client.post(
-            "/api/v1/logs", json=create_data, headers=invalid_auth_headers
+            "/api/v1/logs", json=create_data, headers={**invalid_auth_headers, **user_context_headers}
         )
 
         assert response.status_code == 403
 
-    def test_create_log_exercise_not_found(self, client, auth_headers, mock_repos):
+    def test_create_log_exercise_not_found(self, client, auth_and_user_headers, mock_repos):
         """Test 404 when exercise type doesn't exist."""
         mock_repos["exercise_type"].get_by_id.return_value = None
 
@@ -205,11 +206,11 @@ class TestCreateLog:
             "count": 25,
         }
 
-        response = client.post("/api/v1/logs", json=create_data, headers=auth_headers)
+        response = client.post("/api/v1/logs", json=create_data, headers=auth_and_user_headers)
 
         assert response.status_code == 404
 
-    def test_create_log_invalid_count(self, client, auth_headers):
+    def test_create_log_invalid_count(self, client, auth_and_user_headers, mock_repos):
         """Test 422 when count is invalid (zero or negative)."""
         create_data = {
             "exercise_type_id": 1,
@@ -217,7 +218,7 @@ class TestCreateLog:
         }
 
         response = client.post(
-            "/api/v1/logs", json=create_data, headers=auth_headers
+            "/api/v1/logs", json=create_data, headers=auth_and_user_headers
         )
 
         assert response.status_code == 422
@@ -225,7 +226,7 @@ class TestCreateLog:
     def test_create_log_with_date(
         self,
         client,
-        auth_headers,
+        auth_and_user_headers,
         mock_repos,
         log_model,
         exercise_type_model,
@@ -263,7 +264,7 @@ class TestCreateLog:
                 "date": "2024-01-10",
             }
 
-            response = client.post("/api/v1/logs", json=create_data, headers=auth_headers)
+            response = client.post("/api/v1/logs", json=create_data, headers=auth_and_user_headers)
 
             assert response.status_code == 201
 
@@ -274,7 +275,7 @@ class TestDeleteLog:
     def test_delete_log_success(
         self,
         client,
-        auth_headers,
+        auth_and_user_headers,
         mock_repos,
         log_model,
     ):
@@ -303,19 +304,19 @@ class TestDeleteLog:
             "src.api.services.compute_exercise_stats",
             new=AsyncMock(return_value=stats_out),
         ):
-            response = client.delete("/api/v1/logs/123", headers=auth_headers)
+            response = client.delete("/api/v1/logs/123", headers=auth_and_user_headers)
 
             assert response.status_code == 200
             data = response.json()
             assert "log" in data
             assert "stats" in data
-            mock_repos["user_stats"].sync_last_logged_date.assert_awaited_once_with(1)
+            mock_repos["user_stats"].sync_last_logged_date.assert_awaited_once_with(1, user_id=1)
 
-    def test_delete_log_not_found(self, client, auth_headers, mock_repos):
+    def test_delete_log_not_found(self, client, auth_and_user_headers, mock_repos):
         """Test 404 when log doesn't exist."""
         mock_repos["log"].get_by_id.return_value = None
 
-        response = client.delete("/api/v1/logs/999", headers=auth_headers)
+        response = client.delete("/api/v1/logs/999", headers=auth_and_user_headers)
 
         assert response.status_code == 404
 
@@ -325,8 +326,8 @@ class TestDeleteLog:
 
         assert response.status_code == 401
 
-    def test_delete_log_forbidden(self, client, invalid_auth_headers):
+    def test_delete_log_forbidden(self, client, invalid_auth_headers, user_context_headers):
         """Test 403 when invalid API key provided."""
-        response = client.delete("/api/v1/logs/123", headers=invalid_auth_headers)
+        response = client.delete("/api/v1/logs/123", headers={**invalid_auth_headers, **user_context_headers})
 
         assert response.status_code == 403

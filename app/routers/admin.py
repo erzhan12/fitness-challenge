@@ -5,6 +5,7 @@ from fastapi.security import APIKeyHeader
 
 from app.config import settings
 from app.services.workout_service import check_daily_reminders
+from src.core.repositories import app_settings_repo
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -45,3 +46,22 @@ async def trigger_daily_reminders(
         "mode": "evening" if hour else "legacy",
         "hour": hour,
     }
+
+
+@router.get("/registration")
+async def get_registration_status(
+    token: str = Depends(verify_admin_key),
+):
+    """Get the current registration gate status."""
+    app_settings = await app_settings_repo.get_singleton()
+    return {"is_registration_open": app_settings.is_registration_open}
+
+
+@router.post("/registration")
+async def set_registration_status(
+    is_open: bool = Query(..., description="Set registration open/closed"),
+    token: str = Depends(verify_admin_key),
+):
+    """Enable or disable new user registrations."""
+    app_settings = await app_settings_repo.update({"is_registration_open": is_open})
+    return {"is_registration_open": app_settings.is_registration_open}

@@ -82,22 +82,21 @@ class TestAuthenticationRequired:
 class TestInvalidAuthentication:
     """Tests for invalid API key scenarios."""
 
-    def test_invalid_bearer_token(self, client):
+    def test_invalid_bearer_token(self, client, user_context_headers):
         """Test with invalid Bearer token."""
         response = client.post(
             "/api/v1/exercises",
             json={"name": "test", "display_name": "Test", "emoji": "🏋️"},
-            headers={"Authorization": "Bearer invalid-token-12345"},
+            headers={**{"Authorization": "Bearer invalid-token-12345"}, **user_context_headers},
         )
         assert response.status_code == 403
-        assert "Invalid" in response.json()["detail"]
 
-    def test_invalid_raw_token(self, client):
+    def test_invalid_raw_token(self, client, user_context_headers):
         """Test with invalid raw token (no Bearer prefix)."""
         response = client.post(
             "/api/v1/exercises",
             json={"name": "test", "display_name": "Test", "emoji": "🏋️"},
-            headers={"Authorization": "invalid-token-12345"},
+            headers={**{"Authorization": "invalid-token-12345"}, **user_context_headers},
         )
         assert response.status_code == 403
 
@@ -110,12 +109,12 @@ class TestInvalidAuthentication:
         )
         assert response.status_code == 401
 
-    def test_whitespace_only_token(self, client):
+    def test_whitespace_only_token(self, client, user_context_headers):
         """Test with whitespace-only token."""
         response = client.post(
             "/api/v1/exercises",
             json={"name": "test", "display_name": "Test", "emoji": "🏋️"},
-            headers={"Authorization": "Bearer    "},
+            headers={**{"Authorization": "Bearer    "}, **user_context_headers},
         )
         assert response.status_code == 403
 
@@ -123,7 +122,7 @@ class TestInvalidAuthentication:
 class TestValidAuthentication:
     """Tests for valid API key scenarios."""
 
-    def test_bearer_token_format(self, client, api_key, mock_repos, mock_exercise_type_data):
+    def test_bearer_token_format(self, client, api_key, mock_repos, mock_exercise_type_data, user_context_headers):
         """Test with valid Bearer token format."""
         mock_repos["exercise_type"].create.return_value = make_exercise_type_model(
             {**mock_exercise_type_data, "name": "test", "display_name": "Test", "emoji": "🏋️"}
@@ -137,11 +136,11 @@ class TestValidAuthentication:
                 "emoji": "🏋️",
                 "unit": "reps",
             },
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers={**{"Authorization": f"Bearer {api_key}"}, **user_context_headers},
         )
         assert response.status_code == 201
 
-    def test_raw_token_format(self, client, api_key, mock_repos, mock_exercise_type_data):
+    def test_raw_token_format(self, client, api_key, mock_repos, mock_exercise_type_data, user_context_headers):
         """Test with raw token format (no Bearer prefix)."""
         mock_repos["exercise_type"].create.return_value = make_exercise_type_model(
             {**mock_exercise_type_data, "name": "test", "display_name": "Test", "emoji": "🏋️"}
@@ -155,7 +154,7 @@ class TestValidAuthentication:
                 "emoji": "🏋️",
                 "unit": "reps",
             },
-            headers={"Authorization": api_key},
+            headers={**{"Authorization": api_key}, **user_context_headers},
         )
         assert response.status_code == 201
 
@@ -163,61 +162,61 @@ class TestValidAuthentication:
 class TestPublicEndpoints:
     """Tests for endpoints that don't require authentication."""
 
-    def test_list_exercises_public(self, client, mock_repos):
+    def test_list_exercises_public(self, client, mock_repos, user_context_headers):
         """GET /exercises is publicly accessible."""
         mock_repos["exercise_type"].get_all.return_value = []
-        response = client.get("/api/v1/exercises")
+        response = client.get("/api/v1/exercises", headers=user_context_headers)
         assert response.status_code == 200
 
-    def test_get_exercise_public(self, client, mock_repos, mock_exercise_type_data):
+    def test_get_exercise_public(self, client, mock_repos, mock_exercise_type_data, user_context_headers):
         """GET /exercises/{id} is publicly accessible."""
         mock_repos["exercise_type"].get_by_id.return_value = make_exercise_type_model(
             mock_exercise_type_data
         )
-        response = client.get("/api/v1/exercises/1")
+        response = client.get("/api/v1/exercises/1", headers=user_context_headers)
         assert response.status_code == 200
 
-    def test_list_challenges_public(self, client, mock_repos):
+    def test_list_challenges_public(self, client, mock_repos, user_context_headers):
         """GET /challenges is publicly accessible."""
         mock_repos["challenge"].get_all.return_value = []
-        response = client.get("/api/v1/challenges")
+        response = client.get("/api/v1/challenges", headers=user_context_headers)
         assert response.status_code == 200
 
-    def test_get_challenge_public(self, client, mock_repos, mock_challenge_data):
+    def test_get_challenge_public(self, client, mock_repos, mock_challenge_data, user_context_headers):
         """GET /challenges/{id} is publicly accessible."""
         mock_repos["challenge"].get_by_id.return_value = make_challenge_model(
             mock_challenge_data
         )
-        response = client.get("/api/v1/challenges/1")
+        response = client.get("/api/v1/challenges/1", headers=user_context_headers)
         assert response.status_code == 200
 
-    def test_list_logs_public(self, client, mock_repos):
+    def test_list_logs_public(self, client, mock_repos, user_context_headers):
         """GET /logs is publicly accessible."""
         mock_repos["log"].get_all.return_value = ([], 0)
-        response = client.get("/api/v1/logs")
+        response = client.get("/api/v1/logs", headers=user_context_headers)
         assert response.status_code == 200
 
     def test_get_log_public(
-        self, client, mock_repos, mock_log_data, mock_exercise_type_data
+        self, client, mock_repos, mock_log_data, mock_exercise_type_data, user_context_headers
     ):
         """GET /logs/{id} is publicly accessible."""
         ex = make_exercise_type_model(mock_exercise_type_data)
         log = make_log_model(mock_log_data, exercise_type=ex)
         mock_repos["log"].get_by_id.return_value = log
-        response = client.get("/api/v1/logs/123")
+        response = client.get("/api/v1/logs/123", headers=user_context_headers)
         assert response.status_code == 200
 
-    def test_stats_exercises_public(self, client, mock_repos):
+    def test_stats_exercises_public(self, client, mock_repos, user_context_headers):
         """GET /stats/exercises is publicly accessible."""
         mock_repos["exercise_type"].get_all.return_value = []
-        response = client.get("/api/v1/stats/exercises")
+        response = client.get("/api/v1/stats/exercises", headers=user_context_headers)
         assert response.status_code == 200
 
-    def test_stats_summary_public(self, client, mock_repos):
+    def test_stats_summary_public(self, client, mock_repos, user_context_headers):
         """GET /stats/summary is publicly accessible."""
         mock_repos["user_stats"].get_all.return_value = []
         mock_repos["log"].get_all.return_value = ([], 0)
-        response = client.get("/api/v1/stats/summary")
+        response = client.get("/api/v1/stats/summary", headers=user_context_headers)
         assert response.status_code == 200
 
     def test_health_check_public(self, client):

@@ -2,12 +2,39 @@ from fastapi import APIRouter, Header, BackgroundTasks, HTTPException
 from app.config import settings
 from app.models import TelegramUpdate
 from app.services.workout_service import process_incoming_message
-from src.core.repositories import app_settings_repo
-from src.core.validators import validate_telegram_chat_id
+from collections import OrderedDict
+from threading import Lock
 import logging
+import time
 
 router = APIRouter(prefix="/telegram", tags=["Telegram"])
 logger = logging.getLogger(__name__)
+_replay_cache_lock = Lock()
+_replay_cache: OrderedDict[int, float] = OrderedDict()
+
+
+def _is_replay(update_id: int, now: float) -> bool:
+    ttl_seconds = settings.TELEGRAM_WEBHOOK_REPLAY_TTL_SECONDS
+    max_entries = settings.TELEGRAM_WEBHOOK_REPLAY_CACHE_SIZE
+    if ttl_seconds <= 0 or max_entries <= 0:
+        return False
+
+    cutoff = now - ttl_seconds
+    with _replay_cache_lock:
+        while _replay_cache:
+            _, timestamp = next(iter(_replay_cache.items()))
+            if timestamp >= cutoff:
+                break
+            _replay_cache.popitem(last=False)
+
+        if update_id in _replay_cache:
+            return True
+
+        _replay_cache[update_id] = now
+        if len(_replay_cache) > max_entries:
+            _replay_cache.popitem(last=False)
+
+    return False
 
 
 @router.post("/webhook")
@@ -24,26 +51,45 @@ async def telegram_webhook(
         logger.warning("Unauthorized webhook attempt")
         raise HTTPException(status_code=403, detail="Unauthorized")
 
+    now = time.time()
+    if _is_replay(update.update_id, now):
+        logger.warning("Duplicate webhook update ignored: update_id=%s", update.update_id)
+        return {"status": "ignored", "reason": "duplicate update"}
+
+    max_age_seconds = settings.TELEGRAM_WEBHOOK_MAX_AGE_SECONDS
+    if update.message and max_age_seconds > 0:
+        age_seconds = now - update.message.date
+        if age_seconds > max_age_seconds:
+            logger.warning(
+                "Stale webhook update ignored: update_id=%s age_seconds=%s",
+                update.update_id,
+                int(age_seconds),
+            )
+            return {"status": "ignored", "reason": "stale update"}
+
     if not update.message or not update.message.text:
         return {"status": "ignored", "reason": "no text message"}
 
-    # Auto-capture telegram_chat_id for reminders
+    # Extract user info
     chat_id = update.message.chat.id
-    
-    # Validate chat_id range before storing
-    # This prevents malicious values from being stored
-    try:
-        validate_telegram_chat_id(chat_id)
-        background_tasks.add_task(app_settings_repo.update_chat_id, chat_id)
-    except ValueError:
-        logger.warning(f"Invalid chat_id received from webhook: {chat_id}")
-        # Don't raise - just log and skip storing invalid chat_id
-        # This prevents malicious values from being stored while allowing
-        # the message processing to continue
+    telegram_user = update.message.from_
+
+    if not telegram_user:
+        logger.warning("No user info in webhook message")
+        return {"status": "ignored", "reason": "no user info"}
+
+    telegram_user_id = telegram_user.id
+    first_name = telegram_user.first_name
+    username = telegram_user.username
 
     # Process in background to reply fast to Telegram
     background_tasks.add_task(
-        process_incoming_message, update.message.text, chat_id
+        process_incoming_message,
+        update.message.text,
+        chat_id,
+        telegram_user_id,
+        first_name,
+        username
     )
 
     return {"status": "ok"}
