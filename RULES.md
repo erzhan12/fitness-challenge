@@ -836,7 +836,7 @@ The application is being migrated from single-user to multi-user support. This s
 **Phase 1 - Data Layer (COMPLETE):** Django models `AppUser` and `UserSettings` with migrations
 **Phase 2 - Repository Layer (COMPLETE):** All repository methods accept optional `user_id` parameter
 **Phase 3 - REST API (COMPLETE):** `/api/v1/users` endpoints + `get_current_user` dependency
-**Phase 4 - Telegram Registration (TODO):** Auto-registration + approval flow
+**Phase 4 - Telegram Registration (COMPLETE):** Auto-registration + approval flow
 **Phase 5 - User-Scoped Operations (TODO):** Stats, logs, challenges scoped per user
 **Phase 6 - Testing & Docs (TODO):** Comprehensive tests + updated documentation
 
@@ -967,4 +967,48 @@ During Phase 1-3, backward compatibility is maintained:
 
 **For future tests:** Use `X-Telegram-User-Id` header for authenticated endpoints. Mock `get_current_user` in test fixtures to inject test users.
 
-**Last Updated:** Implemented Phases 1-3 of multi-user support (2026-01-19)
+### Telegram Registration Flow (Phase 4)
+
+**Auto-Registration (`app/routers/telegram.py`, `app/services/workout_service.py`):**
+
+When a user sends a message to the Telegram bot:
+1. Webhook extracts `telegram_user_id`, `first_name`, `username` from `update.message.from_`
+2. These are passed to `process_incoming_message(text, chat_id, telegram_user_id, first_name, username)`
+3. Function calls `app_user_repo.get_or_create_by_telegram_user_id()` to auto-register new users
+4. If new user created, `UserSettings` is also created with the `telegram_chat_id`
+5. New users default to `status=PENDING`
+
+**Registration Gating:**
+
+After auto-registration, the bot checks `user.is_approved`:
+- If `status == "pending"`: Shows "Registration Pending" message with telegram_user_id
+- If `status == "rejected"`: Shows "Access Denied" message
+- If `status == "approved"`: User proceeds to normal bot functionality
+- Non-approved users cannot use any bot features except `/status`
+
+**Superuser Commands:**
+
+Configuration: Add comma-separated telegram user IDs to `.env`:
+```
+SUPERUSER_TELEGRAM_IDS=123456789,987654321
+```
+
+Available commands:
+- `/status` - Any user can check their registration status (shows status, telegram_user_id, username, registration date, approval date)
+- `/approve <telegram_user_id>` - **Superuser only.** Approves a user by telegram_user_id. Notifies the approved user.
+- `/reject <telegram_user_id>` - **Superuser only.** Rejects a user by telegram_user_id. Notifies the rejected user.
+
+**Notification Flow:**
+
+When a superuser approves/rejects a user:
+1. The target user's `UserSettings.telegram_chat_id` is retrieved
+2. A notification message is sent to the user's chat
+3. Approved users receive a welcome message with instructions
+4. Rejected users receive an access denied message
+
+**Key Files Modified:**
+- `app/config.py` - Added `SUPERUSER_TELEGRAM_IDS` field with validator
+- `app/routers/telegram.py` - Extract telegram_user_id and pass to service
+- `app/services/workout_service.py` - Auto-registration, gating, command handlers
+
+**Last Updated:** Implemented Phases 1-4 of multi-user support (2026-01-19)

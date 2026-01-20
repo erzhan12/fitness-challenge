@@ -2,7 +2,7 @@
 
 from datetime import date
 from typing import Optional, List
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Depends
 
 from src.api.models import (
     ExerciseStatsOut,
@@ -13,6 +13,8 @@ from src.api.services import (
     get_all_exercise_stats,
     get_stats_summary,
 )
+from src.api.security import get_current_user
+from src.core.models import AppUser
 
 router = APIRouter(prefix="/stats", tags=["Stats"])
 
@@ -58,9 +60,14 @@ async def get_exercises_stats(
     challenge_only: bool = Query(
         True, description="Only include exercises with active challenges"
     ),
+    current_user: AppUser = Depends(get_current_user),
 ) -> List[ExerciseStatsOut]:
     """Get stats for all exercises."""
-    return await get_all_exercise_stats(target_date=target_date, challenge_only=challenge_only)
+    return await get_all_exercise_stats(
+        user_id=current_user.id,
+        target_date=target_date,
+        challenge_only=challenge_only,
+    )
 
 
 @router.get(
@@ -79,9 +86,14 @@ async def get_single_exercise_stats(
     target_date: Optional[date] = Query(
         None, description="Date context for stats calculation (defaults to today)"
     ),
+    current_user: AppUser = Depends(get_current_user),
 ) -> ExerciseStatsOut:
     """Get stats for a specific exercise type."""
-    return await compute_exercise_stats(exercise_type_id, target_date=target_date)
+    return await compute_exercise_stats(
+        exercise_type_id,
+        user_id=current_user.id,
+        target_date=target_date,
+    )
 
 
 @router.get(
@@ -114,7 +126,8 @@ async def get_single_exercise_stats(
         }
     },
 )
-async def get_summary_stats() -> StatsSummaryOut:
+async def get_summary_stats(
+    current_user: AppUser = Depends(get_current_user),
+) -> StatsSummaryOut:
     """Get overall stats summary."""
-    return await get_stats_summary()
-
+    return await get_stats_summary(user_id=current_user.id)

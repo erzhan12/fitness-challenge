@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # App
     TZ: str = "Asia/Almaty"
     TARGET_CHAT_ID: int | None = None
+    SUPERUSER_TELEGRAM_IDS: list[int] = []
 
     @field_validator("TARGET_CHAT_ID", mode="before")
     @classmethod
@@ -34,6 +35,18 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return int(v) if v.strip() else None
         return v
+
+    @field_validator("SUPERUSER_TELEGRAM_IDS", mode="before")
+    @classmethod
+    def parse_superuser_ids(cls, v):
+        """Parse comma-separated telegram user IDs."""
+        if v == "" or v is None:
+            return []
+        if isinstance(v, str):
+            return [int(x.strip()) for x in v.split(",") if x.strip()]
+        if isinstance(v, list):
+            return v
+        return []
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

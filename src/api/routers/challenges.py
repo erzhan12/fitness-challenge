@@ -13,10 +13,12 @@ from src.api.models import (
 from src.api.services import (
     list_challenges,
     get_challenge,
+    get_exercise_type,
     create_challenge,
     update_challenge,
 )
-from src.api.security import verify_api_key
+from src.api.security import verify_api_key, get_current_user
+from src.core.models import AppUser
 
 router = APIRouter(prefix="/challenges", tags=["Challenges"])
 
@@ -62,9 +64,11 @@ async def list_all_challenges(
     ends_after: Optional[date] = Query(
         None, description="Filter challenges ending after this date"
     ),
+    current_user: AppUser = Depends(get_current_user),
 ) -> List[ExerciseChallengeOut]:
     """List all challenges with optional filters."""
     return await list_challenges(
+        user_id=current_user.id,
         exercise_type_id=exercise_type_id,
         is_active=is_active,
         starts_before=starts_before,
@@ -83,9 +87,12 @@ async def list_all_challenges(
         404: {"model": ErrorResponse, "description": "Challenge not found"},
     },
 )
-async def get_single_challenge(challenge_id: int) -> ExerciseChallengeOut:
+async def get_single_challenge(
+    challenge_id: int,
+    current_user: AppUser = Depends(get_current_user),
+) -> ExerciseChallengeOut:
     """Get a single challenge by its ID."""
-    result = await get_challenge(challenge_id)
+    result = await get_challenge(challenge_id, user_id=current_user.id)
     if not result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -110,16 +117,24 @@ async def get_single_challenge(challenge_id: int) -> ExerciseChallengeOut:
 )
 async def create_new_challenge(
     data: ExerciseChallengeCreate,
+    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
 ) -> ExerciseChallengeOut:
     """Create a new challenge."""
+    etype = await get_exercise_type(data.exercise_type_id, user_id=current_user.id)
+    if not etype:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Exercise type {data.exercise_type_id} not found",
+        )
+
     # Validate date range
     if data.end_date < data.start_date:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="end_date must be after or equal to start_date",
         )
-    return await create_challenge(data)
+    return await create_challenge(data, user_id=current_user.id)
 
 
 @router.patch(
@@ -139,11 +154,12 @@ async def create_new_challenge(
 async def update_existing_challenge(
     challenge_id: int,
     data: ExerciseChallengeUpdate,
+    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
 ) -> ExerciseChallengeOut:
     """Update a challenge (partial update)."""
     # Get existing to validate date changes
-    existing = await get_challenge(challenge_id)
+    existing = await get_challenge(challenge_id, user_id=current_user.id)
     if not existing:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -159,6 +175,9 @@ async def update_existing_challenge(
             detail="end_date must be after or equal to start_date",
         )
 
-    result = await update_challenge(challenge_id, data)
+    result = await update_challenge(
+        challenge_id,
+        data,
+        user_id=current_user.id,
+    )
     return result
-

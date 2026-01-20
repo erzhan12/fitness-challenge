@@ -4,7 +4,8 @@ from fastapi import APIRouter, Depends
 
 from src.api import services
 from src.api.models import SettingsOut, SettingsUpdate
-from src.api.security import verify_api_key
+from src.api.security import verify_api_key, get_current_user
+from src.core.models import AppUser
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
@@ -12,27 +13,29 @@ router = APIRouter(prefix="/settings", tags=["Settings"])
 @router.get(
     "",
     response_model=SettingsOut,
-    summary="Get application settings",
-    description="Retrieve current application settings including reminder preferences.",
+    summary="Get current user settings",
+    description="Retrieve current user settings including reminder preferences.",
 )
-async def get_settings():
+async def get_settings(
+    current_user: AppUser = Depends(get_current_user),
+):
     """
-    Get application settings.
+    Get current user settings.
 
     Returns the current configuration including:
     - **is_reminder_active**: Whether evening reminders are enabled
     - **telegram_chat_id**: Telegram chat ID where reminders are sent (if configured)
 
-    No authentication required for reading settings.
+    Requires X-Telegram-User-Id header.
     """
-    return await services.get_settings()
+    return await services.get_settings(user_id=current_user.id)
 
 
 @router.patch(
     "",
     response_model=SettingsOut,
-    summary="Update application settings",
-    description="Update application settings (requires API key authentication).",
+    summary="Update current user settings",
+    description="Update current user settings (requires API key authentication).",
     responses={
         200: {"description": "Settings updated successfully"},
         401: {"description": "Missing or invalid API key"},
@@ -40,10 +43,11 @@ async def get_settings():
 )
 async def update_settings(
     update: SettingsUpdate,
+    current_user: AppUser = Depends(get_current_user),
     api_key: str = Depends(verify_api_key)
 ):
     """
-    Update application settings.
+    Update current user settings.
 
     Currently supports updating:
     - **is_reminder_active**: Enable or disable evening reminders
@@ -52,4 +56,4 @@ async def update_settings(
 
     Returns the updated settings.
     """
-    return await services.update_settings(update)
+    return await services.update_settings(update, user_id=current_user.id)

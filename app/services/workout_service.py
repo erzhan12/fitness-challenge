@@ -24,6 +24,8 @@ from src.core.repositories import (
     log_repo,
     user_stats_repo,
     app_settings_repo,
+    app_user_repo,
+    user_settings_repo,
 )
 from src.api.services import (
     compute_exercise_stats,
@@ -431,7 +433,62 @@ def determine_default_exercise(challenges_data: List[Dict], exercise_types: List
         return "pushups"
 
 
-async def process_incoming_message(text: str, chat_id: int):
+async def notify_superusers_of_new_registration(user):
+    """
+    Send approval request notifications to all configured superusers.
+
+    This function is called when a new user registers via Telegram. It sends each
+    superuser a message with the new user's details and approval/rejection commands.
+
+    Args:
+        user: The newly registered AppUser instance
+    """
+    if not settings.SUPERUSER_TELEGRAM_IDS:
+        logger.debug("No superusers configured, skipping registration notification")
+        return
+
+    notification_message = (
+        f"🔔 <b>New User Registration Request</b>\n\n"
+        f"<b>Telegram ID:</b> <code>{user.telegram_user_id}</code>\n"
+        f"<b>Username:</b> {user.username or 'N/A'}\n"
+        f"<b>Name:</b> {user.first_name or 'N/A'}\n"
+        f"<b>Registered:</b> {user.created_at.strftime('%Y-%m-%d %H:%M') if user.created_at else 'N/A'}\n\n"
+        f"<b>Actions:</b>\n"
+        f"Approve: <code>/approve {user.telegram_user_id}</code>\n"
+        f"Reject: <code>/reject {user.telegram_user_id}</code>"
+    )
+
+    # Send to each superuser
+    for superuser_id in settings.SUPERUSER_TELEGRAM_IDS:
+        try:
+            # Get superuser's UserSettings to find their chat_id
+            superuser = await app_user_repo.get_by_telegram_user_id(superuser_id)
+            if not superuser:
+                logger.warning(f"Superuser {superuser_id} not found in database")
+                continue
+
+            # Get superuser's chat_id from UserSettings
+            user_settings = await user_settings_repo.get_by_user_id(superuser.id)
+            if not user_settings or not user_settings.telegram_chat_id:
+                logger.warning(
+                    f"Superuser {superuser_id} (user_id={superuser.id}) has no telegram_chat_id in UserSettings"
+                )
+                continue
+
+            # Send notification
+            await send_telegram_message(user_settings.telegram_chat_id, notification_message)
+            logger.info(f"Sent registration notification to superuser {superuser_id}")
+        except Exception as e:
+            logger.error(f"Failed to notify superuser {superuser_id}: {e}")
+
+
+async def process_incoming_message(
+    text: str,
+    chat_id: int,
+    telegram_user_id: int,
+    first_name: str,
+    username: Optional[str] = None
+):
     # Send typing action immediately
     await send_chat_action(chat_id, "typing")
 
@@ -442,8 +499,89 @@ async def process_incoming_message(text: str, chat_id: int):
     try:
         _ensure_orm()
 
+        # Auto-register user or get existing user
+        user, created = await app_user_repo.get_or_create_by_telegram_user_id(
+            telegram_user_id=telegram_user_id,
+            defaults={
+                "username": username,
+                "first_name": first_name,
+            }
+        )
+
+        # If new user, log registration and notify superusers
+        if created:
+            logger.info(f"New user registered: telegram_user_id={telegram_user_id}, user_id={user.id}, status=pending")
+            # Notify superusers of the new registration (non-blocking)
+            await notify_superusers_of_new_registration(user)
+
+        # Update user fields if they've changed (refreshes stale Telegram data)
+        # Check if username or first_name have been updated in Telegram
+        fields_to_update = {}
+        if user.username != username:
+            fields_to_update["username"] = username
+        if user.first_name != first_name:
+            fields_to_update["first_name"] = first_name
+
+        if fields_to_update:
+            await app_user_repo.update(user.id, fields_to_update)
+            # Refresh user object with updated fields
+            user, _ = await app_user_repo.get_or_create_by_telegram_user_id(telegram_user_id)
+
+        # Update telegram_chat_id for all users (creates UserSettings if needed)
+        # This ensures existing users get their chat_id refreshed on every message
+        await user_settings_repo.update_chat_id(user.id, chat_id)
+
         # Handle commands
         text_lower = text.strip().lower()
+
+        # Handle /status command BEFORE approval gate - allow all users to check status
+        if text_lower == "/status":
+            status_emoji = {
+                "pending": "⏳",
+                "approved": "✅",
+                "rejected": "🚫"
+            }.get(user.status, "❓")
+
+            status_text = {
+                "pending": "Pending Approval",
+                "approved": "Approved",
+                "rejected": "Rejected"
+            }.get(user.status, "Unknown")
+
+            status_message = (
+                f"{status_emoji} <b>Registration Status</b>\n\n"
+                f"<b>Status:</b> {status_text}\n"
+                f"<b>Telegram ID:</b> <code>{telegram_user_id}</code>\n"
+                f"<b>Username:</b> {user.username or 'N/A'}\n"
+                f"<b>Registered:</b> {user.created_at.strftime('%Y-%m-%d %H:%M')}"
+            )
+
+            if user.approved_at:
+                status_message += f"\n<b>Approved:</b> {user.approved_at.strftime('%Y-%m-%d %H:%M')}"
+
+            await send_telegram_message(chat_id, status_message)
+            return
+
+        # Check if user is approved - gate all other commands
+        if not user.is_approved:
+            if user.status == "pending":
+                pending_message = (
+                    "⏳ <b>Registration Pending</b>\n\n"
+                    "Thank you for registering! Your account is pending approval.\n"
+                    "You'll be notified once you're approved and can start tracking workouts.\n\n"
+                    f"Your Telegram ID: <code>{telegram_user_id}</code>\n\n"
+                    "You can use <code>/status</code> to check your approval status."
+                )
+                await send_telegram_message(chat_id, pending_message)
+            elif user.status == "rejected":
+                rejected_message = (
+                    "🚫 <b>Access Denied</b>\n\n"
+                    "Your registration request has been rejected.\n"
+                    "Please contact the administrator for more information.\n\n"
+                    "You can use <code>/status</code> to see details."
+                )
+                await send_telegram_message(chat_id, rejected_message)
+            return
 
         if text_lower == "/start":
             welcome_message = (
@@ -455,11 +593,22 @@ async def process_incoming_message(text: str, chat_id: int):
                 "• <code>2 min plank</code>\n"
                 "• <code>20 pushups and 30 squats</code>\n\n"
                 "<b>Commands:</b>\n"
+                "• <code>/status</code> - Check your registration status\n"
                 "• <code>/undo</code> - Remove last log entry\n"
                 "• <code>/recent [N]</code> - Show recent logs (default: 5)\n"
-                "• <code>/delete &lt;id&gt;</code> - Delete a specific log\n\n"
-                "I'll track your progress and keep you motivated! 💪"
+                "• <code>/delete &lt;id&gt;</code> - Delete a specific log\n"
             )
+
+            # Add superuser commands if applicable
+            if telegram_user_id in settings.SUPERUSER_TELEGRAM_IDS:
+                welcome_message += (
+                    "\n<b>Admin Commands:</b>\n"
+                    "• <code>/approve &lt;telegram_user_id&gt;</code> - Approve user\n"
+                    "• <code>/reject &lt;telegram_user_id&gt;</code> - Reject user\n"
+                )
+
+            welcome_message += "\nI'll track your progress and keep you motivated! 💪"
+
             await send_telegram_message(chat_id, welcome_message)
             return
 
@@ -501,6 +650,147 @@ async def process_incoming_message(text: str, chat_id: int):
             except ValueError:
                 await send_telegram_message(
                     chat_id, f"❌ Invalid log ID: {parts[1]}\nLog ID must be a number."
+                )
+            return
+
+        # Handle /status command - show registration status
+        if text_lower == "/status":
+            status_emoji = {
+                "pending": "⏳",
+                "approved": "✅",
+                "rejected": "🚫"
+            }.get(user.status, "❓")
+
+            status_text = {
+                "pending": "Pending Approval",
+                "approved": "Approved",
+                "rejected": "Rejected"
+            }.get(user.status, "Unknown")
+
+            status_message = (
+                f"{status_emoji} <b>Registration Status</b>\n\n"
+                f"<b>Status:</b> {status_text}\n"
+                f"<b>Telegram ID:</b> <code>{telegram_user_id}</code>\n"
+                f"<b>Username:</b> {user.username or 'N/A'}\n"
+                f"<b>Registered:</b> {user.created_at.strftime('%Y-%m-%d %H:%M')}"
+            )
+
+            if user.approved_at:
+                status_message += f"\n<b>Approved:</b> {user.approved_at.strftime('%Y-%m-%d %H:%M')}"
+
+            await send_telegram_message(chat_id, status_message)
+            return
+
+        # Handle /approve command - superuser only
+        if text_lower.startswith("/approve"):
+            if telegram_user_id not in settings.SUPERUSER_TELEGRAM_IDS:
+                await send_telegram_message(
+                    chat_id,
+                    "🚫 <b>Permission Denied</b>\n\n"
+                    "Only superusers can approve users."
+                )
+                return
+
+            parts = text_lower.split()
+            if len(parts) < 2:
+                await send_telegram_message(
+                    chat_id,
+                    "❌ Usage: <code>/approve &lt;telegram_user_id&gt;</code>\n"
+                    "Example: <code>/approve 123456789</code>"
+                )
+                return
+
+            try:
+                target_telegram_user_id = int(parts[1])
+                target_user = await app_user_repo.approve_by_telegram_user_id(target_telegram_user_id)
+
+                if not target_user:
+                    await send_telegram_message(
+                        chat_id,
+                        f"❌ User with Telegram ID <code>{target_telegram_user_id}</code> not found."
+                    )
+                    return
+
+                await send_telegram_message(
+                    chat_id,
+                    f"✅ <b>User Approved</b>\n\n"
+                    f"<b>User:</b> {target_user.first_name} (@{target_user.username or 'N/A'})\n"
+                    f"<b>Telegram ID:</b> <code>{target_telegram_user_id}</code>\n"
+                    f"<b>Status:</b> Approved"
+                )
+
+                # Notify the approved user
+                target_settings = await user_settings_repo.get_by_user_id(target_user.id)
+                if target_settings and target_settings.telegram_chat_id:
+                    approval_notification = (
+                        "🎉 <b>Congratulations!</b>\n\n"
+                        "Your account has been approved! You can now start tracking your workouts.\n\n"
+                        "Send me a workout like:\n"
+                        "• <code>20 pushups</code>\n"
+                        "• <code>30 squats</code>\n\n"
+                        "Type /start to see all available commands. Let's get started! 💪"
+                    )
+                    await send_telegram_message(target_settings.telegram_chat_id, approval_notification)
+
+            except ValueError:
+                await send_telegram_message(
+                    chat_id,
+                    f"❌ Invalid Telegram User ID: {parts[1]}\nMust be a number."
+                )
+            return
+
+        # Handle /reject command - superuser only
+        if text_lower.startswith("/reject"):
+            if telegram_user_id not in settings.SUPERUSER_TELEGRAM_IDS:
+                await send_telegram_message(
+                    chat_id,
+                    "🚫 <b>Permission Denied</b>\n\n"
+                    "Only superusers can reject users."
+                )
+                return
+
+            parts = text_lower.split()
+            if len(parts) < 2:
+                await send_telegram_message(
+                    chat_id,
+                    "❌ Usage: <code>/reject &lt;telegram_user_id&gt;</code>\n"
+                    "Example: <code>/reject 123456789</code>"
+                )
+                return
+
+            try:
+                target_telegram_user_id = int(parts[1])
+                target_user = await app_user_repo.reject_by_telegram_user_id(target_telegram_user_id)
+
+                if not target_user:
+                    await send_telegram_message(
+                        chat_id,
+                        f"❌ User with Telegram ID <code>{target_telegram_user_id}</code> not found."
+                    )
+                    return
+
+                await send_telegram_message(
+                    chat_id,
+                    f"🚫 <b>User Rejected</b>\n\n"
+                    f"<b>User:</b> {target_user.first_name} (@{target_user.username or 'N/A'})\n"
+                    f"<b>Telegram ID:</b> <code>{target_telegram_user_id}</code>\n"
+                    f"<b>Status:</b> Rejected"
+                )
+
+                # Notify the rejected user
+                target_settings = await user_settings_repo.get_by_user_id(target_user.id)
+                if target_settings and target_settings.telegram_chat_id:
+                    rejection_notification = (
+                        "🚫 <b>Registration Update</b>\n\n"
+                        "Your registration request has been rejected.\n"
+                        "Please contact the administrator for more information."
+                    )
+                    await send_telegram_message(target_settings.telegram_chat_id, rejection_notification)
+
+            except ValueError:
+                await send_telegram_message(
+                    chat_id,
+                    f"❌ Invalid Telegram User ID: {parts[1]}\nMust be a number."
                 )
             return
 
