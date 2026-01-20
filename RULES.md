@@ -1012,3 +1012,49 @@ When a superuser approves/rejects a user:
 - `app/services/workout_service.py` - Auto-registration, gating, command handlers
 
 **Last Updated:** Implemented Phases 1-4 of multi-user support (2026-01-19)
+
+---
+
+## Input Validation for Telegram IDs
+
+All user-supplied Telegram user IDs (especially in admin commands) must be validated to prevent invalid or malicious input.
+
+### Validators (`src/core/validators.py`)
+
+**Available Validators:**
+- `validate_telegram_chat_id(chat_id: int)` - Validates chat IDs (range: -10^15 to 10^15)
+- `validate_telegram_user_id(user_id: int)` - Validates user IDs (range: 0 < user_id <= 10^12)
+
+**When to Use:**
+- Any admin command that accepts telegram_user_id as user input (e.g., `/approve`, `/reject`)
+- API endpoints that accept Telegram IDs in request body or query parameters
+- Before database lookups using user-supplied IDs
+
+**Pattern:**
+```python
+from src.core.validators import validate_telegram_user_id
+
+try:
+    target_telegram_user_id = int(parts[1])
+    validate_telegram_user_id(target_telegram_user_id)  # Validates range
+    # Proceed with database operations
+    user = await app_user_repo.get_by_telegram_user_id(target_telegram_user_id)
+except ValueError as e:
+    # Show user-friendly error with validation message
+    await send_telegram_message(chat_id, f"❌ Invalid input: {str(e)}")
+```
+
+**What Gets Validated:**
+- ✅ Positive integers only (user IDs cannot be negative or zero)
+- ✅ Upper bound check (prevents excessively large values)
+- ❌ Rejects: 0, negative numbers, values > 10^12
+
+**Key Files:**
+- `src/core/validators.py` - Validation functions
+- `app/services/workout_service.py:706` - `/approve` command validation
+- `app/services/workout_service.py:765` - `/reject` command validation
+
+**Pitfall to Avoid:**
+Don't trust user input from Telegram commands without validation. Always validate Telegram IDs before using them in database queries, even when protected by permission checks.
+
+**Last Updated:** Added input validation for telegram_user_id in admin commands (2026-01-20)
