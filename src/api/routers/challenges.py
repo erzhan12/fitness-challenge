@@ -117,8 +117,8 @@ async def get_single_challenge(
 )
 async def create_new_challenge(
     data: ExerciseChallengeCreate,
-    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
+    current_user: AppUser = Depends(get_current_user),
 ) -> ExerciseChallengeOut:
     """Create a new challenge."""
     etype = await get_exercise_type(data.exercise_type_id, user_id=current_user.id)
@@ -154,8 +154,8 @@ async def create_new_challenge(
 async def update_existing_challenge(
     challenge_id: int,
     data: ExerciseChallengeUpdate,
-    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
+    current_user: AppUser = Depends(get_current_user),
 ) -> ExerciseChallengeOut:
     """Update a challenge (partial update)."""
     # Get existing to validate date changes

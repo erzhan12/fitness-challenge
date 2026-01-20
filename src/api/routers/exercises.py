@@ -104,8 +104,8 @@ async def get_exercise(
 )
 async def create_exercise(
     data: ExerciseTypeCreate,
-    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
+    current_user: AppUser = Depends(get_current_user),
 ) -> ExerciseTypeOut:
     """Create a new exercise type."""
     return await create_exercise_type(data, user_id=current_user.id)
@@ -127,8 +127,8 @@ async def create_exercise(
 async def update_exercise(
     exercise_type_id: int,
     data: ExerciseTypeUpdate,
-    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
+    current_user: AppUser = Depends(get_current_user),
 ) -> ExerciseTypeOut:
     """Update an exercise type (partial update)."""
     result = await update_exercise_type(

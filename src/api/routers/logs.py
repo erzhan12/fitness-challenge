@@ -164,8 +164,8 @@ async def get_single_log(
 )
 async def create_new_log(
     data: ExerciseLogCreate,
-    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
+    current_user: AppUser = Depends(get_current_user),
 ) -> ExerciseLogCreateResponse:
     """Create a new log entry."""
     # Validate exercise type exists
@@ -210,8 +210,8 @@ async def create_new_log(
 )
 async def delete_single_log(
     log_id: int,
-    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
+    current_user: AppUser = Depends(get_current_user),
 ) -> ExerciseLogCreateResponse:
     """Delete a log entry."""
     log, stats = await delete_log(log_id, user_id=current_user.id)
