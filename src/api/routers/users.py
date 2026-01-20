@@ -13,7 +13,7 @@ from src.api.models import (
 )
 from src.api.security import verify_api_key, get_current_user
 from src.core.models import AppUser
-from src.core.repositories import app_user_repo, user_settings_repo
+from src.core.repositories import app_user_repo, user_settings_repo, app_settings_repo
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -28,6 +28,7 @@ router = APIRouter(prefix="/users", tags=["Users"])
     responses={
         201: {"description": "User registered successfully (pending approval)"},
         400: {"model": ErrorResponse, "description": "User already exists"},
+        403: {"model": ErrorResponse, "description": "Registration is closed"},
     },
 )
 async def register_user(data: UserCreate) -> UserOut:
@@ -36,22 +37,27 @@ async def register_user(data: UserCreate) -> UserOut:
     Creates a new user with 'pending' status.
     The user must be approved by an admin before they can use the API.
     """
-    # Check if user already exists
-    existing_user = await app_user_repo.get_by_telegram_user_id(data.telegram_user_id)
-    if existing_user:
+    app_settings = await app_settings_repo.get_singleton()
+    if not app_settings.is_registration_open:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Registration is currently closed",
+        )
+
+    user, created = await app_user_repo.get_or_create_by_telegram_user_id(
+        data.telegram_user_id,
+        defaults={
+            "username": data.username,
+            "first_name": data.first_name,
+            "timezone": data.timezone,
+            "status": AppUser.Status.PENDING,
+        },
+    )
+    if not created:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"User with telegram_user_id {data.telegram_user_id} already exists",
         )
-
-    # Create the user
-    user = await app_user_repo.create({
-        "telegram_user_id": data.telegram_user_id,
-        "username": data.username,
-        "first_name": data.first_name,
-        "timezone": data.timezone,
-        "status": AppUser.Status.PENDING,
-    })
 
     # Create default user settings
     await user_settings_repo.get_or_create(user.id)

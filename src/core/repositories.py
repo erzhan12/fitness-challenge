@@ -54,6 +54,17 @@ class AppUserRepository:
             return None
 
     @sync_to_async
+    def get_by_telegram_user_ids(self, telegram_user_ids: List[int]) -> List[AppUser]:
+        """Get users by Telegram user IDs."""
+        if not telegram_user_ids:
+            return []
+        return list(
+            AppUser.objects.select_related("settings").filter(
+                telegram_user_id__in=telegram_user_ids
+            )
+        )
+
+    @sync_to_async
     def get_all(
         self, status: Optional[str] = None, is_approved_only: bool = False
     ) -> List[AppUser]:

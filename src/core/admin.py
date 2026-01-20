@@ -181,13 +181,14 @@ class UserStatsAdmin(admin.ModelAdmin):
 class AppSettingsAdmin(admin.ModelAdmin):
     list_display = [
         "id",
+        "is_registration_open",
         "is_reminder_active",
         "telegram_chat_id",
         "last_reminder_21_date",
         "last_reminder_22_date",
         "last_reminder_23_date",
     ]
-    list_editable = ["is_reminder_active"]
+    list_editable = ["is_registration_open", "is_reminder_active"]
     readonly_fields = [
         "last_reminder_21_date",
         "last_reminder_22_date",

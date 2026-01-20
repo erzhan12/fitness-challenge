@@ -237,7 +237,7 @@ class TestGetRecentLogs:
         assert "<code>1</code>" in result
         assert "<code>2</code>" in result
         assert "/delete" in result
-        get_all_mock.assert_awaited_once_with(limit=5, offset=0)
+        get_all_mock.assert_awaited_once_with(limit=5, offset=0, user_id=12345)
 
     def test_get_recent_logs_empty(self):
         with patch(
@@ -247,7 +247,7 @@ class TestGetRecentLogs:
             result = asyncio.run(get_recent_logs(12345))
 
         assert result == "No logs found."
-        get_all_mock.assert_awaited_once_with(limit=5, offset=0)
+        get_all_mock.assert_awaited_once_with(limit=5, offset=0, user_id=12345)
 
     def test_get_recent_logs_limit_is_respected(self):
         with patch(
@@ -256,7 +256,7 @@ class TestGetRecentLogs:
         ) as get_all_mock:
             asyncio.run(get_recent_logs(12345, limit=3))
 
-        get_all_mock.assert_awaited_once_with(limit=3, offset=0)
+        get_all_mock.assert_awaited_once_with(limit=3, offset=0, user_id=12345)
 
 
 class TestDeleteLogEntry:
@@ -294,10 +294,10 @@ class TestDeleteLogEntry:
         assert "Pushups" in result
         assert "-20" in result
         assert "2024-01-15" in result
-        get_by_id_mock.assert_awaited_once_with(123)
-        delete_mock.assert_awaited_once_with(123)
-        decrement_mock.assert_awaited_once_with(1, 20)
-        sync_last_logged_date_mock.assert_awaited_once_with(1)
+        get_by_id_mock.assert_awaited_once_with(123, user_id=12345)
+        delete_mock.assert_awaited_once_with(123, user_id=12345)
+        decrement_mock.assert_awaited_once_with(1, 20, user_id=12345)
+        sync_last_logged_date_mock.assert_awaited_once_with(1, user_id=12345)
 
     def test_delete_log_entry_not_found(self):
         with (
@@ -314,7 +314,7 @@ class TestDeleteLogEntry:
 
         assert "not found" in result.lower()
         assert "999" in result
-        get_by_id_mock.assert_awaited_once_with(999)
+        get_by_id_mock.assert_awaited_once_with(999, user_id=12345)
         delete_mock.assert_not_awaited()
 
     def test_delete_log_entry_delete_failed(self):
@@ -376,7 +376,7 @@ class TestDeleteLogEntry:
         ):
             asyncio.run(delete_log_entry(123, 12345))
 
-        sync_last_logged_date_mock.assert_awaited_once_with(1)
+        sync_last_logged_date_mock.assert_awaited_once_with(1, user_id=12345)
 
 
 class TestUndoLastLog:
@@ -398,7 +398,7 @@ class TestUndoLastLog:
             result = asyncio.run(undo_last_log(12345))
 
         assert "Deleted log entry 123" in result
-        get_all_mock.assert_awaited_once_with(limit=1, offset=0)
+        get_all_mock.assert_awaited_once_with(limit=1, offset=0, user_id=12345)
         delete_mock.assert_awaited_once_with(123, 12345)
 
     def test_undo_last_log_no_logs(self):
@@ -409,4 +409,4 @@ class TestUndoLastLog:
             result = asyncio.run(undo_last_log(12345))
 
         assert "No logs found to undo" in result
-        get_all_mock.assert_awaited_once_with(limit=1, offset=0)
+        get_all_mock.assert_awaited_once_with(limit=1, offset=0, user_id=12345)

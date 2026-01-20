@@ -113,16 +113,10 @@ async def get_current_user(
 
     user = await app_user_repo.get_by_telegram_user_id(telegram_user_id)
 
-    if not user:
+    if not user or not user.is_approved:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not found. Please register first.",
-        )
-
-    if not user.is_approved:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"User not approved. Current status: {user.status}",
+            detail="Unauthorized",
         )
 
     return user
@@ -156,4 +150,3 @@ async def get_current_user_optional(
         return None
 
     return user
-

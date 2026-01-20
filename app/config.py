@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     TELEGRAM_WEBHOOK_URL: str | None = (
         None  # Webhook URL for Telegram (set via scripts)
     )
+    TELEGRAM_WEBHOOK_MAX_AGE_SECONDS: int = 300  # Reject updates older than this window; 0 disables.
+    TELEGRAM_WEBHOOK_REPLAY_TTL_SECONDS: int = 300  # How long to keep update IDs for replay detection; 0 disables.
+    TELEGRAM_WEBHOOK_REPLAY_CACHE_SIZE: int = 10000  # Max cached update IDs for replay detection; 0 disables.
 
     # LLM
     LLM_API_KEY: str

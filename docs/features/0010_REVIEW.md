@@ -73,3 +73,10 @@ NEEDS CHANGES - Phase 4 Telegram auto-registration is partially implemented, but
 ## Optional Cleanups
 
 - Consider updating existing user fields (`username`, `first_name`) on subsequent Telegram messages to avoid stale data (`app/services/workout_service.py`:453-468).
+
+---
+
+## Post-Review Updates
+
+- Added a global registration gate (`AppSettings.is_registration_open`) with Telegram/admin controls.
+- Added per-user registration rate limiting (1/min) for unapproved users and basic tests for gate/rate-limit behavior.

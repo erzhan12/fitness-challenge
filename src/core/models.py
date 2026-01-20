@@ -1,5 +1,7 @@
 from django.db import models
 
+from .validators import validate_timezone_field
+
 
 class AppUser(models.Model):
     """Application user model for multi-user support.
@@ -16,7 +18,11 @@ class AppUser(models.Model):
     telegram_user_id = models.BigIntegerField(unique=True)
     username = models.CharField(max_length=100, null=True, blank=True)
     first_name = models.CharField(max_length=100, null=True, blank=True)
-    timezone = models.CharField(max_length=50, default="Asia/Almaty")
+    timezone = models.CharField(
+        max_length=50,
+        default="Asia/Almaty",
+        validators=[validate_timezone_field],
+    )
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
@@ -24,6 +30,7 @@ class AppUser(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     approved_at = models.DateTimeField(null=True, blank=True)
+    last_registration_attempt_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "app_users"
@@ -69,7 +76,8 @@ class ExerciseType(models.Model):
         on_delete=models.CASCADE,
         related_name="exercise_types",
         null=True,  # Nullable for migration; will be made required after backfill
-        blank=True
+        blank=True,
+        db_index=True
     )
     name = models.CharField(max_length=100)  # Unique per user, not globally
     display_name = models.CharField(max_length=100)
@@ -97,7 +105,8 @@ class ExerciseChallenge(models.Model):
         on_delete=models.CASCADE,
         related_name="challenges",
         null=True,  # Nullable for migration; will be made required after backfill
-        blank=True
+        blank=True,
+        db_index=True
     )
     exercise_type = models.ForeignKey(
         ExerciseType,
@@ -125,7 +134,8 @@ class ExerciseLog(models.Model):
         on_delete=models.CASCADE,
         related_name="logs",
         null=True,  # Nullable for migration; will be made required after backfill
-        blank=True
+        blank=True,
+        db_index=True
     )
     exercise_type = models.ForeignKey(
         ExerciseType,
@@ -167,7 +177,8 @@ class UserStats(models.Model):
         on_delete=models.CASCADE,
         related_name="stats",
         null=True,  # Nullable for migration; will be made required after backfill
-        blank=True
+        blank=True,
+        db_index=True
     )
     exercise_type = models.ForeignKey(
         ExerciseType,
@@ -201,6 +212,7 @@ class AppSettings(models.Model):
     Stores reminder preferences and idempotency tracking for evening reminders.
     Future-proofed for multi-user by keeping extensible schema.
     """
+    is_registration_open = models.BooleanField(default=True)
     is_reminder_active = models.BooleanField(default=True)
     telegram_chat_id = models.BigIntegerField(null=True, blank=True)
 
