@@ -147,6 +147,17 @@ class ExerciseLogAdmin(admin.ModelAdmin):
     raw_id_fields = ["user", "exercise_type", "challenge"]
     readonly_fields = ["timestamp", "cumulative_total", "day_number", "status"]
 
+    actions = ["change_user_to_user_2"]
+
+    @admin.action(description="Change user_id to 2 for selected logs")
+    def change_user_to_user_2(self, request, queryset):
+        try:
+            user_2 = AppUser.objects.get(id=2)
+            updated = queryset.update(user=user_2)
+            self.message_user(request, f"{updated} exercise log(s) updated to user_id=2.")
+        except AppUser.DoesNotExist:
+            self.message_user(request, "Error: User with id=2 does not exist.", level="error")
+
 
 @admin.register(UserStats)
 class UserStatsAdmin(admin.ModelAdmin):
