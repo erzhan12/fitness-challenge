@@ -43,8 +43,8 @@ async def get_settings(
 )
 async def update_settings(
     update: SettingsUpdate,
+    api_key: str = Depends(verify_api_key),
     current_user: AppUser = Depends(get_current_user),
-    api_key: str = Depends(verify_api_key)
 ):
     """
     Update current user settings.

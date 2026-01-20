@@ -71,8 +71,8 @@ TZ = ZoneInfo(settings.TZ)
 )
 async def parse_workout(
     data: ParseWorkoutRequest,
-    current_user: AppUser = Depends(get_current_user),
     _: str = Depends(verify_api_key),
+    current_user: AppUser = Depends(get_current_user),
 ) -> ParseWorkoutResponse:
     """Parse a workout message into structured entries.
 
