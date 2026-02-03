@@ -1087,11 +1087,22 @@ The feature is disabled for a user if either `habit_reward_api_key` or `habit_re
    - If not sent, POST to `{base_url}/v1/habits/{habit_id}/complete` with `X-API-Key` header
    - On 200 response, mark as sent for today
 
-### Idempotency
+### Idempotency (Atomic Claim Pattern)
 
-Uses `UserSettings.last_habit_reward_sent_date` (per-user) to ensure only one notification per day:
-- Check if field equals today's date before sending
-- Only update field after receiving 200 response
+Uses `UserSettings.last_habit_reward_sent_date` (per-user) with an atomic claim pattern to prevent race conditions under concurrent requests:
+
+**Pattern:**
+1. **Atomic claim**: Attempt to set `last_habit_reward_sent_date = today` using `filter().exclude(last_habit_reward_sent_date=today).update()`
+2. If claim succeeds (rows updated > 0): proceed to send API request
+3. If claim fails (rows updated = 0): another request already claimed this date, skip
+4. **Rollback on failure**: If API call fails, clear the claim to allow retry
+
+**Key Methods in `UserSettingsRepository`:**
+- `try_claim_habit_reward_date(user_id, date)` - Returns True if claim successful (atomic conditional update)
+- `clear_habit_reward_claim(user_id, date)` - Clears claim on API failure
+
+**Why not check-then-mark?**
+A simple check-then-mark pattern is non-atomic: two concurrent requests could both pass the check before either marks the date, causing duplicate sends. The atomic claim pattern prevents this by using Django's `filter().exclude().update()` which is a single atomic database operation.
 
 ### Error Handling
 
@@ -1110,4 +1121,4 @@ Uses `UserSettings.last_habit_reward_sent_date` (per-user) to ensure only one no
 - `src/api/models.py` - `UserSettingsOut`/`UserSettingsUpdate` include habit reward fields
 - `tests/services/test_habit_reward_client.py` - Unit tests
 
-**Last Updated:** Moved habit reward config to per-user UserSettings, fixed API bugs, added REST trigger (2026-02-02)
+**Last Updated:** Added atomic claim pattern for race-safe idempotency (2026-02-03)
