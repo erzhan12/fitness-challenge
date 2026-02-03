@@ -275,116 +275,261 @@ class TestSendHabitCompletion:
                     assert call_args[1]["json"] is None
 
 
+def _make_mock_challenge(id=1, start_date=date(2026, 1, 1), end_date=date(2026, 1, 31),
+                         target_total=1000, daily_target=None):
+    """Create a mock challenge object."""
+    return SimpleNamespace(
+        id=id,
+        start_date=start_date,
+        end_date=end_date,
+        target_total=target_total,
+        daily_target=daily_target,
+    )
+
+
 class TestNotifyHabitRewardIfComplete:
     """Integration tests for notify_habit_reward_if_complete() in workout_service."""
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_no_challenges(self):
+        """When no active challenges, returns True without checking completion."""
+        from app.services.workout_service import notify_habit_reward_if_complete
+
+        with patch(
+            "app.services.workout_service.challenge_repo"
+        ) as mock_challenge_repo:
+            mock_challenge_repo.get_current_active = AsyncMock(return_value=[])
+
+            with patch(
+                "app.services.workout_service.user_settings_repo"
+            ) as mock_user_repo:
+                with patch(
+                    "app.services.workout_service.send_habit_completion",
+                    new_callable=AsyncMock,
+                ) as mock_send:
+                    result = await notify_habit_reward_if_complete(
+                        date(2026, 1, 22), user_id=1
+                    )
+
+                    assert result is True
+                    # Should not try to claim or send when no challenges
+                    mock_user_repo.try_claim_habit_reward_date.assert_not_called()
+                    mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_not_all_complete(self):
+        """When not all challenges complete, returns True without sending."""
+        from app.services.workout_service import notify_habit_reward_if_complete
+
+        mock_challenges = [_make_mock_challenge()]
+
+        with patch(
+            "app.services.workout_service.challenge_repo"
+        ) as mock_challenge_repo:
+            mock_challenge_repo.get_current_active = AsyncMock(
+                return_value=mock_challenges
+            )
+
+            with patch(
+                "app.services.workout_service._check_all_challenges_complete",
+                new_callable=AsyncMock,
+            ) as mock_check:
+                mock_check.return_value = False  # Not all complete
+
+                with patch(
+                    "app.services.workout_service.user_settings_repo"
+                ) as mock_user_repo:
+                    with patch(
+                        "app.services.workout_service.send_habit_completion",
+                        new_callable=AsyncMock,
+                    ) as mock_send:
+                        result = await notify_habit_reward_if_complete(
+                            date(2026, 1, 22), user_id=1
+                        )
+
+                        assert result is True
+                        # Should check completion
+                        mock_check.assert_awaited_once()
+                        # Should NOT try to claim or send
+                        mock_user_repo.try_claim_habit_reward_date.assert_not_called()
+                        mock_send.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_returns_true_when_already_claimed(self):
         """When date already claimed, returns True without calling API."""
         from app.services.workout_service import notify_habit_reward_if_complete
 
+        mock_challenges = [_make_mock_challenge()]
+
         with patch(
-            "app.services.workout_service.user_settings_repo"
-        ) as mock_repo:
-            mock_repo.try_claim_habit_reward_date = AsyncMock(return_value=False)
+            "app.services.workout_service.challenge_repo"
+        ) as mock_challenge_repo:
+            mock_challenge_repo.get_current_active = AsyncMock(
+                return_value=mock_challenges
+            )
 
             with patch(
-                "app.services.workout_service.send_habit_completion",
+                "app.services.workout_service._check_all_challenges_complete",
                 new_callable=AsyncMock,
-            ) as mock_send:
-                result = await notify_habit_reward_if_complete(
-                    date(2026, 1, 22), user_id=1
-                )
+            ) as mock_check:
+                mock_check.return_value = True  # All complete
 
-                assert result is True
-                mock_repo.try_claim_habit_reward_date.assert_awaited_once_with(
-                    1, date(2026, 1, 22)
-                )
-                # Should NOT call API since claim failed (already claimed)
-                mock_send.assert_not_called()
+                with patch(
+                    "app.services.workout_service.user_settings_repo"
+                ) as mock_user_repo:
+                    mock_user_repo.try_claim_habit_reward_date = AsyncMock(
+                        return_value=False
+                    )
+
+                    with patch(
+                        "app.services.workout_service.send_habit_completion",
+                        new_callable=AsyncMock,
+                    ) as mock_send:
+                        result = await notify_habit_reward_if_complete(
+                            date(2026, 1, 22), user_id=1
+                        )
+
+                        assert result is True
+                        mock_user_repo.try_claim_habit_reward_date.assert_awaited_once_with(
+                            1, date(2026, 1, 22)
+                        )
+                        # Should NOT call API since claim failed (already claimed)
+                        mock_send.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_sends_on_successful_claim(self):
         """On successful claim and API call, returns True."""
         from app.services.workout_service import notify_habit_reward_if_complete
 
+        mock_challenges = [_make_mock_challenge()]
+
         with patch(
-            "app.services.workout_service.user_settings_repo"
-        ) as mock_repo:
-            mock_repo.try_claim_habit_reward_date = AsyncMock(return_value=True)
+            "app.services.workout_service.challenge_repo"
+        ) as mock_challenge_repo:
+            mock_challenge_repo.get_current_active = AsyncMock(
+                return_value=mock_challenges
+            )
 
             with patch(
-                "app.services.workout_service.send_habit_completion",
+                "app.services.workout_service._check_all_challenges_complete",
                 new_callable=AsyncMock,
-            ) as mock_send:
-                mock_send.return_value = True  # API success
+            ) as mock_check:
+                mock_check.return_value = True  # All complete
 
-                result = await notify_habit_reward_if_complete(
-                    date(2026, 1, 22), user_id=1
-                )
+                with patch(
+                    "app.services.workout_service.user_settings_repo"
+                ) as mock_user_repo:
+                    mock_user_repo.try_claim_habit_reward_date = AsyncMock(
+                        return_value=True
+                    )
 
-                assert result is True
-                mock_send.assert_awaited_once_with(1, date(2026, 1, 22))
-                # Should NOT clear claim on success
-                mock_repo.clear_habit_reward_claim.assert_not_called()
+                    with patch(
+                        "app.services.workout_service.send_habit_completion",
+                        new_callable=AsyncMock,
+                    ) as mock_send:
+                        mock_send.return_value = True  # API success
+
+                        result = await notify_habit_reward_if_complete(
+                            date(2026, 1, 22), user_id=1
+                        )
+
+                        assert result is True
+                        mock_send.assert_awaited_once_with(1, date(2026, 1, 22))
+                        # Should NOT clear claim on success
+                        mock_user_repo.clear_habit_reward_claim.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_clears_claim_on_api_failure(self):
         """On API failure, clears claim and returns False."""
         from app.services.workout_service import notify_habit_reward_if_complete
 
+        mock_challenges = [_make_mock_challenge()]
+
         with patch(
-            "app.services.workout_service.user_settings_repo"
-        ) as mock_repo:
-            mock_repo.try_claim_habit_reward_date = AsyncMock(return_value=True)
-            mock_repo.clear_habit_reward_claim = AsyncMock()
+            "app.services.workout_service.challenge_repo"
+        ) as mock_challenge_repo:
+            mock_challenge_repo.get_current_active = AsyncMock(
+                return_value=mock_challenges
+            )
 
             with patch(
-                "app.services.workout_service.send_habit_completion",
+                "app.services.workout_service._check_all_challenges_complete",
                 new_callable=AsyncMock,
-            ) as mock_send:
-                mock_send.return_value = False  # API failure
+            ) as mock_check:
+                mock_check.return_value = True  # All complete
 
-                result = await notify_habit_reward_if_complete(
-                    date(2026, 1, 22), user_id=1
-                )
+                with patch(
+                    "app.services.workout_service.user_settings_repo"
+                ) as mock_user_repo:
+                    mock_user_repo.try_claim_habit_reward_date = AsyncMock(
+                        return_value=True
+                    )
+                    mock_user_repo.clear_habit_reward_claim = AsyncMock()
 
-                assert result is False
-                mock_send.assert_awaited_once_with(1, date(2026, 1, 22))
-                # Should clear claim on failure to allow retry
-                mock_repo.clear_habit_reward_claim.assert_awaited_once_with(
-                    1, date(2026, 1, 22)
-                )
+                    with patch(
+                        "app.services.workout_service.send_habit_completion",
+                        new_callable=AsyncMock,
+                    ) as mock_send:
+                        mock_send.return_value = False  # API failure
+
+                        result = await notify_habit_reward_if_complete(
+                            date(2026, 1, 22), user_id=1
+                        )
+
+                        assert result is False
+                        mock_send.assert_awaited_once_with(1, date(2026, 1, 22))
+                        # Should clear claim on failure to allow retry
+                        mock_user_repo.clear_habit_reward_claim.assert_awaited_once_with(
+                            1, date(2026, 1, 22)
+                        )
 
     @pytest.mark.asyncio
     async def test_returns_false_when_not_configured(self):
         """When send_habit_completion returns False (not configured), clears claim."""
         from app.services.workout_service import notify_habit_reward_if_complete
 
+        mock_challenges = [_make_mock_challenge()]
+
         with patch(
-            "app.services.workout_service.user_settings_repo"
-        ) as mock_repo:
-            mock_repo.try_claim_habit_reward_date = AsyncMock(return_value=True)
-            mock_repo.clear_habit_reward_claim = AsyncMock()
+            "app.services.workout_service.challenge_repo"
+        ) as mock_challenge_repo:
+            mock_challenge_repo.get_current_active = AsyncMock(
+                return_value=mock_challenges
+            )
 
             with patch(
-                "app.services.workout_service.send_habit_completion",
+                "app.services.workout_service._check_all_challenges_complete",
                 new_callable=AsyncMock,
-            ) as mock_send:
-                mock_send.return_value = False  # Not configured
+            ) as mock_check:
+                mock_check.return_value = True  # All complete
 
-                result = await notify_habit_reward_if_complete(
-                    date(2026, 1, 22), user_id=1
-                )
+                with patch(
+                    "app.services.workout_service.user_settings_repo"
+                ) as mock_user_repo:
+                    mock_user_repo.try_claim_habit_reward_date = AsyncMock(
+                        return_value=True
+                    )
+                    mock_user_repo.clear_habit_reward_claim = AsyncMock()
 
-                assert result is False
-                mock_repo.clear_habit_reward_claim.assert_awaited_once()
+                    with patch(
+                        "app.services.workout_service.send_habit_completion",
+                        new_callable=AsyncMock,
+                    ) as mock_send:
+                        mock_send.return_value = False  # Not configured
+
+                        result = await notify_habit_reward_if_complete(
+                            date(2026, 1, 22), user_id=1
+                        )
+
+                        assert result is False
+                        mock_user_repo.clear_habit_reward_claim.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_atomic_claim_prevents_duplicate_sends(self):
         """Atomic claim pattern prevents concurrent duplicate sends."""
         from app.services.workout_service import notify_habit_reward_if_complete
 
+        mock_challenges = [_make_mock_challenge()]
         claim_count = 0
 
         async def mock_claim(uid, d):
@@ -396,32 +541,45 @@ class TestNotifyHabitRewardIfComplete:
             return False
 
         with patch(
-            "app.services.workout_service.user_settings_repo"
-        ) as mock_repo:
-            mock_repo.try_claim_habit_reward_date = AsyncMock(
-                side_effect=mock_claim
+            "app.services.workout_service.challenge_repo"
+        ) as mock_challenge_repo:
+            mock_challenge_repo.get_current_active = AsyncMock(
+                return_value=mock_challenges
             )
 
             with patch(
-                "app.services.workout_service.send_habit_completion",
+                "app.services.workout_service._check_all_challenges_complete",
                 new_callable=AsyncMock,
-            ) as mock_send:
-                mock_send.return_value = True
+            ) as mock_check:
+                mock_check.return_value = True  # All complete
 
-                # First call - should claim and send
-                result1 = await notify_habit_reward_if_complete(
-                    date(2026, 1, 22), user_id=1
-                )
-                assert result1 is True
-                assert mock_send.await_count == 1
+                with patch(
+                    "app.services.workout_service.user_settings_repo"
+                ) as mock_user_repo:
+                    mock_user_repo.try_claim_habit_reward_date = AsyncMock(
+                        side_effect=mock_claim
+                    )
 
-                # Second call - claim fails, should not send
-                result2 = await notify_habit_reward_if_complete(
-                    date(2026, 1, 22), user_id=1
-                )
-                assert result2 is True
-                # API should NOT be called again
-                assert mock_send.await_count == 1
+                    with patch(
+                        "app.services.workout_service.send_habit_completion",
+                        new_callable=AsyncMock,
+                    ) as mock_send:
+                        mock_send.return_value = True
+
+                        # First call - should claim and send
+                        result1 = await notify_habit_reward_if_complete(
+                            date(2026, 1, 22), user_id=1
+                        )
+                        assert result1 is True
+                        assert mock_send.await_count == 1
+
+                        # Second call - claim fails, should not send
+                        result2 = await notify_habit_reward_if_complete(
+                            date(2026, 1, 22), user_id=1
+                        )
+                        assert result2 is True
+                        # API should NOT be called again
+                        assert mock_send.await_count == 1
 
 
 class TestUserSettingsRepositoryHabitReward:

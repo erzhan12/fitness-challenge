@@ -246,9 +246,10 @@ async def _check_all_challenges_complete(
 
 
 async def notify_habit_reward_if_complete(today_local: date, user_id: int) -> bool:
-    """Send habit completion to Habit Reward API if not already sent today.
+    """Send habit completion to Habit Reward API if all challenges are complete.
 
-    Uses atomic claim pattern to prevent race conditions with concurrent requests.
+    First checks if all active challenges are on track, then uses atomic claim
+    pattern to prevent race conditions with concurrent requests.
     Per-user: reads config and tracks idempotency via UserSettings.
 
     Args:
@@ -256,8 +257,33 @@ async def notify_habit_reward_if_complete(today_local: date, user_id: int) -> bo
         user_id: The AppUser ID
 
     Returns:
-        True if notification was sent successfully, False otherwise
+        True if notification was sent successfully or not needed, False on error
     """
+    # First check if all challenges are complete
+    challenges = await challenge_repo.get_current_active(today_local, user_id=user_id)
+    if not challenges:
+        logger.debug("No active challenges, skipping habit reward check")
+        return True  # No challenges to complete
+
+    # Convert to dict format for _check_all_challenges_complete
+    challenges_data = [
+        {
+            "id": c.id,
+            "start_date": c.start_date,
+            "end_date": c.end_date,
+            "target_total": c.target_total,
+            "daily_target": c.daily_target,
+        }
+        for c in challenges
+    ]
+
+    all_complete = await _check_all_challenges_complete(
+        challenges_data, today_local, user_id=user_id
+    )
+    if not all_complete:
+        logger.debug("Not all challenges complete, skipping habit reward notification")
+        return True  # Not complete yet, but not an error
+
     # Atomically claim the date - prevents concurrent requests from double-sending
     claimed = await user_settings_repo.try_claim_habit_reward_date(user_id, today_local)
     if not claimed:
