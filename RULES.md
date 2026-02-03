@@ -1058,3 +1058,56 @@ except ValueError as e:
 Don't trust user input from Telegram commands without validation. Always validate Telegram IDs before using them in database queries, even when protected by permission checks.
 
 **Last Updated:** Added input validation for telegram_user_id in admin commands (2026-01-20)
+
+---
+
+## Habit Reward Integration (Feature 0011)
+
+When all daily exercises are completed, the system can optionally send a POST request to an external habit tracking app (habitreward.org) to mark the fitness habit as done. Triggered from both the Telegram bot and REST API `POST /api/v1/logs`.
+
+### Configuration
+
+**Per-user** (stored in `user_settings` DB table, managed via Django admin or `PATCH /api/v1/users/me/settings`):
+- `habit_reward_api_key` — API key for Habit Reward (generate via the habit_reward Telegram bot)
+- `habit_reward_habit_id` — The habit ID to mark as complete
+
+**Shared** (environment variable):
+```bash
+HABIT_REWARD_BASE_URL=https://habitreward.org  # Optional, defaults to this
+```
+
+The feature is disabled for a user if either `habit_reward_api_key` or `habit_reward_habit_id` is empty/null.
+
+### How It Works
+
+1. User logs exercises via Telegram or REST API
+2. System checks if all active challenges are on track (`_check_all_challenges_complete()`)
+3. If all complete:
+   - Check if already sent today (`last_habit_reward_sent_date` in `UserSettings`, per-user)
+   - If not sent, POST to `{base_url}/v1/habits/{habit_id}/complete` with `X-API-Key` header
+   - On 200 response, mark as sent for today
+
+### Idempotency
+
+Uses `UserSettings.last_habit_reward_sent_date` (per-user) to ensure only one notification per day:
+- Check if field equals today's date before sending
+- Only update field after receiving 200 response
+
+### Error Handling
+
+- Fire-and-forget: API failures don't block user experience
+- Errors are logged but not shown to users
+- If API call fails, field is not updated (allows retry on next completion)
+
+### Key Files
+
+- `app/config.py` - `HABIT_REWARD_BASE_URL` shared env var
+- `app/services/habit_reward_client.py` - HTTP client (`send_habit_completion(user_id, date)`)
+- `app/services/workout_service.py` - Integration (`notify_habit_reward_if_complete(date, user_id)`)
+- `src/core/models.py` - `UserSettings.habit_reward_api_key`, `habit_reward_habit_id`, `last_habit_reward_sent_date`
+- `src/core/repositories.py` - `UserSettingsRepository.check_habit_reward_sent`, `mark_habit_reward_sent`
+- `src/api/routers/logs.py` - REST API trigger after log creation
+- `src/api/models.py` - `UserSettingsOut`/`UserSettingsUpdate` include habit reward fields
+- `tests/services/test_habit_reward_client.py` - Unit tests
+
+**Last Updated:** Moved habit reward config to per-user UserSettings, fixed API bugs, added REST trigger (2026-02-02)

@@ -427,6 +427,12 @@ class UserSettingsOut(BaseModel):
     is_reminder_active: bool = Field(
         ..., description="Whether evening reminders are enabled"
     )
+    habit_reward_api_key: str = Field(
+        "", description="API key for Habit Reward integration"
+    )
+    habit_reward_habit_id: Optional[int] = Field(
+        None, description="Habit ID to mark as complete in Habit Reward"
+    )
 
 
 class UserSettingsUpdate(BaseModel):
@@ -437,6 +443,12 @@ class UserSettingsUpdate(BaseModel):
     )
     telegram_chat_id: Optional[int] = Field(
         None, description="Telegram chat ID"
+    )
+    habit_reward_api_key: Optional[str] = Field(
+        None, description="API key for Habit Reward integration"
+    )
+    habit_reward_habit_id: Optional[int] = Field(
+        None, description="Habit ID to mark as complete in Habit Reward"
     )
 
 

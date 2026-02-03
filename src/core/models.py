@@ -62,6 +62,11 @@ class UserSettings(models.Model):
     last_reminder_22_date = models.DateField(null=True, blank=True)
     last_reminder_23_date = models.DateField(null=True, blank=True)
 
+    # Habit Reward Integration (per-user)
+    habit_reward_api_key = models.CharField(max_length=255, blank=True, default="")
+    habit_reward_habit_id = models.IntegerField(null=True, blank=True)
+    last_habit_reward_sent_date = models.DateField(null=True, blank=True)
+
     class Meta:
         db_table = "user_settings"
         verbose_name_plural = "User settings"

@@ -16,6 +16,7 @@ from app.services.openai_service import (
 )
 from app.services.deterministic_parser import get_numbers_from_message
 from app.services.telegram_client import send_telegram_message, send_chat_action
+from app.services.habit_reward_client import send_habit_completion
 from app.config import settings
 from src.core import setup_django
 from django.core.exceptions import ObjectDoesNotExist
@@ -242,6 +243,38 @@ async def _check_all_challenges_complete(
 
     # All challenges are complete (on track or ahead)
     return True
+
+
+async def notify_habit_reward_if_complete(today_local: date, user_id: int) -> bool:
+    """Send habit completion to Habit Reward API if not already sent today.
+
+    Uses Option B idempotency: check first, mark on success.
+    Per-user: reads config and tracks idempotency via UserSettings.
+
+    Args:
+        today_local: Current date in local timezone
+        user_id: The AppUser ID
+
+    Returns:
+        True if notification was sent successfully, False otherwise
+    """
+    # Check if already sent today
+    already_sent = await user_settings_repo.check_habit_reward_sent(user_id, today_local)
+    if already_sent:
+        logger.debug(f"Habit reward already sent for {today_local}, skipping")
+        return True  # Already sent is considered success
+
+    # Send the completion notification (checks per-user config internally)
+    success = await send_habit_completion(user_id, today_local)
+
+    if success:
+        # Mark as sent only on success
+        await user_settings_repo.mark_habit_reward_sent(user_id, today_local)
+        logger.info(f"Habit reward notification sent and marked for {today_local}")
+        return True
+
+    logger.warning(f"Habit reward send failed for {today_local}")
+    return False
 
 
 async def get_exercise_stats_and_message(
@@ -1110,6 +1143,8 @@ async def process_incoming_message(
         if all_complete:
             final_parts.append("✅ <b>Day Complete!</b>")
             final_parts.append("")  # Add blank line for spacing
+            # Notify Habit Reward API (fire-and-forget, non-blocking)
+            await notify_habit_reward_if_complete(today_local, user_id=user.id)
 
         for et in exercise_types:
             if et.id in response_map:

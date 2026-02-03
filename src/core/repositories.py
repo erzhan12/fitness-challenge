@@ -265,6 +265,38 @@ class UserSettingsRepository:
             .order_by("user_id")
         )
 
+    @sync_to_async
+    def check_habit_reward_sent(self, user_id: int, target_date: date) -> bool:
+        """Check if habit reward completion was already sent for target_date for user.
+
+        Args:
+            user_id: The AppUser ID
+            target_date: The date to check
+
+        Returns:
+            True if already sent, False otherwise
+        """
+        settings, created = UserSettings.objects.get_or_create(user_id=user_id)
+        return settings.last_habit_reward_sent_date == target_date
+
+    @sync_to_async
+    def mark_habit_reward_sent(self, user_id: int, target_date: date) -> UserSettings:
+        """Mark that habit reward completion was sent for target_date for user.
+
+        Should only be called after receiving a successful (200) response.
+
+        Args:
+            user_id: The AppUser ID
+            target_date: The date to mark as sent
+
+        Returns:
+            Updated settings instance
+        """
+        settings, created = UserSettings.objects.get_or_create(user_id=user_id)
+        settings.last_habit_reward_sent_date = target_date
+        settings.save(update_fields=["last_habit_reward_sent_date"])
+        return settings
+
 
 class ExerciseTypeRepository:
     """Repository for ExerciseType operations."""
@@ -848,6 +880,7 @@ class AppSettingsRepository:
             setattr(settings, key, value)
         settings.save()
         return settings
+
 
 
 # Module-level singleton instances
