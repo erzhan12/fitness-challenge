@@ -248,7 +248,7 @@ async def _check_all_challenges_complete(
 async def notify_habit_reward_if_complete(today_local: date, user_id: int) -> bool:
     """Send habit completion to Habit Reward API if not already sent today.
 
-    Uses Option B idempotency: check first, mark on success.
+    Uses atomic claim pattern to prevent race conditions with concurrent requests.
     Per-user: reads config and tracks idempotency via UserSettings.
 
     Args:
@@ -258,23 +258,23 @@ async def notify_habit_reward_if_complete(today_local: date, user_id: int) -> bo
     Returns:
         True if notification was sent successfully, False otherwise
     """
-    # Check if already sent today
-    already_sent = await user_settings_repo.check_habit_reward_sent(user_id, today_local)
-    if already_sent:
-        logger.debug(f"Habit reward already sent for {today_local}, skipping")
-        return True  # Already sent is considered success
+    # Atomically claim the date - prevents concurrent requests from double-sending
+    claimed = await user_settings_repo.try_claim_habit_reward_date(user_id, today_local)
+    if not claimed:
+        logger.debug(f"Habit reward already claimed for {today_local}, skipping")
+        return True  # Already claimed is considered success
 
     # Send the completion notification (checks per-user config internally)
     success = await send_habit_completion(user_id, today_local)
 
-    if success:
-        # Mark as sent only on success
-        await user_settings_repo.mark_habit_reward_sent(user_id, today_local)
-        logger.info(f"Habit reward notification sent and marked for {today_local}")
-        return True
+    if not success:
+        # Clear claim on failure to allow retry
+        await user_settings_repo.clear_habit_reward_claim(user_id, today_local)
+        logger.warning(f"Habit reward send failed for {today_local}, claim cleared")
+        return False
 
-    logger.warning(f"Habit reward send failed for {today_local}")
-    return False
+    logger.info(f"Habit reward notification sent for {today_local}")
+    return True
 
 
 async def get_exercise_stats_and_message(

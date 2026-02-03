@@ -266,36 +266,46 @@ class UserSettingsRepository:
         )
 
     @sync_to_async
-    def check_habit_reward_sent(self, user_id: int, target_date: date) -> bool:
-        """Check if habit reward completion was already sent for target_date for user.
+    def try_claim_habit_reward_date(self, user_id: int, target_date: date) -> bool:
+        """Atomically claim the habit reward date if not already claimed.
+
+        Uses conditional update to prevent race conditions with concurrent requests.
 
         Args:
             user_id: The AppUser ID
-            target_date: The date to check
+            target_date: The date to claim
 
         Returns:
-            True if already sent, False otherwise
+            True if this call claimed it (first to succeed).
+            False if already claimed by another request.
         """
-        settings, created = UserSettings.objects.get_or_create(user_id=user_id)
-        return settings.last_habit_reward_sent_date == target_date
+        # Ensure settings exist
+        UserSettings.objects.get_or_create(user_id=user_id)
+
+        # Atomic conditional update: only update if not already set to target_date
+        updated = UserSettings.objects.filter(user_id=user_id).exclude(
+            last_habit_reward_sent_date=target_date
+        ).update(last_habit_reward_sent_date=target_date)
+
+        return updated > 0
 
     @sync_to_async
-    def mark_habit_reward_sent(self, user_id: int, target_date: date) -> UserSettings:
-        """Mark that habit reward completion was sent for target_date for user.
+    def clear_habit_reward_claim(self, user_id: int, target_date: date) -> bool:
+        """Clear the habit reward claim if it matches target_date.
 
-        Should only be called after receiving a successful (200) response.
+        Called when the API request fails after claiming, to allow retry.
 
         Args:
             user_id: The AppUser ID
-            target_date: The date to mark as sent
+            target_date: The date to clear
 
         Returns:
-            Updated settings instance
+            True if cleared, False if not found or different date
         """
-        settings, created = UserSettings.objects.get_or_create(user_id=user_id)
-        settings.last_habit_reward_sent_date = target_date
-        settings.save(update_fields=["last_habit_reward_sent_date"])
-        return settings
+        updated = UserSettings.objects.filter(
+            user_id=user_id, last_habit_reward_sent_date=target_date
+        ).update(last_habit_reward_sent_date=None)
+        return updated > 0
 
 
 class ExerciseTypeRepository:

@@ -279,14 +279,14 @@ class TestNotifyHabitRewardIfComplete:
     """Integration tests for notify_habit_reward_if_complete() in workout_service."""
 
     @pytest.mark.asyncio
-    async def test_returns_true_when_already_sent_today(self):
-        """When already sent today, returns True without calling API again."""
+    async def test_returns_true_when_already_claimed(self):
+        """When date already claimed, returns True without calling API."""
         from app.services.workout_service import notify_habit_reward_if_complete
 
         with patch(
             "app.services.workout_service.user_settings_repo"
         ) as mock_repo:
-            mock_repo.check_habit_reward_sent = AsyncMock(return_value=True)
+            mock_repo.try_claim_habit_reward_date = AsyncMock(return_value=False)
 
             with patch(
                 "app.services.workout_service.send_habit_completion",
@@ -297,23 +297,21 @@ class TestNotifyHabitRewardIfComplete:
                 )
 
                 assert result is True
-                mock_repo.check_habit_reward_sent.assert_awaited_once_with(
+                mock_repo.try_claim_habit_reward_date.assert_awaited_once_with(
                     1, date(2026, 1, 22)
                 )
-                # Should NOT call API or mark again
+                # Should NOT call API since claim failed (already claimed)
                 mock_send.assert_not_called()
-                mock_repo.mark_habit_reward_sent.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_sends_and_marks_on_success(self):
-        """On successful API call, marks as sent and returns True."""
+    async def test_sends_on_successful_claim(self):
+        """On successful claim and API call, returns True."""
         from app.services.workout_service import notify_habit_reward_if_complete
 
         with patch(
             "app.services.workout_service.user_settings_repo"
         ) as mock_repo:
-            mock_repo.check_habit_reward_sent = AsyncMock(return_value=False)
-            mock_repo.mark_habit_reward_sent = AsyncMock()
+            mock_repo.try_claim_habit_reward_date = AsyncMock(return_value=True)
 
             with patch(
                 "app.services.workout_service.send_habit_completion",
@@ -327,20 +325,19 @@ class TestNotifyHabitRewardIfComplete:
 
                 assert result is True
                 mock_send.assert_awaited_once_with(1, date(2026, 1, 22))
-                mock_repo.mark_habit_reward_sent.assert_awaited_once_with(
-                    1, date(2026, 1, 22)
-                )
+                # Should NOT clear claim on success
+                mock_repo.clear_habit_reward_claim.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_does_not_mark_on_api_failure(self):
-        """On API failure, does not mark as sent and returns False."""
+    async def test_clears_claim_on_api_failure(self):
+        """On API failure, clears claim and returns False."""
         from app.services.workout_service import notify_habit_reward_if_complete
 
         with patch(
             "app.services.workout_service.user_settings_repo"
         ) as mock_repo:
-            mock_repo.check_habit_reward_sent = AsyncMock(return_value=False)
-            mock_repo.mark_habit_reward_sent = AsyncMock()
+            mock_repo.try_claim_habit_reward_date = AsyncMock(return_value=True)
+            mock_repo.clear_habit_reward_claim = AsyncMock()
 
             with patch(
                 "app.services.workout_service.send_habit_completion",
@@ -354,19 +351,21 @@ class TestNotifyHabitRewardIfComplete:
 
                 assert result is False
                 mock_send.assert_awaited_once_with(1, date(2026, 1, 22))
-                # Should NOT mark as sent on failure
-                mock_repo.mark_habit_reward_sent.assert_not_called()
+                # Should clear claim on failure to allow retry
+                mock_repo.clear_habit_reward_claim.assert_awaited_once_with(
+                    1, date(2026, 1, 22)
+                )
 
     @pytest.mark.asyncio
     async def test_returns_false_when_not_configured(self):
-        """When send_habit_completion returns False (not configured), returns False."""
+        """When send_habit_completion returns False (not configured), clears claim."""
         from app.services.workout_service import notify_habit_reward_if_complete
 
         with patch(
             "app.services.workout_service.user_settings_repo"
         ) as mock_repo:
-            mock_repo.check_habit_reward_sent = AsyncMock(return_value=False)
-            mock_repo.mark_habit_reward_sent = AsyncMock()
+            mock_repo.try_claim_habit_reward_date = AsyncMock(return_value=True)
+            mock_repo.clear_habit_reward_claim = AsyncMock()
 
             with patch(
                 "app.services.workout_service.send_habit_completion",
@@ -379,34 +378,28 @@ class TestNotifyHabitRewardIfComplete:
                 )
 
                 assert result is False
-                mock_repo.mark_habit_reward_sent.assert_not_called()
+                mock_repo.clear_habit_reward_claim.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_idempotency_prevents_duplicate_sends(self):
-        """Multiple calls with same date only send once."""
+    async def test_atomic_claim_prevents_duplicate_sends(self):
+        """Atomic claim pattern prevents concurrent duplicate sends."""
         from app.services.workout_service import notify_habit_reward_if_complete
 
-        call_count = 0
+        claim_count = 0
 
-        async def mock_check(uid, d):
-            nonlocal call_count
-            # First call: not sent yet. Subsequent calls: already sent.
-            if call_count == 0:
-                return False
-            return True
-
-        async def mock_mark(uid, d):
-            nonlocal call_count
-            call_count += 1
+        async def mock_claim(uid, d):
+            nonlocal claim_count
+            # First call succeeds, subsequent calls fail (already claimed)
+            if claim_count == 0:
+                claim_count += 1
+                return True
+            return False
 
         with patch(
             "app.services.workout_service.user_settings_repo"
         ) as mock_repo:
-            mock_repo.check_habit_reward_sent = AsyncMock(
-                side_effect=mock_check
-            )
-            mock_repo.mark_habit_reward_sent = AsyncMock(
-                side_effect=mock_mark
+            mock_repo.try_claim_habit_reward_date = AsyncMock(
+                side_effect=mock_claim
             )
 
             with patch(
@@ -415,14 +408,14 @@ class TestNotifyHabitRewardIfComplete:
             ) as mock_send:
                 mock_send.return_value = True
 
-                # First call - should send
+                # First call - should claim and send
                 result1 = await notify_habit_reward_if_complete(
                     date(2026, 1, 22), user_id=1
                 )
                 assert result1 is True
                 assert mock_send.await_count == 1
 
-                # Second call - should skip (already sent)
+                # Second call - claim fails, should not send
                 result2 = await notify_habit_reward_if_complete(
                     date(2026, 1, 22), user_id=1
                 )
@@ -432,75 +425,80 @@ class TestNotifyHabitRewardIfComplete:
 
 
 class TestUserSettingsRepositoryHabitReward:
-    """Tests for habit reward methods in UserSettingsRepository."""
+    """Tests for atomic habit reward methods in UserSettingsRepository."""
 
     @pytest.mark.asyncio
-    async def test_check_habit_reward_sent_returns_false_when_not_sent(self):
-        """check_habit_reward_sent returns False when field is None."""
+    async def test_try_claim_returns_true_when_not_claimed(self):
+        """try_claim_habit_reward_date returns True when date not yet claimed."""
         from src.core.repositories import UserSettingsRepository
 
         repo = UserSettingsRepository()
 
-        mock_settings = _make_user_settings(sent_date=None)
+        mock_filter = MagicMock()
+        mock_filter.exclude.return_value.update.return_value = 1  # 1 row updated
 
         with patch(
             "src.core.repositories.UserSettings.objects.get_or_create",
-            return_value=(mock_settings, False),
+            return_value=(MagicMock(), False),
         ):
-            result = await repo.check_habit_reward_sent(1, date(2026, 1, 22))
-            assert result is False
+            with patch(
+                "src.core.repositories.UserSettings.objects.filter",
+                return_value=mock_filter,
+            ):
+                result = await repo.try_claim_habit_reward_date(1, date(2026, 1, 22))
+                assert result is True
 
     @pytest.mark.asyncio
-    async def test_check_habit_reward_sent_returns_false_for_different_date(self):
-        """check_habit_reward_sent returns False when field is different date."""
+    async def test_try_claim_returns_false_when_already_claimed(self):
+        """try_claim_habit_reward_date returns False when date already claimed."""
         from src.core.repositories import UserSettingsRepository
 
         repo = UserSettingsRepository()
 
-        mock_settings = _make_user_settings(sent_date=date(2026, 1, 21))
+        mock_filter = MagicMock()
+        mock_filter.exclude.return_value.update.return_value = 0  # 0 rows updated
 
         with patch(
             "src.core.repositories.UserSettings.objects.get_or_create",
-            return_value=(mock_settings, False),
+            return_value=(MagicMock(), False),
         ):
-            result = await repo.check_habit_reward_sent(1, date(2026, 1, 22))
-            assert result is False
+            with patch(
+                "src.core.repositories.UserSettings.objects.filter",
+                return_value=mock_filter,
+            ):
+                result = await repo.try_claim_habit_reward_date(1, date(2026, 1, 22))
+                assert result is False
 
     @pytest.mark.asyncio
-    async def test_check_habit_reward_sent_returns_true_for_same_date(self):
-        """check_habit_reward_sent returns True when field matches target date."""
+    async def test_clear_claim_returns_true_when_cleared(self):
+        """clear_habit_reward_claim returns True when claim cleared."""
         from src.core.repositories import UserSettingsRepository
 
         repo = UserSettingsRepository()
 
-        mock_settings = _make_user_settings(sent_date=date(2026, 1, 22))
+        mock_filter = MagicMock()
+        mock_filter.update.return_value = 1  # 1 row updated
 
         with patch(
-            "src.core.repositories.UserSettings.objects.get_or_create",
-            return_value=(mock_settings, False),
+            "src.core.repositories.UserSettings.objects.filter",
+            return_value=mock_filter,
         ):
-            result = await repo.check_habit_reward_sent(1, date(2026, 1, 22))
+            result = await repo.clear_habit_reward_claim(1, date(2026, 1, 22))
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_mark_habit_reward_sent_updates_field(self):
-        """mark_habit_reward_sent updates the field and saves."""
+    async def test_clear_claim_returns_false_when_not_found(self):
+        """clear_habit_reward_claim returns False when no matching claim."""
         from src.core.repositories import UserSettingsRepository
 
         repo = UserSettingsRepository()
 
-        mock_settings = _make_user_settings(sent_date=None)
+        mock_filter = MagicMock()
+        mock_filter.update.return_value = 0  # 0 rows updated
 
         with patch(
-            "src.core.repositories.UserSettings.objects.get_or_create",
-            return_value=(mock_settings, False),
+            "src.core.repositories.UserSettings.objects.filter",
+            return_value=mock_filter,
         ):
-            result = await repo.mark_habit_reward_sent(1, date(2026, 1, 22))
-
-            assert mock_settings.last_habit_reward_sent_date == date(
-                2026, 1, 22
-            )
-            mock_settings.save.assert_called_once_with(
-                update_fields=["last_habit_reward_sent_date"]
-            )
-            assert result == mock_settings
+            result = await repo.clear_habit_reward_claim(1, date(2026, 1, 22))
+            assert result is False
