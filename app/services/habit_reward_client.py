@@ -40,6 +40,11 @@ async def send_habit_completion(
         logger.debug("Habit Reward not configured for user, skipping")
         return False
 
+    # Validate habit_id (defense-in-depth in case of invalid DB data)
+    if habit_id <= 0:
+        logger.warning(f"Invalid habit_id in DB (user_id: {user_id}, habit_id: {habit_id})")
+        return False
+
     base_url = settings.HABIT_REWARD_BASE_URL
 
     url = f"{base_url}/v1/habits/{habit_id}/complete"

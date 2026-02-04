@@ -74,3 +74,22 @@ def validate_timezone_field(value: str) -> None:
         validate_timezone(value)
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
+
+
+def validate_habit_id(habit_id: int) -> None:
+    """Validate that habit_id is a valid positive integer.
+
+    Args:
+        habit_id: The habit ID to validate
+
+    Raises:
+        ValueError: If habit_id is not a positive integer within valid range
+    """
+    if habit_id <= 0:
+        raise ValueError(
+            f"Invalid habit ID: {habit_id}. Must be a positive integer."
+        )
+    if habit_id > 10**12:
+        raise ValueError(
+            f"Habit ID too large: {habit_id}. Must be at most 10^12."
+        )
