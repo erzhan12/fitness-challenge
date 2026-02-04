@@ -1,6 +1,7 @@
 import logging
 import asyncio
 from datetime import datetime, date
+from html import escape
 from typing import List, Dict, Any, Optional, Tuple
 
 try:
@@ -16,7 +17,7 @@ from app.services.openai_service import (
 )
 from app.services.deterministic_parser import get_numbers_from_message
 from app.services.telegram_client import send_telegram_message, send_chat_action
-from app.services.habit_reward_client import send_habit_completion
+from app.services.habit_reward_client import send_habit_completion, HabitCompletionResponse
 from app.config import settings
 from src.core import setup_django
 from django.core.exceptions import ObjectDoesNotExist
@@ -245,7 +246,38 @@ async def _check_all_challenges_complete(
     return True
 
 
-async def notify_habit_reward_if_complete(today_local: date, user_id: int) -> bool:
+def _format_habit_reward_message(response: HabitCompletionResponse) -> str:
+    """Format habit completion response into a Telegram message.
+
+    Args:
+        response: Validated HabitCompletionResponse from Habit Reward API
+
+    Returns:
+        Formatted HTML message string
+    """
+    message_parts = []
+
+    # Habit confirmation (escape external data to prevent HTML injection)
+    habit_name = escape(response.habit_name)
+    message_parts.append(f"✅ <b>Habit completed:</b> {habit_name}")
+
+    # Streak with fire emojis (max 5)
+    fire_emoji = "🔥" * min(response.streak_count, 5)
+    message_parts.append(f"{fire_emoji} <b>Streak:</b> {response.streak_count} days")
+
+    # Reward status (escape external data to prevent HTML injection)
+    if response.got_reward and response.reward:
+        reward_name = escape(response.reward.name)
+        message_parts.append(f"\n🎁 <b>Reward:</b> {reward_name}")
+    else:
+        message_parts.append("\n❌ No reward this time - keep going!")
+
+    return "\n".join(message_parts)
+
+
+async def notify_habit_reward_if_complete(
+    today_local: date, user_id: int, chat_id: Optional[int] = None
+) -> bool:
     """Send habit completion to Habit Reward API if all challenges are complete.
 
     First checks if all active challenges are on track, then uses atomic claim
@@ -255,6 +287,7 @@ async def notify_habit_reward_if_complete(today_local: date, user_id: int) -> bo
     Args:
         today_local: Current date in local timezone
         user_id: The AppUser ID
+        chat_id: Optional Telegram chat_id to send notification to
 
     Returns:
         True if notification was sent successfully or not needed, False on error
@@ -285,21 +318,35 @@ async def notify_habit_reward_if_complete(today_local: date, user_id: int) -> bo
         return True  # Not complete yet, but not an error
 
     # Atomically claim the date - prevents concurrent requests from double-sending
+    # NOTE: There's a small race window between checking completion above and claiming below.
+    # If a new challenge is added or existing progress changes in this window, we might
+    # send the notification prematurely. This is an unlikely edge case with low impact,
+    # as the atomic claim ensures we only send once per day regardless.
     claimed = await user_settings_repo.try_claim_habit_reward_date(user_id, today_local)
     if not claimed:
         logger.debug(f"Habit reward already claimed for {today_local}, skipping")
         return True  # Already claimed is considered success
 
     # Send the completion notification (checks per-user config internally)
-    success = await send_habit_completion(user_id, today_local)
+    response = await send_habit_completion(user_id, today_local)
 
-    if not success:
+    if not response:
         # Clear claim on failure to allow retry
         await user_settings_repo.clear_habit_reward_claim(user_id, today_local)
         logger.warning(f"Habit reward send failed for {today_local}, claim cleared")
         return False
 
     logger.info(f"Habit reward notification sent for {today_local}")
+
+    # Send Telegram notification if chat_id provided
+    if chat_id:
+        try:
+            message = _format_habit_reward_message(response)
+            await send_telegram_message(chat_id, message)
+        except Exception as e:
+            # Don't fail the whole operation if Telegram message fails
+            logger.warning(f"Failed to send habit reward Telegram notification: {e}")
+
     return True
 
 
@@ -1172,7 +1219,9 @@ async def process_incoming_message(
             # Notify Habit Reward API (fire-and-forget, non-blocking)
             async def _notify_habit_reward():
                 try:
-                    await notify_habit_reward_if_complete(today_local, user_id=user.id)
+                    await notify_habit_reward_if_complete(
+                        today_local, user_id=user.id, chat_id=chat_id
+                    )
                 except Exception as e:
                     logger.warning(f"Habit reward notification failed: {e}")
             asyncio.create_task(_notify_habit_reward())
