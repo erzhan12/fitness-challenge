@@ -14,6 +14,7 @@ from src.api.models import (
 from src.api.security import verify_api_key, get_current_user
 from src.core.models import AppUser
 from src.core.repositories import app_user_repo, user_settings_repo, app_settings_repo
+from src.core.validators import validate_habit_id
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -157,6 +158,13 @@ async def update_current_user_settings(
     # Normalize None to "" for non-nullable CharField fields
     if "habit_reward_api_key" in update_data and update_data["habit_reward_api_key"] is None:
         update_data["habit_reward_api_key"] = ""
+
+    # Validate habit_reward_habit_id if provided
+    if "habit_reward_habit_id" in update_data and update_data["habit_reward_habit_id"] is not None:
+        try:
+            validate_habit_id(update_data["habit_reward_habit_id"])
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     if not update_data:
         # No fields to update, return current settings

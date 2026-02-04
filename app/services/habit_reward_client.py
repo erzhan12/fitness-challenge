@@ -40,6 +40,11 @@ async def send_habit_completion(
         logger.debug("Habit Reward not configured for user, skipping")
         return False
 
+    # Validate habit_id (defense-in-depth in case of invalid DB data)
+    if habit_id <= 0:
+        logger.warning(f"Invalid habit_id in DB (user_id: {user_id}, habit_id: {habit_id})")
+        return False
+
     base_url = settings.HABIT_REWARD_BASE_URL
 
     url = f"{base_url}/v1/habits/{habit_id}/complete"
@@ -53,7 +58,7 @@ async def send_habit_completion(
     if completion_date:
         payload["target_date"] = completion_date.isoformat()
 
-    logger.info(f"Sending habit completion to {url}")
+    logger.info(f"Sending habit completion (user_id: {user_id}, habit_id: {habit_id})")
 
     async with httpx.AsyncClient() as client:
         try:
@@ -64,17 +69,22 @@ async def send_habit_completion(
                 timeout=10.0,
             )
             response.raise_for_status()
-            logger.info(f"Habit completion sent successfully: {response.status_code}")
+            logger.info(f"Habit completion sent successfully (status: {response.status_code})")
             return True
         except httpx.HTTPStatusError as e:
+            # Don't log response body - may contain sensitive data
             logger.error(
-                f"Habit Reward API returned error: {e.response.status_code} - "
-                f"{e.response.text[:200]}"
+                f"Habit Reward API error (user_id: {user_id}, status: {e.response.status_code})"
             )
             return False
         except httpx.RequestError as e:
-            logger.error(f"Failed to send habit completion: {e}")
+            # Log error type only, not full details which may include URL/headers
+            logger.error(
+                f"Habit Reward request failed (user_id: {user_id}, error: {type(e).__name__})"
+            )
             return False
         except Exception as e:
-            logger.error(f"Unexpected error sending habit completion: {e}")
+            logger.error(
+                f"Unexpected error in habit completion (user_id: {user_id}, error: {type(e).__name__})"
+            )
             return False
