@@ -265,6 +265,48 @@ class UserSettingsRepository:
             .order_by("user_id")
         )
 
+    @sync_to_async
+    def try_claim_habit_reward_date(self, user_id: int, target_date: date) -> bool:
+        """Atomically claim the habit reward date if not already claimed.
+
+        Uses conditional update to prevent race conditions with concurrent requests.
+
+        Args:
+            user_id: The AppUser ID
+            target_date: The date to claim
+
+        Returns:
+            True if this call claimed it (first to succeed).
+            False if already claimed by another request.
+        """
+        # Ensure settings exist
+        UserSettings.objects.get_or_create(user_id=user_id)
+
+        # Atomic conditional update: only update if not already set to target_date
+        updated = UserSettings.objects.filter(user_id=user_id).exclude(
+            last_habit_reward_sent_date=target_date
+        ).update(last_habit_reward_sent_date=target_date)
+
+        return updated > 0
+
+    @sync_to_async
+    def clear_habit_reward_claim(self, user_id: int, target_date: date) -> bool:
+        """Clear the habit reward claim if it matches target_date.
+
+        Called when the API request fails after claiming, to allow retry.
+
+        Args:
+            user_id: The AppUser ID
+            target_date: The date to clear
+
+        Returns:
+            True if cleared, False if not found or different date
+        """
+        updated = UserSettings.objects.filter(
+            user_id=user_id, last_habit_reward_sent_date=target_date
+        ).update(last_habit_reward_sent_date=None)
+        return updated > 0
+
 
 class ExerciseTypeRepository:
     """Repository for ExerciseType operations."""
@@ -848,6 +890,7 @@ class AppSettingsRepository:
             setattr(settings, key, value)
         settings.save()
         return settings
+
 
 
 # Module-level singleton instances

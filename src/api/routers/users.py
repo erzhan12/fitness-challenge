@@ -153,6 +153,11 @@ async def update_current_user_settings(
 ) -> UserSettingsOut:
     """Update the current user's settings."""
     update_data = data.model_dump(exclude_unset=True)
+
+    # Normalize None to "" for non-nullable CharField fields
+    if "habit_reward_api_key" in update_data and update_data["habit_reward_api_key"] is None:
+        update_data["habit_reward_api_key"] = ""
+
     if not update_data:
         # No fields to update, return current settings
         user_settings = await user_settings_repo.get_or_create(current_user.id)

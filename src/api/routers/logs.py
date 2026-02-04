@@ -1,5 +1,7 @@
 """REST API endpoints for exercise logs."""
 
+import asyncio
+import logging
 from datetime import date
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -178,6 +180,18 @@ async def create_new_log(
 
     try:
         log, stats = await create_log(data, user_id=current_user.id)
+
+        # Fire-and-forget: check if all daily challenges are now complete
+        # Use create_task so the HTTP call doesn't block the API response
+        async def _notify_habit_reward():
+            try:
+                from app.services.workout_service import notify_habit_reward_if_complete
+                await notify_habit_reward_if_complete(log.date, user_id=current_user.id)
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Habit reward check failed: {e}")
+
+        asyncio.create_task(_notify_habit_reward())
+
         return ExerciseLogCreateResponse(log=log, stats=stats)
     except ValueError as e:
         raise HTTPException(

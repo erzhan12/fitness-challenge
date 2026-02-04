@@ -1058,3 +1058,70 @@ except ValueError as e:
 Don't trust user input from Telegram commands without validation. Always validate Telegram IDs before using them in database queries, even when protected by permission checks.
 
 **Last Updated:** Added input validation for telegram_user_id in admin commands (2026-01-20)
+
+---
+
+## Habit Reward Integration (Feature 0011)
+
+When all daily exercises are completed, the system can optionally send a POST request to an external habit tracking app (habitreward.org) to mark the fitness habit as done. Triggered from both the Telegram bot and REST API `POST /api/v1/logs`.
+
+### Configuration
+
+**Per-user** (stored in `user_settings` DB table, managed via Django admin or `PATCH /api/v1/users/me/settings`):
+- `habit_reward_api_key` — API key for Habit Reward (generate via the habit_reward Telegram bot)
+- `habit_reward_habit_id` — The habit ID to mark as complete
+
+**Shared** (environment variable):
+```bash
+HABIT_REWARD_BASE_URL=https://habitreward.org  # Optional, defaults to this
+```
+
+The feature is disabled for a user if either `habit_reward_api_key` or `habit_reward_habit_id` is empty/null.
+
+### How It Works
+
+1. User logs exercises via Telegram or REST API
+2. Both call `notify_habit_reward_if_complete(date, user_id)` which internally:
+   - Fetches active challenges for the user
+   - Checks if all are on track (`_check_all_challenges_complete()`)
+   - If not all complete, returns True (not an error, just not ready)
+3. If all complete:
+   - Atomically claims the date (prevents concurrent requests from double-sending)
+   - POSTs to `{base_url}/v1/habits/{habit_id}/complete` with `X-API-Key` header
+   - On 200 response, keeps the claim; on failure, clears claim to allow retry
+
+### Idempotency (Atomic Claim Pattern)
+
+Uses `UserSettings.last_habit_reward_sent_date` (per-user) with an atomic claim pattern to prevent race conditions under concurrent requests:
+
+**Pattern:**
+1. **Atomic claim**: Attempt to set `last_habit_reward_sent_date = today` using `filter().exclude(last_habit_reward_sent_date=today).update()`
+2. If claim succeeds (rows updated > 0): proceed to send API request
+3. If claim fails (rows updated = 0): another request already claimed this date, skip
+4. **Rollback on failure**: If API call fails, clear the claim to allow retry
+
+**Key Methods in `UserSettingsRepository`:**
+- `try_claim_habit_reward_date(user_id, date)` - Returns True if claim successful (atomic conditional update)
+- `clear_habit_reward_claim(user_id, date)` - Clears claim on API failure
+
+**Why not check-then-mark?**
+A simple check-then-mark pattern is non-atomic: two concurrent requests could both pass the check before either marks the date, causing duplicate sends. The atomic claim pattern prevents this by using Django's `filter().exclude().update()` which is a single atomic database operation.
+
+### Error Handling
+
+- Fire-and-forget: API failures don't block user experience
+- Errors are logged but not shown to users
+- If API call fails, field is not updated (allows retry on next completion)
+
+### Key Files
+
+- `app/config.py` - `HABIT_REWARD_BASE_URL` shared env var
+- `app/services/habit_reward_client.py` - HTTP client (`send_habit_completion(user_id, date)`)
+- `app/services/workout_service.py` - Integration (`notify_habit_reward_if_complete(date, user_id)`)
+- `src/core/models.py` - `UserSettings.habit_reward_api_key`, `habit_reward_habit_id`, `last_habit_reward_sent_date`
+- `src/core/repositories.py` - `UserSettingsRepository.try_claim_habit_reward_date`, `clear_habit_reward_claim`
+- `src/api/routers/logs.py` - REST API trigger after log creation
+- `src/api/models.py` - `UserSettingsOut`/`UserSettingsUpdate` include habit reward fields
+- `tests/services/test_habit_reward_client.py` - Unit tests
+
+**Last Updated:** Fixed REST API to check all challenges complete before sending; added atomic claim pattern (2026-02-03)

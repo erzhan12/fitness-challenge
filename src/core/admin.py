@@ -61,6 +61,7 @@ class UserSettingsAdmin(admin.ModelAdmin):
         "user",
         "telegram_chat_id",
         "is_reminder_active",
+        "habit_reward_habit_id",
         "last_reminder_21_date",
         "last_reminder_22_date",
         "last_reminder_23_date",
@@ -73,6 +74,7 @@ class UserSettingsAdmin(admin.ModelAdmin):
         "last_reminder_21_date",
         "last_reminder_22_date",
         "last_reminder_23_date",
+        "last_habit_reward_sent_date",
     ]
 
 

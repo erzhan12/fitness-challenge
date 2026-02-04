@@ -8,7 +8,7 @@ lint:
 	uv run ruff format --check .
 
 api:
-	uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+	uv run uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 
 dev:
 	./scripts/start_webhook_dev.sh

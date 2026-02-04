@@ -16,6 +16,7 @@ from app.services.openai_service import (
 )
 from app.services.deterministic_parser import get_numbers_from_message
 from app.services.telegram_client import send_telegram_message, send_chat_action
+from app.services.habit_reward_client import send_habit_completion
 from app.config import settings
 from src.core import setup_django
 from django.core.exceptions import ObjectDoesNotExist
@@ -241,6 +242,64 @@ async def _check_all_challenges_complete(
             return False
 
     # All challenges are complete (on track or ahead)
+    return True
+
+
+async def notify_habit_reward_if_complete(today_local: date, user_id: int) -> bool:
+    """Send habit completion to Habit Reward API if all challenges are complete.
+
+    First checks if all active challenges are on track, then uses atomic claim
+    pattern to prevent race conditions with concurrent requests.
+    Per-user: reads config and tracks idempotency via UserSettings.
+
+    Args:
+        today_local: Current date in local timezone
+        user_id: The AppUser ID
+
+    Returns:
+        True if notification was sent successfully or not needed, False on error
+    """
+    # First check if all challenges are complete
+    challenges = await challenge_repo.get_current_active(today_local, user_id=user_id)
+    if not challenges:
+        logger.debug("No active challenges, skipping habit reward check")
+        return True  # No challenges to complete
+
+    # Convert to dict format for _check_all_challenges_complete
+    challenges_data = [
+        {
+            "id": c.id,
+            "start_date": c.start_date,
+            "end_date": c.end_date,
+            "target_total": c.target_total,
+            "daily_target": c.daily_target,
+        }
+        for c in challenges
+    ]
+
+    all_complete = await _check_all_challenges_complete(
+        challenges_data, today_local, user_id=user_id
+    )
+    if not all_complete:
+        logger.debug("Not all challenges complete, skipping habit reward notification")
+        return True  # Not complete yet, but not an error
+
+    # Atomically claim the date - prevents concurrent requests from double-sending
+    claimed = await user_settings_repo.try_claim_habit_reward_date(user_id, today_local)
+    if not claimed:
+        logger.debug(f"Habit reward already claimed for {today_local}, skipping")
+        return True  # Already claimed is considered success
+
+    # Send the completion notification (checks per-user config internally)
+    success = await send_habit_completion(user_id, today_local)
+
+    if not success:
+        # Clear claim on failure to allow retry
+        await user_settings_repo.clear_habit_reward_claim(user_id, today_local)
+        logger.warning(f"Habit reward send failed for {today_local}, claim cleared")
+        return False
+
+    logger.info(f"Habit reward notification sent for {today_local}")
     return True
 
 
@@ -1110,6 +1169,13 @@ async def process_incoming_message(
         if all_complete:
             final_parts.append("✅ <b>Day Complete!</b>")
             final_parts.append("")  # Add blank line for spacing
+            # Notify Habit Reward API (fire-and-forget, non-blocking)
+            async def _notify_habit_reward():
+                try:
+                    await notify_habit_reward_if_complete(today_local, user_id=user.id)
+                except Exception as e:
+                    logger.warning(f"Habit reward notification failed: {e}")
+            asyncio.create_task(_notify_habit_reward())
 
         for et in exercise_types:
             if et.id in response_map:
