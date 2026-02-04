@@ -240,8 +240,11 @@ class TestSendHabitCompletion:
                     }
 
     @pytest.mark.asyncio
-    async def test_no_payload_when_no_date(self):
-        """Test that payload is None when no date is provided."""
+    async def test_empty_payload_when_no_date(self):
+        """Test that payload is empty dict {} when no date is provided.
+
+        The Habit Reward API expects a JSON body even without target_date.
+        """
         mock_settings = _make_user_settings()
 
         with patch(
@@ -272,7 +275,7 @@ class TestSendHabitCompletion:
                     await send_habit_completion(1)
 
                     call_args = mock_client.post.call_args
-                    assert call_args[1]["json"] is None
+                    assert call_args[1]["json"] == {}
 
 
 def _make_mock_challenge(id=1, start_date=date(2026, 1, 1), end_date=date(2026, 1, 31),
