@@ -64,7 +64,7 @@ async def send_habit_completion(
         try:
             response = await client.post(
                 url,
-                json=payload if payload else None,
+                json=payload,
                 headers=headers,
                 timeout=10.0,
             )
