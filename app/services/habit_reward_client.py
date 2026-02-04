@@ -3,7 +3,9 @@
 import httpx
 import logging
 from datetime import date
-from typing import Optional, TypedDict
+from typing import Optional
+
+from pydantic import BaseModel, ValidationError
 
 from app.config import settings
 from src.core import setup_django
@@ -15,16 +17,24 @@ from src.core.repositories import user_settings_repo
 logger = logging.getLogger(__name__)
 
 
-class HabitCompletionResponse(TypedDict):
-    """Response from Habit Reward API."""
+class RewardResponse(BaseModel):
+    """Reward object from Habit Reward API."""
+
+    id: int
+    name: str
+    pieces_required: Optional[int] = None
+
+
+class HabitCompletionResponse(BaseModel):
+    """Response from Habit Reward API with runtime validation."""
 
     habit_confirmed: bool
     habit_name: str
     streak_count: int
     got_reward: bool
     total_weight_applied: float
-    reward: Optional[dict]
-    cumulative_progress: Optional[dict]
+    reward: Optional[RewardResponse] = None
+    cumulative_progress: Optional[dict] = None
 
 
 async def send_habit_completion(
@@ -78,11 +88,16 @@ async def send_habit_completion(
                 url,
                 json=payload,
                 headers=headers,
-                timeout=10.0,
+                timeout=settings.HABIT_REWARD_TIMEOUT,
             )
             response.raise_for_status()
             logger.info(f"Habit completion sent successfully (status: {response.status_code})")
-            return response.json()
+            return HabitCompletionResponse.model_validate(response.json())
+        except ValidationError as e:
+            logger.error(
+                f"Invalid API response structure (user_id: {user_id}, error: {e})"
+            )
+            return None
         except httpx.HTTPStatusError as e:
             # Don't log response body - may contain sensitive data
             logger.error(

@@ -32,6 +32,7 @@ class Settings(BaseSettings):
 
     # Habit Reward Integration (shared base URL; per-user keys stored in UserSettings DB)
     HABIT_REWARD_BASE_URL: str = "https://habitreward.org"
+    HABIT_REWARD_TIMEOUT: int = 10  # HTTP timeout in seconds
 
     @field_validator("TARGET_CHAT_ID", mode="before")
     @classmethod

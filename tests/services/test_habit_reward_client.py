@@ -11,6 +11,8 @@ from src.core import setup_django
 
 setup_django()
 
+from app.services.habit_reward_client import HabitCompletionResponse, RewardResponse
+
 
 def _make_user_settings(api_key="test-api-key", habit_id=123, sent_date=None):
     """Create a mock UserSettings object with habit reward fields."""
@@ -19,6 +21,27 @@ def _make_user_settings(api_key="test-api-key", habit_id=123, sent_date=None):
         habit_reward_habit_id=habit_id,
         last_habit_reward_sent_date=sent_date,
         save=MagicMock(),
+    )
+
+
+def _make_habit_completion_response(
+    habit_name="Test Habit",
+    streak_count=5,
+    got_reward=False,
+    reward_name=None,
+) -> HabitCompletionResponse:
+    """Create a HabitCompletionResponse for testing."""
+    reward = None
+    if got_reward and reward_name:
+        reward = RewardResponse(id=1, name=reward_name)
+    return HabitCompletionResponse(
+        habit_confirmed=True,
+        habit_name=habit_name,
+        streak_count=streak_count,
+        got_reward=got_reward,
+        total_weight_applied=1.0,
+        reward=reward,
+        cumulative_progress=None,
     )
 
 
@@ -68,10 +91,10 @@ class TestSendHabitCompletion:
                     result = await send_habit_completion(1, date(2026, 1, 22))
 
                     assert result is not None
-                    assert result["habit_confirmed"] is True
-                    assert result["habit_name"] == "Fitness Challenge"
-                    assert result["streak_count"] == 3
-                    assert result["got_reward"] is False
+                    assert result.habit_confirmed is True
+                    assert result.habit_name == "Fitness Challenge"
+                    assert result.streak_count == 3
+                    assert result.got_reward is False
                     mock_client.post.assert_called_once()
                     call_args = mock_client.post.call_args
                     # URL uses /v1/ prefix (not /api/v1/)
@@ -291,6 +314,44 @@ class TestSendHabitCompletion:
                     call_args = mock_client.post.call_args
                     assert call_args[1]["json"] == {}
 
+    @pytest.mark.asyncio
+    async def test_invalid_response_returns_none(self):
+        """Test that invalid API response (missing required fields) returns None."""
+        mock_settings = _make_user_settings()
+        # Missing required fields like habit_confirmed, streak_count, etc.
+        invalid_api_response = {"unexpected_field": "value"}
+
+        with patch(
+            "app.services.habit_reward_client.user_settings_repo"
+        ) as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=mock_settings)
+
+            with patch("app.services.habit_reward_client.settings") as mock_config:
+                mock_config.HABIT_REWARD_BASE_URL = "https://api.example.com"
+
+                with patch(
+                    "app.services.habit_reward_client.httpx.AsyncClient"
+                ) as mock_client_class:
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.raise_for_status = MagicMock()
+                    mock_response.json = MagicMock(return_value=invalid_api_response)
+
+                    mock_client = AsyncMock()
+                    mock_client.post = AsyncMock(return_value=mock_response)
+                    mock_client_class.return_value.__aenter__.return_value = (
+                        mock_client
+                    )
+
+                    from app.services.habit_reward_client import (
+                        send_habit_completion,
+                    )
+
+                    result = await send_habit_completion(1)
+
+                    # Should return None due to Pydantic validation error
+                    assert result is None
+
 
 def _make_mock_challenge(id=1, start_date=date(2026, 1, 1), end_date=date(2026, 1, 31),
                          target_total=1000, daily_target=None):
@@ -444,13 +505,8 @@ class TestNotifyHabitRewardIfComplete:
                         "app.services.workout_service.send_habit_completion",
                         new_callable=AsyncMock,
                     ) as mock_send:
-                        # API success returns response dict
-                        mock_send.return_value = {
-                            "habit_confirmed": True,
-                            "habit_name": "Test Habit",
-                            "streak_count": 5,
-                            "got_reward": False,
-                        }
+                        # API success returns Pydantic model
+                        mock_send.return_value = _make_habit_completion_response()
 
                         result = await notify_habit_reward_if_complete(
                             date(2026, 1, 22), user_id=1
@@ -587,13 +643,8 @@ class TestNotifyHabitRewardIfComplete:
                         "app.services.workout_service.send_habit_completion",
                         new_callable=AsyncMock,
                     ) as mock_send:
-                        # API success returns response dict
-                        mock_send.return_value = {
-                            "habit_confirmed": True,
-                            "habit_name": "Test Habit",
-                            "streak_count": 5,
-                            "got_reward": False,
-                        }
+                        # API success returns Pydantic model
+                        mock_send.return_value = _make_habit_completion_response()
 
                         # First call - should claim and send
                         result1 = await notify_habit_reward_if_complete(
@@ -618,13 +669,11 @@ class TestFormatHabitRewardMessage:
         """Test message formatting when no reward is given."""
         from app.services.workout_service import _format_habit_reward_message
 
-        response = {
-            "habit_confirmed": True,
-            "habit_name": "Fitness Challenge",
-            "streak_count": 3,
-            "got_reward": False,
-            "reward": None,
-        }
+        response = _make_habit_completion_response(
+            habit_name="Fitness Challenge",
+            streak_count=3,
+            got_reward=False,
+        )
 
         message = _format_habit_reward_message(response)
 
@@ -637,13 +686,12 @@ class TestFormatHabitRewardMessage:
         """Test message formatting when reward is given."""
         from app.services.workout_service import _format_habit_reward_message
 
-        response = {
-            "habit_confirmed": True,
-            "habit_name": "Fitness Challenge",
-            "streak_count": 5,
-            "got_reward": True,
-            "reward": {"name": "Ice Cream", "id": 1},
-        }
+        response = _make_habit_completion_response(
+            habit_name="Fitness Challenge",
+            streak_count=5,
+            got_reward=True,
+            reward_name="Ice Cream",
+        )
 
         message = _format_habit_reward_message(response)
 
@@ -656,13 +704,11 @@ class TestFormatHabitRewardMessage:
         """Test that fire emojis are capped at 5."""
         from app.services.workout_service import _format_habit_reward_message
 
-        response = {
-            "habit_confirmed": True,
-            "habit_name": "Test",
-            "streak_count": 100,
-            "got_reward": False,
-            "reward": None,
-        }
+        response = _make_habit_completion_response(
+            habit_name="Test",
+            streak_count=100,
+            got_reward=False,
+        )
 
         message = _format_habit_reward_message(response)
 
@@ -673,17 +719,59 @@ class TestFormatHabitRewardMessage:
         """Test formatting for streak of 1 day."""
         from app.services.workout_service import _format_habit_reward_message
 
-        response = {
-            "habit_confirmed": True,
-            "habit_name": "Test",
-            "streak_count": 1,
-            "got_reward": False,
-            "reward": None,
-        }
+        response = _make_habit_completion_response(
+            habit_name="Test",
+            streak_count=1,
+            got_reward=False,
+        )
 
         message = _format_habit_reward_message(response)
 
         assert "🔥 <b>Streak:</b> 1 days" in message
+
+    def test_format_escapes_html_in_habit_name(self):
+        """Test that HTML in habit name is escaped to prevent injection."""
+        from app.services.workout_service import _format_habit_reward_message
+        from app.services.habit_reward_client import HabitCompletionResponse
+
+        # Simulate malicious habit name with HTML
+        response = HabitCompletionResponse(
+            habit_confirmed=True,
+            habit_name="<script>alert('xss')</script>",
+            streak_count=1,
+            got_reward=False,
+            total_weight_applied=1.0,
+            reward=None,
+            cumulative_progress=None,
+        )
+
+        message = _format_habit_reward_message(response)
+
+        # HTML should be escaped, not rendered
+        assert "&lt;script&gt;" in message
+        assert "<script>" not in message
+
+    def test_format_escapes_html_in_reward_name(self):
+        """Test that HTML in reward name is escaped to prevent injection."""
+        from app.services.workout_service import _format_habit_reward_message
+        from app.services.habit_reward_client import HabitCompletionResponse, RewardResponse
+
+        # Simulate malicious reward name with HTML
+        response = HabitCompletionResponse(
+            habit_confirmed=True,
+            habit_name="Test",
+            streak_count=1,
+            got_reward=True,
+            total_weight_applied=1.0,
+            reward=RewardResponse(id=1, name="<b>Malicious</b>"),
+            cumulative_progress=None,
+        )
+
+        message = _format_habit_reward_message(response)
+
+        # HTML should be escaped, not rendered
+        assert "&lt;b&gt;Malicious&lt;/b&gt;" in message
+        assert "<b>Malicious</b>" not in message
 
 
 class TestNotifyHabitRewardTelegramNotification:
@@ -695,13 +783,6 @@ class TestNotifyHabitRewardTelegramNotification:
         from app.services.workout_service import notify_habit_reward_if_complete
 
         mock_challenges = [_make_mock_challenge()]
-        mock_api_response = {
-            "habit_confirmed": True,
-            "habit_name": "Fitness Challenge",
-            "streak_count": 3,
-            "got_reward": False,
-            "reward": None,
-        }
 
         with patch(
             "app.services.workout_service.challenge_repo"
@@ -727,7 +808,11 @@ class TestNotifyHabitRewardTelegramNotification:
                         "app.services.workout_service.send_habit_completion",
                         new_callable=AsyncMock,
                     ) as mock_send:
-                        mock_send.return_value = mock_api_response
+                        mock_send.return_value = _make_habit_completion_response(
+                            habit_name="Fitness Challenge",
+                            streak_count=3,
+                            got_reward=False,
+                        )
 
                         with patch(
                             "app.services.workout_service.send_telegram_message",
@@ -751,12 +836,6 @@ class TestNotifyHabitRewardTelegramNotification:
         from app.services.workout_service import notify_habit_reward_if_complete
 
         mock_challenges = [_make_mock_challenge()]
-        mock_api_response = {
-            "habit_confirmed": True,
-            "habit_name": "Test",
-            "streak_count": 1,
-            "got_reward": False,
-        }
 
         with patch(
             "app.services.workout_service.challenge_repo"
@@ -782,7 +861,7 @@ class TestNotifyHabitRewardTelegramNotification:
                         "app.services.workout_service.send_habit_completion",
                         new_callable=AsyncMock,
                     ) as mock_send:
-                        mock_send.return_value = mock_api_response
+                        mock_send.return_value = _make_habit_completion_response()
 
                         with patch(
                             "app.services.workout_service.send_telegram_message",

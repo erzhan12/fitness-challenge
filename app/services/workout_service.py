@@ -1,6 +1,7 @@
 import logging
 import asyncio
 from datetime import datetime, date
+from html import escape
 from typing import List, Dict, Any, Optional, Tuple
 
 try:
@@ -16,7 +17,7 @@ from app.services.openai_service import (
 )
 from app.services.deterministic_parser import get_numbers_from_message
 from app.services.telegram_client import send_telegram_message, send_chat_action
-from app.services.habit_reward_client import send_habit_completion
+from app.services.habit_reward_client import send_habit_completion, HabitCompletionResponse
 from app.config import settings
 from src.core import setup_django
 from django.core.exceptions import ObjectDoesNotExist
@@ -245,31 +246,28 @@ async def _check_all_challenges_complete(
     return True
 
 
-def _format_habit_reward_message(response: dict) -> str:
+def _format_habit_reward_message(response: HabitCompletionResponse) -> str:
     """Format habit completion response into a Telegram message.
 
     Args:
-        response: HabitCompletionResponse from Habit Reward API
+        response: Validated HabitCompletionResponse from Habit Reward API
 
     Returns:
         Formatted HTML message string
     """
     message_parts = []
 
-    # Habit confirmation
-    habit_name = response.get("habit_name", "Habit")
+    # Habit confirmation (escape external data to prevent HTML injection)
+    habit_name = escape(response.habit_name)
     message_parts.append(f"✅ <b>Habit completed:</b> {habit_name}")
 
     # Streak with fire emojis (max 5)
-    streak_count = response.get("streak_count", 0)
-    fire_emoji = "🔥" * min(streak_count, 5)
-    message_parts.append(f"{fire_emoji} <b>Streak:</b> {streak_count} days")
+    fire_emoji = "🔥" * min(response.streak_count, 5)
+    message_parts.append(f"{fire_emoji} <b>Streak:</b> {response.streak_count} days")
 
-    # Reward status
-    got_reward = response.get("got_reward", False)
-    reward = response.get("reward")
-    if got_reward and reward:
-        reward_name = reward.get("name", "Reward")
+    # Reward status (escape external data to prevent HTML injection)
+    if response.got_reward and response.reward:
+        reward_name = escape(response.reward.name)
         message_parts.append(f"\n🎁 <b>Reward:</b> {reward_name}")
     else:
         message_parts.append("\n❌ No reward this time - keep going!")
@@ -320,6 +318,10 @@ async def notify_habit_reward_if_complete(
         return True  # Not complete yet, but not an error
 
     # Atomically claim the date - prevents concurrent requests from double-sending
+    # NOTE: There's a small race window between checking completion above and claiming below.
+    # If a new challenge is added or existing progress changes in this window, we might
+    # send the notification prematurely. This is an unlikely edge case with low impact,
+    # as the atomic claim ensures we only send once per day regardless.
     claimed = await user_settings_repo.try_claim_habit_reward_date(user_id, today_local)
     if not claimed:
         logger.debug(f"Habit reward already claimed for {today_local}, skipping")
