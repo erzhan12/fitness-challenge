@@ -1081,11 +1081,14 @@ The feature is disabled for a user if either `habit_reward_api_key` or `habit_re
 ### How It Works
 
 1. User logs exercises via Telegram or REST API
-2. System checks if all active challenges are on track (`_check_all_challenges_complete()`)
+2. Both call `notify_habit_reward_if_complete(date, user_id)` which internally:
+   - Fetches active challenges for the user
+   - Checks if all are on track (`_check_all_challenges_complete()`)
+   - If not all complete, returns True (not an error, just not ready)
 3. If all complete:
-   - Check if already sent today (`last_habit_reward_sent_date` in `UserSettings`, per-user)
-   - If not sent, POST to `{base_url}/v1/habits/{habit_id}/complete` with `X-API-Key` header
-   - On 200 response, mark as sent for today
+   - Atomically claims the date (prevents concurrent requests from double-sending)
+   - POSTs to `{base_url}/v1/habits/{habit_id}/complete` with `X-API-Key` header
+   - On 200 response, keeps the claim; on failure, clears claim to allow retry
 
 ### Idempotency (Atomic Claim Pattern)
 
@@ -1116,9 +1119,9 @@ A simple check-then-mark pattern is non-atomic: two concurrent requests could bo
 - `app/services/habit_reward_client.py` - HTTP client (`send_habit_completion(user_id, date)`)
 - `app/services/workout_service.py` - Integration (`notify_habit_reward_if_complete(date, user_id)`)
 - `src/core/models.py` - `UserSettings.habit_reward_api_key`, `habit_reward_habit_id`, `last_habit_reward_sent_date`
-- `src/core/repositories.py` - `UserSettingsRepository.check_habit_reward_sent`, `mark_habit_reward_sent`
+- `src/core/repositories.py` - `UserSettingsRepository.try_claim_habit_reward_date`, `clear_habit_reward_claim`
 - `src/api/routers/logs.py` - REST API trigger after log creation
 - `src/api/models.py` - `UserSettingsOut`/`UserSettingsUpdate` include habit reward fields
 - `tests/services/test_habit_reward_client.py` - Unit tests
 
-**Last Updated:** Added atomic claim pattern for race-safe idempotency (2026-02-03)
+**Last Updated:** Fixed REST API to check all challenges complete before sending; added atomic claim pattern (2026-02-03)
