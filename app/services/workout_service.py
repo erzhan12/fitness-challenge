@@ -1170,7 +1170,12 @@ async def process_incoming_message(
             final_parts.append("✅ <b>Day Complete!</b>")
             final_parts.append("")  # Add blank line for spacing
             # Notify Habit Reward API (fire-and-forget, non-blocking)
-            await notify_habit_reward_if_complete(today_local, user_id=user.id)
+            async def _notify_habit_reward():
+                try:
+                    await notify_habit_reward_if_complete(today_local, user_id=user.id)
+                except Exception as e:
+                    logger.warning(f"Habit reward notification failed: {e}")
+            asyncio.create_task(_notify_habit_reward())
 
         for et in exercise_types:
             if et.id in response_map:
