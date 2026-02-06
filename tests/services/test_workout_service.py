@@ -16,6 +16,7 @@ from src.core.utils import (
     calculate_expected_progress,
     calculate_status_and_deficit,
     calculate_status,
+    ensure_date,
 )
 from app.services.workout_service import (
     get_recent_logs,
@@ -412,3 +413,16 @@ class TestUndoLastLog:
 
         assert "No logs found to undo" in result
         get_all_mock.assert_awaited_once_with(limit=1, offset=0, user_id=12345)
+
+
+class TestEnsureDate:
+    """Test ensure_date utility function."""
+
+    def test_ensure_date_with_string(self):
+        result = ensure_date("2024-01-15")
+        assert result == date(2024, 1, 15)
+
+    def test_ensure_date_with_date_object(self):
+        d = date(2024, 1, 15)
+        result = ensure_date(d)
+        assert result == d
