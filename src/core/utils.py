@@ -68,9 +68,26 @@ def calculate_status(
 
 
 def ensure_date(value) -> date:
-    """Normalize a value to a date object.
+    """Normalize a value to a ``date`` object.
 
-    Handles both date objects and ISO format strings.
+    Args:
+        value: A ``datetime.date`` instance (returned as-is) or an
+            ISO 8601 date string such as ``"2024-01-15"``.
+
+    Returns:
+        A ``datetime.date`` object.
+
+    Raises:
+        ValueError: If *value* is a string that cannot be parsed by
+            ``date.fromisoformat()``.
+        TypeError: If *value* is neither a ``date`` nor a ``str``.
+
+    Example::
+
+        >>> ensure_date("2024-01-15")
+        datetime.date(2024, 1, 15)
+        >>> ensure_date(date(2024, 1, 15))
+        datetime.date(2024, 1, 15)
     """
     if isinstance(value, str):
         return date.fromisoformat(value)
