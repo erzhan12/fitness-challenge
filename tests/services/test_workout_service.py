@@ -12,10 +12,12 @@ from src.core import setup_django
 
 setup_django()
 
-from app.services.workout_service import (
+from src.core.utils import (
     calculate_expected_progress,
     calculate_status_and_deficit,
     calculate_status,
+)
+from app.services.workout_service import (
     get_recent_logs,
     delete_log_entry,
     undo_last_log,
