@@ -1,6 +1,6 @@
 """Tests for evening reminder functionality."""
 
-from datetime import date
+from datetime import date, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -188,8 +188,45 @@ class TestSendEveningReminder:
                     mock_repo.clear_hour_sent.assert_called_once()
 
 
+def _make_challenge(
+    challenge_id,
+    display_name,
+    emoji,
+    unit,
+    target_total,
+    total_days=30,
+    day_offset=10,
+    daily_target=None,
+):
+    """Helper to create a mock challenge for reminder tests.
+
+    day_offset: how many days into the challenge we are (day_number).
+    The challenge starts (day_offset - 1) days ago.
+    """
+    today = date.today()
+    start_date = today - timedelta(days=day_offset - 1)
+    end_date = start_date + timedelta(days=total_days - 1)
+    return SimpleNamespace(
+        id=challenge_id,
+        exercise_type_id=challenge_id,
+        exercise_type=SimpleNamespace(
+            display_name=display_name,
+            emoji=emoji,
+            unit=unit,
+        ),
+        start_date=start_date,
+        end_date=end_date,
+        target_total=target_total,
+        daily_target=daily_target,
+    )
+
+
 class TestComputeEveningReminder:
-    """Tests for compute_evening_reminder function."""
+    """Tests for compute_evening_reminder function.
+
+    Reminders use cumulative catch-up logic: a challenge is "incomplete"
+    when cumulative_total < expected_progress (based on target and timeline).
+    """
 
     @pytest.mark.asyncio
     async def test_no_active_challenges(self):
@@ -204,26 +241,18 @@ class TestComputeEveningReminder:
             assert count == 0
 
     @pytest.mark.asyncio
-    async def test_all_challenges_complete(self):
-        """When all challenges are complete, returns (False, None, 0)."""
-        mock_challenge = SimpleNamespace(
-            id=1,
-            exercise_type_id=1,
-            exercise_type=SimpleNamespace(
-                display_name="Push-ups",
-                emoji="💪",
-                unit="reps",
-            ),
-            daily_target=50,
-        )
+    async def test_all_challenges_caught_up(self):
+        """When all challenges are caught up on cumulative progress, returns (False, None, 0)."""
+        # day 10 of 30, daily_target=50 → expected=500
+        mock_challenge = _make_challenge(1, "Push-ups", "💪", "reps", 1500, daily_target=50)
 
         with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
             mock_ch_repo.get_current_active = AsyncMock(return_value=[mock_challenge])
 
             with patch("app.services.workout_service.log_repo") as mock_log_repo:
-                # Today total meets target
-                mock_log_repo.get_today_counts_by_challenge_ids = AsyncMock(
-                    return_value={1: 50}
+                # Cumulative meets expected (500)
+                mock_log_repo.get_cumulative_counts_by_challenge_ids = AsyncMock(
+                    return_value={1: 500}
                 )
 
                 should_send, message, count = await compute_evening_reminder(date.today(), 21)
@@ -233,26 +262,18 @@ class TestComputeEveningReminder:
                 assert count == 0
 
     @pytest.mark.asyncio
-    async def test_incomplete_challenge_with_target(self):
-        """When a challenge with daily_target is incomplete, includes it in the message."""
-        mock_challenge = SimpleNamespace(
-            id=1,
-            exercise_type_id=1,
-            exercise_type=SimpleNamespace(
-                display_name="Push-ups",
-                emoji="💪",
-                unit="reps",
-            ),
-            daily_target=50,
-        )
+    async def test_challenge_behind_cumulative_progress(self):
+        """When cumulative_total < expected, challenge is included in reminder."""
+        # day 10 of 30, daily_target=50 → expected=500
+        mock_challenge = _make_challenge(1, "Push-ups", "💪", "reps", 1500, daily_target=50)
 
         with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
             mock_ch_repo.get_current_active = AsyncMock(return_value=[mock_challenge])
 
             with patch("app.services.workout_service.log_repo") as mock_log_repo:
-                # Today total is less than target
-                mock_log_repo.get_today_counts_by_challenge_ids = AsyncMock(
-                    return_value={1: 30}
+                # Cumulative is behind (400 < 500)
+                mock_log_repo.get_cumulative_counts_by_challenge_ids = AsyncMock(
+                    return_value={1: 400}
                 )
 
                 with patch("app.services.workout_service.generate_reminder_motivation") as mock_llm:
@@ -263,30 +284,23 @@ class TestComputeEveningReminder:
                     assert should_send is True
                     assert count == 1
                     assert "Push-ups" in message
-                    assert "30/50" in message
-                    assert "need 20 more" in message
+                    assert "400/500" in message
+                    assert "need 100 more" in message
+                    assert "catch up" in message
 
     @pytest.mark.asyncio
-    async def test_incomplete_challenge_no_daily_target_zero_logged(self):
-        """When challenge has no daily_target and today_total=0, it's incomplete."""
-        mock_challenge = SimpleNamespace(
-            id=1,
-            exercise_type_id=1,
-            exercise_type=SimpleNamespace(
-                display_name="Yoga",
-                emoji="🧘",
-                unit="minutes",
-            ),
-            daily_target=None,  # No target
-        )
+    async def test_challenge_without_daily_target_behind(self):
+        """Challenge without daily_target uses target_total/total_days for expected."""
+        # day 10 of 30, no daily_target, target_total=300 → expected=100
+        mock_challenge = _make_challenge(1, "Yoga", "🧘", "minutes", 300, daily_target=None)
 
         with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
             mock_ch_repo.get_current_active = AsyncMock(return_value=[mock_challenge])
 
             with patch("app.services.workout_service.log_repo") as mock_log_repo:
-                # Zero logged today
-                mock_log_repo.get_today_counts_by_challenge_ids = AsyncMock(
-                    return_value={1: 0}
+                # Cumulative is behind (50 < 100)
+                mock_log_repo.get_cumulative_counts_by_challenge_ids = AsyncMock(
+                    return_value={1: 50}
                 )
 
                 with patch("app.services.workout_service.generate_reminder_motivation") as mock_llm:
@@ -297,29 +311,22 @@ class TestComputeEveningReminder:
                     assert should_send is True
                     assert count == 1
                     assert "Yoga" in message
-                    assert "Not started today" in message
+                    assert "50/100" in message
+                    assert "need 50 more" in message
 
     @pytest.mark.asyncio
-    async def test_complete_challenge_no_daily_target_some_logged(self):
-        """When challenge has no daily_target but today_total>0, it's complete."""
-        mock_challenge = SimpleNamespace(
-            id=1,
-            exercise_type_id=1,
-            exercise_type=SimpleNamespace(
-                display_name="Yoga",
-                emoji="🧘",
-                unit="minutes",
-            ),
-            daily_target=None,  # No target
-        )
+    async def test_challenge_without_daily_target_caught_up(self):
+        """Challenge without daily_target is caught up when cumulative >= expected."""
+        # day 10 of 30, no daily_target, target_total=300 → expected=100
+        mock_challenge = _make_challenge(1, "Yoga", "🧘", "minutes", 300, daily_target=None)
 
         with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
             mock_ch_repo.get_current_active = AsyncMock(return_value=[mock_challenge])
 
             with patch("app.services.workout_service.log_repo") as mock_log_repo:
-                # Some logged today - considered complete
-                mock_log_repo.get_today_counts_by_challenge_ids = AsyncMock(
-                    return_value={1: 15}
+                # Cumulative meets expected (100 >= 100)
+                mock_log_repo.get_cumulative_counts_by_challenge_ids = AsyncMock(
+                    return_value={1: 100}
                 )
 
                 should_send, message, count = await compute_evening_reminder(date.today(), 21)
@@ -331,44 +338,23 @@ class TestComputeEveningReminder:
     @pytest.mark.asyncio
     async def test_mixed_units_in_remaining_summary(self):
         """When challenges have different units, remaining_summary separates them."""
+        # day 10 of 30: push-ups expected=500, yoga expected=100
         mock_challenges = [
-            SimpleNamespace(
-                id=1,
-                exercise_type_id=1,
-                exercise_type=SimpleNamespace(
-                    display_name="Push-ups",
-                    emoji="💪",
-                    unit="reps",
-                ),
-                daily_target=50,
-            ),
-            SimpleNamespace(
-                id=2,
-                exercise_type_id=2,
-                exercise_type=SimpleNamespace(
-                    display_name="Yoga",
-                    emoji="🧘",
-                    unit="minutes",
-                ),
-                daily_target=30,
-            ),
+            _make_challenge(1, "Push-ups", "💪", "reps", 1500, daily_target=50),
+            _make_challenge(2, "Yoga", "🧘", "minutes", 300, daily_target=None),
         ]
 
         with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
             mock_ch_repo.get_current_active = AsyncMock(return_value=mock_challenges)
 
             with patch("app.services.workout_service.log_repo") as mock_log_repo:
-                # Both incomplete
-                mock_log_repo.get_today_counts_by_challenge_ids = AsyncMock(
-                    return_value={1: 0, 2: 0}
+                # Both behind
+                mock_log_repo.get_cumulative_counts_by_challenge_ids = AsyncMock(
+                    return_value={1: 400, 2: 50}
                 )
 
                 with patch("app.services.workout_service.generate_reminder_motivation") as mock_llm:
-                    mock_llm.return_value = "Let's go!"
-
-                    # Capture what context is passed to LLM
                     def capture_context(ctx):
-                        # Check that remaining_summary has both units
                         summary = ctx.get("remaining_summary", "")
                         assert "reps" in summary
                         assert "minutes" in summary
@@ -382,37 +368,21 @@ class TestComputeEveningReminder:
                     assert count == 2
 
     @pytest.mark.asyncio
-    async def test_mixed_complete_incomplete_challenges(self):
-        """When some challenges are complete, only incomplete ones appear."""
+    async def test_mixed_caught_up_and_behind_challenges(self):
+        """When some challenges are caught up, only behind ones appear in reminder."""
+        # Both: day 10 of 30, daily_target=50 → expected=500
         mock_challenges = [
-            SimpleNamespace(
-                id=1,
-                exercise_type_id=1,
-                exercise_type=SimpleNamespace(
-                    display_name="Push-ups",
-                    emoji="💪",
-                    unit="reps",
-                ),
-                daily_target=10,
-            ),
-            SimpleNamespace(
-                id=2,
-                exercise_type_id=2,
-                exercise_type=SimpleNamespace(
-                    display_name="Squats",
-                    emoji="🏋️",
-                    unit="reps",
-                ),
-                daily_target=10,
-            ),
+            _make_challenge(1, "Push-ups", "💪", "reps", 1500, daily_target=50),
+            _make_challenge(2, "Squats", "🏋️", "reps", 1500, daily_target=50),
         ]
 
         with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
             mock_ch_repo.get_current_active = AsyncMock(return_value=mock_challenges)
 
             with patch("app.services.workout_service.log_repo") as mock_log_repo:
-                mock_log_repo.get_today_counts_by_challenge_ids = AsyncMock(
-                    return_value={1: 10, 2: 3}
+                # Push-ups caught up (500 >= 500), squats behind (300 < 500)
+                mock_log_repo.get_cumulative_counts_by_challenge_ids = AsyncMock(
+                    return_value={1: 500, 2: 300}
                 )
 
                 with patch("app.services.workout_service.generate_reminder_motivation") as mock_llm:
@@ -426,3 +396,5 @@ class TestComputeEveningReminder:
                     assert count == 1
                     assert "Squats" in message
                     assert "Push-ups" not in message
+                    assert "300/500" in message
+                    assert "need 200 more" in message

@@ -609,10 +609,14 @@ The application includes an automated evening reminder system that sends Telegra
 - `AppSettingsRepository` (`src/core/repositories.py`) - Async repository with methods:
   - `get_singleton()`, `set_is_reminder_active()`, `update_chat_id()`, `mark_hour_sent()`, `check_already_sent()`
 
-**Reminder Logic:**
-- `compute_evening_reminder()` (`app/services/workout_service.py`) - Determines incomplete challenges:
-  - Challenges with `daily_target`: incomplete if `today_total < daily_target`
-  - Challenges without `daily_target`: incomplete only if `today_total == 0`
+**Reminder Logic (Cumulative Catch-Up):**
+- `compute_evening_reminder()` (`app/services/workout_service.py`) - Determines incomplete challenges using **cumulative progress**:
+  - Fetches `cumulative_total` per challenge (all logs up to today)
+  - Computes `expected_progress` using `calculate_expected_progress(target_total, day_number, total_days, daily_target)`
+  - A challenge is "incomplete" when `cumulative_total < expected_progress` (not caught up)
+  - Deficit shown as `need X more to catch up`
+  - **Silent** when all challenges are caught up (no message sent)
+  - Per-challenge: only behind challenges appear in the reminder
   - Returns combined HTML message with motivational text
 - `send_evening_reminder()` (`app/services/workout_service.py`) - Sends reminders:
   - Checks `is_reminder_active` flag
@@ -657,7 +661,7 @@ The application includes an automated evening reminder system that sends Telegra
 - **Tests:** `tests/api/test_settings.py`
 - **Migration:** `src/core/migrations/0002_add_app_settings.py`
 
-**Last Updated:** Added evening reminders system (2026-01-11)
+**Last Updated:** Changed evening reminders to use cumulative catch-up logic instead of daily target (2026-02-06)
 
 ---
 
