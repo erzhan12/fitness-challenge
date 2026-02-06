@@ -17,6 +17,7 @@ except ImportError:
     from backports.zoneinfo import ZoneInfo
 
 from app.config import settings
+from src.core.utils import calculate_expected_progress, calculate_status_and_deficit
 from src.core.repositories import (
     exercise_type_repo,
     challenge_repo,
@@ -320,42 +321,9 @@ async def update_challenge(
 # =============================================================================
 
 
-def calculate_expected_progress(
-    target_total: int, day_number: int, total_days: int, daily_target: Optional[int]
-) -> float:
-    """Calculate expected progress based on target and timeline."""
-    if daily_target:
-        return daily_target * day_number
-    else:
-        return (target_total / total_days) * day_number
 
-
-def calculate_status_and_deficit(
-    cumulative: int,
-    target_total: int,
-    day_number: int,
-    total_days: int,
-    daily_target: Optional[int],
-) -> Tuple[str, float]:
-    """Calculate status and deficit.
-
-    Returns:
-        Tuple of (status, deficit) where deficit is positive when behind
-    """
-    expected = calculate_expected_progress(
-        target_total, day_number, total_days, daily_target
-    )
-
-    diff = cumulative - expected
-    deficit = expected - cumulative
-    threshold = daily_target or (target_total / total_days)  # full daily target
-
-    if diff > threshold:
-        return "ahead", deficit
-    elif diff < -threshold:
-        return "behind", deficit
-    else:
-        return "on_track", deficit
+# calculate_expected_progress, calculate_status_and_deficit
+# are imported from src.core.utils
 
 
 async def compute_exercise_stats(

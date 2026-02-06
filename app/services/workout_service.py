@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import math
 from datetime import datetime, date
 from html import escape
 from typing import List, Dict, Any, Optional, Tuple
@@ -32,6 +33,12 @@ from src.core.repositories import (
     user_settings_repo,
 )
 from src.core.validators import validate_telegram_user_id
+from src.core.utils import (
+    calculate_expected_progress,
+    calculate_status_and_deficit,
+    calculate_status,
+    ensure_date,
+)
 from src.api.services import (
     compute_exercise_stats,
     list_current_active_challenges,
@@ -111,56 +118,9 @@ async def get_active_challenge(
     return None
 
 
-def calculate_expected_progress(
-    target_total: int, day_number: int, total_days: int, daily_target: Optional[int]
-) -> float:
-    """Calculate expected progress based on target and timeline."""
-    if daily_target:
-        return daily_target * day_number
-    else:
-        return (target_total / total_days) * day_number
 
-
-def calculate_status_and_deficit(
-    cumulative: int,
-    target_total: int,
-    day_number: int,
-    total_days: int,
-    daily_target: Optional[int],
-) -> Tuple[str, float]:
-    """Calculate status and deficit in a single function to avoid duplication.
-
-    Returns:
-        Tuple of (status, deficit) where deficit is positive when behind, negative when ahead
-    """
-    expected = calculate_expected_progress(
-        target_total, day_number, total_days, daily_target
-    )
-
-    diff = cumulative - expected
-    deficit = expected - cumulative  # positive when behind
-    threshold = daily_target or (target_total / total_days)  # full daily target threshold
-
-    if diff > threshold:
-        return "ahead", deficit
-    elif diff < -threshold:
-        return "behind", deficit
-    else:
-        return "on_track", deficit
-
-
-def calculate_status(
-    cumulative: int,
-    target_total: int,
-    day_number: int,
-    total_days: int,
-    daily_target: Optional[int],
-) -> str:
-    """Calculate status (backward compatibility wrapper)."""
-    status, _ = calculate_status_and_deficit(
-        cumulative, target_total, day_number, total_days, daily_target
-    )
-    return status
+# calculate_expected_progress, calculate_status_and_deficit, calculate_status
+# are imported from src.core.utils
 
 
 def _is_daily_complete(
@@ -212,12 +172,8 @@ async def _check_all_challenges_complete(
 
     for challenge in challenges_data:
         challenge_id = challenge["id"]
-        start_date = challenge["start_date"]
-        if isinstance(start_date, str):
-            start_date = date.fromisoformat(start_date)
-        end_date = challenge["end_date"]
-        if isinstance(end_date, str):
-            end_date = date.fromisoformat(end_date)
+        start_date = ensure_date(challenge["start_date"])
+        end_date = ensure_date(challenge["end_date"])
 
         target_total = challenge["target_total"]
         daily_target = challenge.get("daily_target")
@@ -1317,38 +1273,36 @@ async def compute_evening_reminder(
         return False, None, 0
 
     challenge_ids = [ch.id for ch in challenges]
-    today_counts = await log_repo.get_today_counts_by_challenge_ids(
+    cumulative_counts = await log_repo.get_cumulative_counts_by_challenge_ids(
         challenge_ids, today_local
     )
 
-    # Determine which challenges are incomplete
+    # Determine which challenges are NOT caught up (cumulative behind expected)
     incomplete_challenges = []
 
     for ch in challenges:
+        start_date = ensure_date(ch.start_date)
+        end_date = ensure_date(ch.end_date)
+
+        target_total = ch.target_total
         daily_target = ch.daily_target
-        today_total = today_counts.get(ch.id, 0)
+        total_days = (end_date - start_date).days + 1
+        day_number = max(1, min((today_local - start_date).days + 1, total_days))
 
-        # Check if incomplete
-        is_incomplete = False
-        if daily_target is not None:
-            # Has daily target: incomplete if today_total < daily_target
-            is_incomplete = today_total < daily_target
-        else:
-            # No daily target: treat as incomplete only if today_total == 0
-            is_incomplete = today_total == 0
+        expected = calculate_expected_progress(
+            target_total, day_number, total_days, daily_target
+        )
+        cumulative_total = cumulative_counts.get(ch.id, 0)
 
-        if is_incomplete:
-            left_reps = 0
-            if daily_target is not None:
-                left_reps = max(0, daily_target - today_total)
-
+        if cumulative_total < expected:
+            deficit = math.ceil(expected - cumulative_total)
             incomplete_challenges.append({
                 "exercise_name": ch.exercise_type.display_name,
                 "emoji": ch.exercise_type.emoji,
                 "unit": ch.exercise_type.unit,
-                "today_total": today_total,
-                "daily_target": daily_target,
-                "left_reps": left_reps,
+                "cumulative_total": cumulative_total,
+                "expected": math.ceil(expected),
+                "deficit": deficit,
             })
 
     if not incomplete_challenges:
@@ -1360,27 +1314,24 @@ async def compute_evening_reminder(
     # Group remaining work by unit (e.g., {"reps": 50, "minutes": 15})
     remaining_by_unit: dict[str, int] = {}
     for ch in incomplete_challenges:
-        if ch["left_reps"] > 0:
+        if ch["deficit"] > 0:
             unit = ch["unit"]
-            remaining_by_unit[unit] = remaining_by_unit.get(unit, 0) + ch["left_reps"]
+            remaining_by_unit[unit] = remaining_by_unit.get(unit, 0) + ch["deficit"]
 
     # Format remaining summary for LLM (e.g., "50 reps, 15 minutes")
     if remaining_by_unit:
         remaining_summary = ", ".join(f"{v} {k}" for k, v in remaining_by_unit.items())
     else:
-        remaining_summary = "some exercises not started"
+        remaining_summary = "some exercises behind schedule"
 
     # Build cleaner challenge summaries for LLM context
     challenge_summaries = []
     for ch in incomplete_challenges:
-        if ch["daily_target"] is not None:
-            summary = (
-                f"{ch['emoji']} {ch['exercise_name']}: "
-                f"{ch['today_total']}/{ch['daily_target']} {ch['unit']} "
-                f"(need {ch['left_reps']} more)"
-            )
-        else:
-            summary = f"{ch['emoji']} {ch['exercise_name']}: not started today (no daily target)"
+        summary = (
+            f"{ch['emoji']} {ch['exercise_name']}: "
+            f"{ch['cumulative_total']}/{ch['expected']} {ch['unit']} "
+            f"(need {ch['deficit']} more to catch up)"
+        )
         challenge_summaries.append(summary)
 
     # Generate motivational message via LLM
@@ -1407,19 +1358,12 @@ async def compute_evening_reminder(
     ]
 
     for ch in incomplete_challenges:
-        if ch["daily_target"] is not None:
-            unit_display = ch["unit"] if ch["left_reps"] != 1 else ch["unit"].rstrip('s')
-            message_lines.append(
-                f"• {ch['emoji']} <b>{ch['exercise_name']}</b>: "
-                f"{ch['today_total']}/{ch['daily_target']} {ch['unit']} "
-                f"(need {ch['left_reps']} more {unit_display})"
-            )
-        else:
-            # No daily target, just show it's not started
-            message_lines.append(
-                f"• {ch['emoji']} <b>{ch['exercise_name']}</b>: "
-                f"Not started today"
-            )
+        unit_display = ch["unit"] if ch["deficit"] != 1 else ch["unit"].rstrip('s')
+        message_lines.append(
+            f"• {ch['emoji']} <b>{ch['exercise_name']}</b>: "
+            f"{ch['cumulative_total']}/{ch['expected']} {ch['unit']} "
+            f"(need {ch['deficit']} more {unit_display} to catch up)"
+        )
 
     message_lines.append("")
     message_lines.append(f"<i>{motivation}</i>")
