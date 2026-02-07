@@ -96,7 +96,6 @@ class ExerciseChallengeAdmin(admin.ModelAdmin):
         "exercise_type",
         "start_date",
         "end_date",
-        "target_total",
         "daily_target",
         "is_active",
         "is_default",

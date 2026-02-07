@@ -36,7 +36,6 @@ from src.core.validators import validate_telegram_user_id
 from src.core.utils import (
     calculate_expected_progress,
     calculate_status_and_deficit,
-    calculate_status,
     ensure_date,
 )
 from src.api.services import (
@@ -73,7 +72,6 @@ def _challenge_model_to_dict(model) -> Dict[str, Any]:
         "challenge_name": model.challenge_name,
         "start_date": model.start_date.isoformat(),
         "end_date": model.end_date.isoformat(),
-        "target_total": model.target_total,
         "daily_target": model.daily_target,
         "is_active": model.is_active,
         "is_default": model.is_default,
@@ -125,24 +123,22 @@ async def get_active_challenge(
 
 def _is_daily_complete(
     cumulative_total: int,
-    target_total: int,
+    daily_target: int,
     day_number: int,
     total_days: int,
-    daily_target: Optional[int]
 ) -> bool:
     """Check if on track with cumulative progress for a challenge.
 
     Args:
         cumulative_total: Total reps/minutes logged so far
-        target_total: Total target for the challenge
+        daily_target: Daily target count
         day_number: Current day number in the challenge
         total_days: Total days in the challenge
-        daily_target: Daily target (if set), or None
 
     Returns:
         True if cumulative progress is on track or ahead, False if behind
     """
-    expected = calculate_expected_progress(target_total, day_number, total_days, daily_target)
+    expected = calculate_expected_progress(daily_target, day_number, total_days)
     return cumulative_total >= expected
 
 
@@ -175,8 +171,7 @@ async def _check_all_challenges_complete(
         start_date = ensure_date(challenge["start_date"])
         end_date = ensure_date(challenge["end_date"])
 
-        target_total = challenge["target_total"]
-        daily_target = challenge.get("daily_target")
+        daily_target = challenge["daily_target"]
 
         # Calculate day number and clamp to challenge window
         total_days = (end_date - start_date).days + 1
@@ -188,10 +183,9 @@ async def _check_all_challenges_complete(
         # Check if on track using the updated _is_daily_complete logic
         is_complete = _is_daily_complete(
             cumulative_total=cumulative_total,
-            target_total=target_total,
+            daily_target=daily_target,
             day_number=day_number,
             total_days=total_days,
-            daily_target=daily_target
         )
 
         # If any challenge is not complete (behind), return False
@@ -260,7 +254,6 @@ async def notify_habit_reward_if_complete(
             "id": c.id,
             "start_date": c.start_date,
             "end_date": c.end_date,
-            "target_total": c.target_total,
             "daily_target": c.daily_target,
         }
         for c in challenges
@@ -368,10 +361,9 @@ async def get_exercise_stats_and_message(
     else:
         # Compute "ahead" amount vs expected cumulative by day_number
         expected = calculate_expected_progress(
-            stats_out.target_total,
+            stats_out.daily_target,
             stats_out.day_number,
             stats_out.total_days,
-            stats_out.daily_target,
         )
         diff = stats_out.cumulative_total - expected  # positive means ahead
         ahead_reps = max(0, int(diff))
@@ -1284,13 +1276,12 @@ async def compute_evening_reminder(
         start_date = ensure_date(ch.start_date)
         end_date = ensure_date(ch.end_date)
 
-        target_total = ch.target_total
         daily_target = ch.daily_target
         total_days = (end_date - start_date).days + 1
         day_number = max(1, min((today_local - start_date).days + 1, total_days))
 
         expected = calculate_expected_progress(
-            target_total, day_number, total_days, daily_target
+            daily_target, day_number, total_days
         )
         cumulative_total = cumulative_counts.get(ch.id, 0)
 

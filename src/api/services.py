@@ -153,8 +153,11 @@ def _enrich_challenge(challenge_data: Dict[str, Any], today: date) -> Dict[str, 
     """Add computed fields to challenge data."""
     start = date.fromisoformat(challenge_data["start_date"]) if isinstance(challenge_data["start_date"], str) else challenge_data["start_date"]
     end = date.fromisoformat(challenge_data["end_date"]) if isinstance(challenge_data["end_date"], str) else challenge_data["end_date"]
-    challenge_data["total_days"] = (end - start).days + 1
+    total_days = (end - start).days + 1
+    challenge_data["total_days"] = total_days
     challenge_data["is_current"] = start <= today <= end
+    # target_total is computed from daily_target × total_days
+    challenge_data["target_total"] = challenge_data["daily_target"] * total_days
     return challenge_data
 
 
@@ -371,7 +374,6 @@ async def compute_exercise_stats(
     challenge_name = None
     day_number = 1
     total_days = 30
-    target_total = 1000
     daily_target = 33
 
     if challenge:
@@ -382,8 +384,10 @@ async def compute_exercise_stats(
         total_days = (end_date - start_date).days + 1
         # Clamp day_number to challenge window for historical snapshots
         day_number = max(1, min((today_local - start_date).days + 1, total_days))
-        target_total = challenge["target_total"]
-        daily_target = challenge.get("daily_target")
+        daily_target = challenge["daily_target"]
+
+    # target_total is always computed from daily_target × total_days
+    target_total = daily_target * total_days
 
     # Query cumulative total
     current_total = await log_repo.get_cumulative_count(
@@ -396,7 +400,7 @@ async def compute_exercise_stats(
 
     # Status and deficit
     status, deficit = calculate_status_and_deficit(
-        new_cumulative, target_total, day_number, total_days, daily_target
+        new_cumulative, daily_target, day_number, total_days
     )
 
     # Catch-up calculation - show for any positive deficit
@@ -419,7 +423,7 @@ async def compute_exercise_stats(
     )
 
     # Determine if on track with cumulative progress (not just today's target)
-    expected = calculate_expected_progress(target_total, day_number, total_days, daily_target)
+    expected = calculate_expected_progress(daily_target, day_number, total_days)
     daily_complete = new_cumulative >= expected
 
     return ExerciseStatsOut(

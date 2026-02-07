@@ -36,16 +36,16 @@ Create manual step by step commands to check logs
 - [X] Add unit tests covering ambiguous inputs and fallback-to-LLM behavior
 - [X] Add validation check: if user entered any number that could be considered as 0 (e.g., 0, 0.0, 0.00, 0.1, 0.01, 0.001, or any value <= 0), don't log it, instead show message that it should be greater than 0 and integer
 
-### Daily Challenge Completion Indicator
-- [ ] Track completion status for each challenge per user per day
-- [ ] Add logic to check if challenge target is met (in `src/api/services.py`)
-- [ ] Display ✅ (green check mark) in Telegram workout response when daily target is completed
-- [ ] Format: `✅ Push-ups: 50/50 reps` (show check mark before the challenge name when completed)
-- [ ] Keep challenge in list even when completed, but highlight with green indicator
-- [ ] Add visual distinction for completed vs pending challenges (emoji or styling)
-- [ ] Update `/start` command to show completion status for the day
-- [ ] Reset indicator at midnight for each timezone
-- [ ] Add unit tests in `tests/api/test_services.py`
+### Daily Challenge Completion Indicator ✅ COMPLETE
+- [x] Track completion status for each challenge per user per day
+- [x] Add logic to check if challenge target is met (in `src/api/services.py`)
+- [x] Display ✅ (green check mark) in Telegram workout response when daily target is completed
+- [x] Format: `✅ Push-ups: 50/50 reps` (show check mark before the challenge name when completed)
+- [x] Keep challenge in list even when completed, but highlight with green indicator
+- [x] Add visual distinction for completed vs pending challenges (emoji or styling)
+- [x] Update `/start` command to show completion status for the day
+- [x] Reset indicator at midnight for each timezone
+- [x] Add unit tests in `tests/api/test_services.py`
 
 ### LLM-Powered Exercise Type Creation
 - [ ] Create `/api/v1/exercises/create-from-prompt` endpoint (POST) that accepts natural language text describing an exercise
@@ -180,26 +180,26 @@ Create manual step by step commands to check logs
 - [x] Update RULES.md with comprehensive architecture section
 - [x] All 174 tests pass, backward compatibility maintained
 
-#### Phase 4 - Telegram Registration Flow ⏳ TODO
-- [ ] Extract telegram_user_id in webhook (app/routers/telegram.py)
-- [ ] Auto-register new users with pending status
-- [ ] Create approval/rejection command handlers (/approve, /reject)
-- [ ] Notify users on approval/rejection
-- [ ] Add SUPERUSER_TELEGRAM_IDS configuration
-- [ ] Integrate registration gating in workout_service.py
+#### Phase 4 - Telegram Registration Flow ✅ COMPLETE
+- [x] Extract telegram_user_id in webhook (app/routers/telegram.py)
+- [x] Auto-register new users with pending status
+- [x] Create approval/rejection command handlers (/approve, /reject)
+- [x] Notify users on approval/rejection
+- [x] Add SUPERUSER_TELEGRAM_IDS configuration
+- [x] Integrate registration gating in workout_service.py
 
-#### Phase 5 - User-Scoped Operations ⏳ TODO
-- [ ] Thread user_id through all API services (src/api/services.py)
-- [ ] Update all routers to use get_current_user dependency
-- [ ] Make stats calculations user-scoped
-- [ ] Make log operations user-scoped
-- [ ] Update reminder scheduler for per-user iteration
-- [ ] Update reminder idempotency (per-user, not singleton)
+#### Phase 5 - User-Scoped Operations ✅ COMPLETE
+- [x] Thread user_id through all API services (src/api/services.py)
+- [x] Update all routers to use get_current_user dependency
+- [x] Make stats calculations user-scoped
+- [x] Make log operations user-scoped
+- [x] Update reminder scheduler for per-user iteration
+- [x] Update reminder idempotency (per-user, not singleton)
 
-#### Phase 6 - Testing & Documentation ⏳ TODO
-- [ ] Add user fixtures to tests/api/conftest.py
-- [ ] Create multi-user isolation tests
-- [ ] Add integration tests for approval flow
+#### Phase 6 - Testing & Documentation ⚠️ PARTIAL
+- [x] Add user fixtures to tests/api/conftest.py
+- [ ] Create multi-user isolation tests (cross-user access denial tests missing)
+- [x] Add integration tests for approval flow
 - [ ] Update existing tests to use user context
 - [ ] Update README.md with multi-user setup instructions
 - [ ] Update docs/features/0010_REVIEW.md with completion report
@@ -373,6 +373,6 @@ Create manual step by step commands to check logs
 
 ---
 
-**Last Updated:** 2026-01-19
-**Current Work:** Feature 0010 Phases 1-3 complete (branch: feat/0010-multi-user-phase-1-3)
-**Next Phase:** Phase 4 - Telegram Registration Flow
+**Last Updated:** 2026-02-07
+**Current Work:** Feature 0010 Phases 1-6 (Phases 1-5 complete, Phase 6 partial)
+**Completed Since Last Update:** Daily Challenge Completion Indicator, Multi-User Phases 4-5

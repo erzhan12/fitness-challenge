@@ -39,7 +39,7 @@ router = APIRouter(prefix="/stats", tags=["Stats"])
                             "challenge_name": "January Push-up Challenge",
                             "day_number": 15,
                             "total_days": 31,
-                            "target_total": 1000,
+                            "target_total": 1023,
                             "daily_target": 33,
                             "today_total": 50,
                             "cumulative_total": 495,

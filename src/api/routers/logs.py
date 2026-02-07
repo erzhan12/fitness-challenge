@@ -146,7 +146,7 @@ async def get_single_log(
                             "challenge_id": 1,
                             "day_number": 15,
                             "total_days": 31,
-                            "target_total": 1000,
+                            "target_total": 1023,
                             "daily_target": 33,
                             "today_total": 50,
                             "cumulative_total": 275,

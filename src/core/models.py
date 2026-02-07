@@ -121,8 +121,7 @@ class ExerciseChallenge(models.Model):
     challenge_name = models.CharField(max_length=200)
     start_date = models.DateField()
     end_date = models.DateField()
-    target_total = models.IntegerField()
-    daily_target = models.IntegerField(null=True, blank=True)
+    daily_target = models.IntegerField()
     is_active = models.BooleanField(default=True)
     is_default = models.BooleanField(default=False)
 
