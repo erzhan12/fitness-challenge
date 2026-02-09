@@ -154,6 +154,8 @@ def _enrich_challenge(challenge_data: Dict[str, Any], today: date) -> Dict[str, 
     start = date.fromisoformat(challenge_data["start_date"]) if isinstance(challenge_data["start_date"], str) else challenge_data["start_date"]
     end = date.fromisoformat(challenge_data["end_date"]) if isinstance(challenge_data["end_date"], str) else challenge_data["end_date"]
     total_days = (end - start).days + 1
+    if total_days <= 0:
+        raise ValueError(f"Invalid date range: start={start}, end={end}, total_days={total_days}")
     challenge_data["total_days"] = total_days
     challenge_data["is_current"] = start <= today <= end
     # target_total is computed from daily_target × total_days

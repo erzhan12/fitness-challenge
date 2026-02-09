@@ -6,8 +6,11 @@ Steps:
 3. Remove target_total column
 """
 
+import logging
 import math
 from django.db import migrations, models
+
+logger = logging.getLogger(__name__)
 
 
 def backfill_daily_target(apps, schema_editor):
@@ -18,7 +21,11 @@ def backfill_daily_target(apps, schema_editor):
         if total_days > 0 and challenge.target_total > 0:
             challenge.daily_target = math.ceil(challenge.target_total / total_days)
         else:
-            challenge.daily_target = 1  # safe fallback
+            logger.warning(
+                f"Challenge {challenge.id}: Invalid data (total_days={total_days}, "
+                f"target_total={challenge.target_total}). Using fallback daily_target=1"
+            )
+            challenge.daily_target = 1
         challenge.save(update_fields=["daily_target"])
 
 

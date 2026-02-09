@@ -73,7 +73,11 @@ class ExerciseChallengeOut(BaseModel):
     )
     start_date: dt.date = Field(..., description="Challenge start date")
     end_date: dt.date = Field(..., description="Challenge end date")
-    target_total: int = Field(..., description="Total target count for the challenge (computed: daily_target × total_days)")
+    target_total: int = Field(
+        ...,
+        description="Total target count for the challenge (computed: daily_target × total_days)",
+        json_schema_extra={"readOnly": True},
+    )
     daily_target: int = Field(..., description="Daily target count")
     challenge_name: str = Field(..., description="Name of the challenge")
     is_active: bool = Field(..., description="Whether the challenge is currently active")
@@ -83,10 +87,14 @@ class ExerciseChallengeOut(BaseModel):
 
     # Computed fields
     total_days: Optional[int] = Field(
-        None, description="Total number of days in the challenge"
+        None,
+        description="Total number of days in the challenge",
+        json_schema_extra={"readOnly": True},
     )
     is_current: Optional[bool] = Field(
-        None, description="Whether today falls within the challenge dates"
+        None,
+        description="Whether today falls within the challenge dates",
+        json_schema_extra={"readOnly": True},
     )
 
 
@@ -129,6 +137,11 @@ class ExerciseChallengeUpdate(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def reject_null_daily_target(cls, data):
+        """Reject explicit null values for daily_target in PATCH requests.
+
+        Since daily_target is now required in the DB, we must prevent users
+        from explicitly setting it to null via API updates.
+        """
         if isinstance(data, dict) and "daily_target" in data and data["daily_target"] is None:
             raise ValueError("daily_target cannot be null")
         return data
@@ -226,7 +239,11 @@ class ExerciseStatsOut(BaseModel):
     total_days: int = Field(..., description="Total days in the challenge")
 
     # Targets
-    target_total: int = Field(..., description="Total target for the challenge (computed: daily_target × total_days)")
+    target_total: int = Field(
+        ...,
+        description="Total target for the challenge (computed: daily_target × total_days)",
+        json_schema_extra={"readOnly": True},
+    )
     daily_target: int = Field(..., description="Daily target count")
 
     # Progress
