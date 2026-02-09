@@ -293,6 +293,9 @@ async def create_challenge(
     """Create a new challenge."""
     today = datetime.now(TZ).date()
 
+    if data.end_date < data.start_date:
+        raise ValueError(f"end_date ({data.end_date}) must be >= start_date ({data.start_date})")
+
     insert_data = data.model_dump()
     insert_data["user_id"] = user_id
     created = await challenge_repo.create(insert_data)
@@ -310,6 +313,15 @@ async def update_challenge(
     update_data = data.model_dump(exclude_unset=True)
     if not update_data:
         return await get_challenge(challenge_id, user_id)
+
+    # Validate date range if dates are being updated
+    if "start_date" in update_data or "end_date" in update_data:
+        existing = await challenge_repo.get_by_id(challenge_id, user_id=user_id)
+        if existing:
+            new_start = update_data.get("start_date", existing.start_date)
+            new_end = update_data.get("end_date", existing.end_date)
+            if new_end < new_start:
+                raise ValueError(f"end_date ({new_end}) must be >= start_date ({new_start})")
 
     updated = await challenge_repo.update(
         challenge_id,
