@@ -1,49 +1,41 @@
 """Shared utility functions used by both API and Telegram layers."""
 
 from datetime import date
-from typing import Optional, Tuple
+from typing import Tuple
 
 
 def calculate_expected_progress(
-    target_total: int, day_number: int, total_days: int, daily_target: Optional[int]
+    daily_target: int, day_number: int, total_days: int
 ) -> float:
-    """Calculate expected progress based on target and timeline.
+    """Calculate expected progress based on daily target and timeline.
 
     Args:
-        target_total: Total target for the challenge
+        daily_target: Daily target count
         day_number: Current day number in the challenge
         total_days: Total days in the challenge (must be > 0)
-        daily_target: Daily target (if set), or None
 
     Returns:
         Expected cumulative progress as a float
     """
-    if daily_target:
-        return daily_target * day_number
-    if total_days <= 0:
-        return 0.0
-    return (target_total / total_days) * day_number
+    return daily_target * day_number
 
 
 def calculate_status_and_deficit(
     cumulative: int,
-    target_total: int,
+    daily_target: int,
     day_number: int,
     total_days: int,
-    daily_target: Optional[int],
 ) -> Tuple[str, float]:
     """Calculate status and deficit in a single function.
 
     Returns:
         Tuple of (status, deficit) where deficit is positive when behind, negative when ahead
     """
-    expected = calculate_expected_progress(
-        target_total, day_number, total_days, daily_target
-    )
+    expected = calculate_expected_progress(daily_target, day_number, total_days)
 
     diff = cumulative - expected
     deficit = expected - cumulative  # positive when behind
-    threshold = daily_target or (target_total / total_days if total_days > 0 else 1)
+    threshold = daily_target
 
     if diff > threshold:
         return "ahead", deficit
@@ -55,14 +47,13 @@ def calculate_status_and_deficit(
 
 def calculate_status(
     cumulative: int,
-    target_total: int,
+    daily_target: int,
     day_number: int,
     total_days: int,
-    daily_target: Optional[int],
 ) -> str:
     """Calculate status (backward compatibility wrapper)."""
     status, _ = calculate_status_and_deficit(
-        cumulative, target_total, day_number, total_days, daily_target
+        cumulative, daily_target, day_number, total_days
     )
     return status
 

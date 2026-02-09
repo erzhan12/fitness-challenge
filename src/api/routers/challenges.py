@@ -40,7 +40,7 @@ router = APIRouter(prefix="/challenges", tags=["Challenges"])
                             "exercise_type_id": 1,
                             "start_date": "2024-01-01",
                             "end_date": "2024-01-31",
-                            "target_total": 1000,
+                            "target_total": 1023,
                             "daily_target": 33,
                             "challenge_name": "January Push-up Challenge",
                             "is_active": True,

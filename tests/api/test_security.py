@@ -27,7 +27,7 @@ class TestAuthenticationRequired:
                 "exercise_type_id": 1,
                 "start_date": "2024-01-01",
                 "end_date": "2024-01-31",
-                "target_total": 1000,
+                "daily_target": 33,
                 "challenge_name": "Test",
             },
         )
@@ -65,7 +65,7 @@ class TestAuthenticationRequired:
         """PATCH /challenges/{id} requires authentication."""
         response = client.patch(
             "/api/v1/challenges/1",
-            json={"target_total": 1500},
+            json={"daily_target": 50},
         )
         assert response.status_code == 401
 

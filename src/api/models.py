@@ -6,7 +6,7 @@ and HTML formatting to remain stable for future mobile/web clients.
 
 import datetime as dt
 from typing import Optional, List
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
 # =============================================================================
@@ -73,8 +73,12 @@ class ExerciseChallengeOut(BaseModel):
     )
     start_date: dt.date = Field(..., description="Challenge start date")
     end_date: dt.date = Field(..., description="Challenge end date")
-    target_total: int = Field(..., description="Total target count for the challenge")
-    daily_target: Optional[int] = Field(None, description="Daily target count")
+    target_total: int = Field(
+        ...,
+        description="Total target count for the challenge (computed: daily_target × total_days)",
+        json_schema_extra={"readOnly": True},
+    )
+    daily_target: int = Field(..., description="Daily target count")
     challenge_name: str = Field(..., description="Name of the challenge")
     is_active: bool = Field(..., description="Whether the challenge is currently active")
     is_default: bool = Field(
@@ -83,10 +87,14 @@ class ExerciseChallengeOut(BaseModel):
 
     # Computed fields
     total_days: Optional[int] = Field(
-        None, description="Total number of days in the challenge"
+        None,
+        description="Total number of days in the challenge",
+        json_schema_extra={"readOnly": True},
     )
     is_current: Optional[bool] = Field(
-        None, description="Whether today falls within the challenge dates"
+        None,
+        description="Whether today falls within the challenge dates",
+        json_schema_extra={"readOnly": True},
     )
 
 
@@ -102,11 +110,8 @@ class ExerciseChallengeCreate(BaseModel):
     end_date: dt.date = Field(
         ..., description="Challenge end date", examples=["2024-01-31"]
     )
-    target_total: int = Field(
-        ..., description="Total target count", examples=[1000], ge=1
-    )
-    daily_target: Optional[int] = Field(
-        None, description="Optional daily target", examples=[33], ge=1
+    daily_target: int = Field(
+        ..., description="Daily target count", examples=[33], ge=1
     )
     challenge_name: str = Field(
         ..., description="Name of the challenge", examples=["January Push-up Challenge"]
@@ -122,13 +127,24 @@ class ExerciseChallengeUpdate(BaseModel):
 
     start_date: Optional[dt.date] = Field(None, description="Challenge start date")
     end_date: Optional[dt.date] = Field(None, description="Challenge end date")
-    target_total: Optional[int] = Field(None, description="Total target count", ge=1)
     daily_target: Optional[int] = Field(None, description="Daily target count", ge=1)
     challenge_name: Optional[str] = Field(None, description="Name of the challenge")
     is_active: Optional[bool] = Field(None, description="Whether active")
     is_default: Optional[bool] = Field(
         None, description="Whether this is the default challenge"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_null_daily_target(cls, data):
+        """Reject explicit null values for daily_target in PATCH requests.
+
+        Since daily_target is now required in the DB, we must prevent users
+        from explicitly setting it to null via API updates.
+        """
+        if isinstance(data, dict) and "daily_target" in data and data["daily_target"] is None:
+            raise ValueError("daily_target cannot be null")
+        return data
 
 
 # =============================================================================
@@ -223,8 +239,12 @@ class ExerciseStatsOut(BaseModel):
     total_days: int = Field(..., description="Total days in the challenge")
 
     # Targets
-    target_total: int = Field(..., description="Total target for the challenge")
-    daily_target: Optional[int] = Field(None, description="Daily target if set")
+    target_total: int = Field(
+        ...,
+        description="Total target for the challenge (computed: daily_target × total_days)",
+        json_schema_extra={"readOnly": True},
+    )
+    daily_target: int = Field(..., description="Daily target count")
 
     # Progress
     today_total: int = Field(..., description="Total logged today")

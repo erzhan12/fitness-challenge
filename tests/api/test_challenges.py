@@ -16,7 +16,7 @@ class TestListChallenges:
         data = response.json()
         assert len(data) == 1
         assert data[0]["challenge_name"] == "January Push-up Challenge"
-        assert data[0]["target_total"] == 1000
+        assert data[0]["target_total"] == 33 * 31  # daily_target × total_days
 
     def test_list_challenges_empty(self, client, mock_repos, user_context_headers):
         """Test listing when no challenges exist."""
@@ -60,7 +60,6 @@ class TestListChallenges:
                     "exercise_type_id": 1,
                     "start_date": "2024-01-01",
                     "end_date": "2024-01-31",
-                    "target_total": 1000,
                     "daily_target": 33,
                     "challenge_name": "January Push-up Challenge",
                     "is_active": True,
@@ -115,7 +114,6 @@ class TestCreateChallenge:
             "exercise_type_id": 1,
             "start_date": "2024-01-01",
             "end_date": "2024-01-31",
-            "target_total": 1000,
             "daily_target": 33,
             "challenge_name": "January Push-up Challenge",
         }
@@ -132,7 +130,7 @@ class TestCreateChallenge:
             "exercise_type_id": 1,
             "start_date": "2024-01-01",
             "end_date": "2024-01-31",
-            "target_total": 1000,
+            "daily_target": 33,
             "challenge_name": "Test Challenge",
         }
 
@@ -146,7 +144,7 @@ class TestCreateChallenge:
             "exercise_type_id": 1,
             "start_date": "2024-01-01",
             "end_date": "2024-01-31",
-            "target_total": 1000,
+            "daily_target": 33,
             "challenge_name": "Test Challenge",
         }
 
@@ -162,7 +160,7 @@ class TestCreateChallenge:
             "exercise_type_id": 1,
             "start_date": "2024-01-31",
             "end_date": "2024-01-01",  # Before start
-            "target_total": 1000,
+            "daily_target": 33,
             "challenge_name": "Invalid Challenge",
         }
 
@@ -183,13 +181,13 @@ class TestCreateChallenge:
 
         assert response.status_code == 422
 
-    def test_create_challenge_negative_target(self, client, auth_and_user_headers, mock_repos):
-        """Test 422 when target_total is negative."""
+    def test_create_challenge_negative_daily_target(self, client, auth_and_user_headers, mock_repos):
+        """Test 422 when daily_target is negative."""
         create_data = {
             "exercise_type_id": 1,
             "start_date": "2024-01-01",
             "end_date": "2024-01-31",
-            "target_total": -100,  # Invalid
+            "daily_target": -10,  # Invalid
             "challenge_name": "Invalid Challenge",
         }
 
@@ -208,22 +206,23 @@ class TestUpdateChallenge:
     ):
         """Test successful update of challenge."""
         mock_repos["challenge"].get_by_id.return_value = make_challenge_model(mock_challenge_data)
-        updated_data = {**mock_challenge_data, "target_total": 1500}
+        updated_data = {**mock_challenge_data, "daily_target": 50}
         mock_repos["challenge"].update.return_value = make_challenge_model(updated_data)
 
-        update_data = {"target_total": 1500}
+        update_data = {"daily_target": 50}
 
         response = client.patch("/api/v1/challenges/1", json=update_data, headers=auth_and_user_headers)
 
         assert response.status_code == 200
         data = response.json()
-        assert data["target_total"] == 1500
+        assert data["daily_target"] == 50
+        assert data["target_total"] == 50 * 31  # daily_target × total_days
 
     def test_update_challenge_not_found(self, client, auth_and_user_headers, mock_repos):
         """Test 404 when challenge doesn't exist."""
         mock_repos["challenge"].get_by_id.return_value = None
 
-        update_data = {"target_total": 1500}
+        update_data = {"daily_target": 50}
 
         response = client.patch("/api/v1/challenges/999", json=update_data, headers=auth_and_user_headers)
 
@@ -243,9 +242,23 @@ class TestUpdateChallenge:
 
         assert response.status_code == 400
 
+    def test_update_challenge_null_daily_target_rejected(
+        self, client, auth_and_user_headers, mock_repos, mock_challenge_data
+    ):
+        """Test 422 when daily_target is explicitly set to null."""
+        mock_repos["challenge"].get_by_id.return_value = make_challenge_model(mock_challenge_data)
+
+        response = client.patch(
+            "/api/v1/challenges/1",
+            json={"daily_target": None},
+            headers=auth_and_user_headers,
+        )
+
+        assert response.status_code == 422
+
     def test_update_challenge_unauthorized(self, client):
         """Test 401 when no API key provided."""
-        update_data = {"target_total": 1500}
+        update_data = {"daily_target": 50}
 
         response = client.patch("/api/v1/challenges/1", json=update_data)
 

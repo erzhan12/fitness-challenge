@@ -153,8 +153,13 @@ def _enrich_challenge(challenge_data: Dict[str, Any], today: date) -> Dict[str, 
     """Add computed fields to challenge data."""
     start = date.fromisoformat(challenge_data["start_date"]) if isinstance(challenge_data["start_date"], str) else challenge_data["start_date"]
     end = date.fromisoformat(challenge_data["end_date"]) if isinstance(challenge_data["end_date"], str) else challenge_data["end_date"]
-    challenge_data["total_days"] = (end - start).days + 1
+    total_days = (end - start).days + 1
+    if total_days <= 0:
+        raise ValueError(f"Invalid date range: start={start}, end={end}, total_days={total_days}")
+    challenge_data["total_days"] = total_days
     challenge_data["is_current"] = start <= today <= end
+    # target_total is computed from daily_target × total_days
+    challenge_data["target_total"] = challenge_data["daily_target"] * total_days
     return challenge_data
 
 
@@ -288,6 +293,9 @@ async def create_challenge(
     """Create a new challenge."""
     today = datetime.now(TZ).date()
 
+    if data.end_date < data.start_date:
+        raise ValueError(f"end_date ({data.end_date}) must be >= start_date ({data.start_date})")
+
     insert_data = data.model_dump()
     insert_data["user_id"] = user_id
     created = await challenge_repo.create(insert_data)
@@ -305,6 +313,15 @@ async def update_challenge(
     update_data = data.model_dump(exclude_unset=True)
     if not update_data:
         return await get_challenge(challenge_id, user_id)
+
+    # Validate date range if dates are being updated
+    if "start_date" in update_data or "end_date" in update_data:
+        existing = await challenge_repo.get_by_id(challenge_id, user_id=user_id)
+        if existing:
+            new_start = update_data.get("start_date", existing.start_date)
+            new_end = update_data.get("end_date", existing.end_date)
+            if new_end < new_start:
+                raise ValueError(f"end_date ({new_end}) must be >= start_date ({new_start})")
 
     updated = await challenge_repo.update(
         challenge_id,
@@ -371,7 +388,6 @@ async def compute_exercise_stats(
     challenge_name = None
     day_number = 1
     total_days = 30
-    target_total = 1000
     daily_target = 33
 
     if challenge:
@@ -382,8 +398,10 @@ async def compute_exercise_stats(
         total_days = (end_date - start_date).days + 1
         # Clamp day_number to challenge window for historical snapshots
         day_number = max(1, min((today_local - start_date).days + 1, total_days))
-        target_total = challenge["target_total"]
-        daily_target = challenge.get("daily_target")
+        daily_target = challenge["daily_target"]
+
+    # target_total is always computed from daily_target × total_days
+    target_total = daily_target * total_days
 
     # Query cumulative total
     current_total = await log_repo.get_cumulative_count(
@@ -396,7 +414,7 @@ async def compute_exercise_stats(
 
     # Status and deficit
     status, deficit = calculate_status_and_deficit(
-        new_cumulative, target_total, day_number, total_days, daily_target
+        new_cumulative, daily_target, day_number, total_days
     )
 
     # Catch-up calculation - show for any positive deficit
@@ -419,7 +437,7 @@ async def compute_exercise_stats(
     )
 
     # Determine if on track with cumulative progress (not just today's target)
-    expected = calculate_expected_progress(target_total, day_number, total_days, daily_target)
+    expected = calculate_expected_progress(daily_target, day_number, total_days)
     daily_complete = new_cumulative >= expected
 
     return ExerciseStatsOut(

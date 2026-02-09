@@ -193,10 +193,9 @@ def _make_challenge(
     display_name,
     emoji,
     unit,
-    target_total,
+    daily_target,
     total_days=30,
     day_offset=10,
-    daily_target=None,
 ):
     """Helper to create a mock challenge for reminder tests.
 
@@ -216,7 +215,6 @@ def _make_challenge(
         ),
         start_date=start_date,
         end_date=end_date,
-        target_total=target_total,
         daily_target=daily_target,
     )
 
@@ -244,7 +242,7 @@ class TestComputeEveningReminder:
     async def test_all_challenges_caught_up(self):
         """When all challenges are caught up on cumulative progress, returns (False, None, 0)."""
         # day 10 of 30, daily_target=50 → expected=500
-        mock_challenge = _make_challenge(1, "Push-ups", "💪", "reps", 1500, daily_target=50)
+        mock_challenge = _make_challenge(1, "Push-ups", "💪", "reps", 50)
 
         with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
             mock_ch_repo.get_current_active = AsyncMock(return_value=[mock_challenge])
@@ -265,7 +263,7 @@ class TestComputeEveningReminder:
     async def test_challenge_behind_cumulative_progress(self):
         """When cumulative_total < expected, challenge is included in reminder."""
         # day 10 of 30, daily_target=50 → expected=500
-        mock_challenge = _make_challenge(1, "Push-ups", "💪", "reps", 1500, daily_target=50)
+        mock_challenge = _make_challenge(1, "Push-ups", "💪", "reps", 50)
 
         with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
             mock_ch_repo.get_current_active = AsyncMock(return_value=[mock_challenge])
@@ -289,10 +287,10 @@ class TestComputeEveningReminder:
                     assert "catch up" in message
 
     @pytest.mark.asyncio
-    async def test_challenge_without_daily_target_behind(self):
-        """Challenge without daily_target uses target_total/total_days for expected."""
-        # day 10 of 30, no daily_target, target_total=300 → expected=100
-        mock_challenge = _make_challenge(1, "Yoga", "🧘", "minutes", 300, daily_target=None)
+    async def test_challenge_with_small_daily_target_behind(self):
+        """Challenge with daily_target=10 uses daily_target*day_number for expected."""
+        # day 10 of 30, daily_target=10 → expected=100
+        mock_challenge = _make_challenge(1, "Yoga", "🧘", "minutes", 10)
 
         with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
             mock_ch_repo.get_current_active = AsyncMock(return_value=[mock_challenge])
@@ -315,10 +313,10 @@ class TestComputeEveningReminder:
                     assert "need 50 more" in message
 
     @pytest.mark.asyncio
-    async def test_challenge_without_daily_target_caught_up(self):
-        """Challenge without daily_target is caught up when cumulative >= expected."""
-        # day 10 of 30, no daily_target, target_total=300 → expected=100
-        mock_challenge = _make_challenge(1, "Yoga", "🧘", "minutes", 300, daily_target=None)
+    async def test_challenge_with_small_daily_target_caught_up(self):
+        """Challenge with daily_target=10 is caught up when cumulative >= expected."""
+        # day 10 of 30, daily_target=10 → expected=100
+        mock_challenge = _make_challenge(1, "Yoga", "🧘", "minutes", 10)
 
         with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
             mock_ch_repo.get_current_active = AsyncMock(return_value=[mock_challenge])
@@ -340,8 +338,8 @@ class TestComputeEveningReminder:
         """When challenges have different units, remaining_summary separates them."""
         # day 10 of 30: push-ups expected=500, yoga expected=100
         mock_challenges = [
-            _make_challenge(1, "Push-ups", "💪", "reps", 1500, daily_target=50),
-            _make_challenge(2, "Yoga", "🧘", "minutes", 300, daily_target=None),
+            _make_challenge(1, "Push-ups", "💪", "reps", 50),
+            _make_challenge(2, "Yoga", "🧘", "minutes", 10),
         ]
 
         with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
@@ -372,8 +370,8 @@ class TestComputeEveningReminder:
         """When some challenges are caught up, only behind ones appear in reminder."""
         # Both: day 10 of 30, daily_target=50 → expected=500
         mock_challenges = [
-            _make_challenge(1, "Push-ups", "💪", "reps", 1500, daily_target=50),
-            _make_challenge(2, "Squats", "🏋️", "reps", 1500, daily_target=50),
+            _make_challenge(1, "Push-ups", "💪", "reps", 50),
+            _make_challenge(2, "Squats", "🏋️", "reps", 50),
         ]
 
         with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:

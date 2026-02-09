@@ -354,13 +354,12 @@ class TestSendHabitCompletion:
 
 
 def _make_mock_challenge(id=1, start_date=date(2026, 1, 1), end_date=date(2026, 1, 31),
-                         target_total=1000, daily_target=None):
+                         daily_target=33):
     """Create a mock challenge object."""
     return SimpleNamespace(
         id=id,
         start_date=start_date,
         end_date=end_date,
-        target_total=target_total,
         daily_target=daily_target,
     )
 
