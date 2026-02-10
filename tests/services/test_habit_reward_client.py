@@ -11,7 +11,11 @@ from src.core import setup_django
 
 setup_django()
 
-from app.services.habit_reward_client import HabitCompletionResponse, RewardResponse
+from app.services.habit_reward_client import (
+    HabitCompletionResponse,
+    RewardResponse,
+    RewardProgressResponse,
+)
 
 
 def _make_user_settings(api_key="test-api-key", habit_id=123, sent_date=None):
@@ -29,11 +33,21 @@ def _make_habit_completion_response(
     streak_count=5,
     got_reward=False,
     reward_name=None,
+    pieces_earned=None,
+    pieces_required=None,
 ) -> HabitCompletionResponse:
     """Create a HabitCompletionResponse for testing."""
     reward = None
     if got_reward and reward_name:
         reward = RewardResponse(id=1, name=reward_name)
+    progress = None
+    if pieces_earned is not None and pieces_required is not None:
+        progress = RewardProgressResponse(
+            pieces_earned=pieces_earned,
+            pieces_required=pieces_required,
+            claimed=pieces_earned >= pieces_required,
+            progress_percent=(pieces_earned / pieces_required * 100) if pieces_required > 0 else 0,
+        )
     return HabitCompletionResponse(
         habit_confirmed=True,
         habit_name=habit_name,
@@ -41,7 +55,7 @@ def _make_habit_completion_response(
         got_reward=got_reward,
         total_weight_applied=1.0,
         reward=reward,
-        cumulative_progress=None,
+        cumulative_progress=progress,
     )
 
 
@@ -350,6 +364,160 @@ class TestSendHabitCompletion:
                     result = await send_habit_completion(1)
 
                     # Should return None due to Pydantic validation error
+                    assert result is None
+
+    @pytest.mark.asyncio
+    async def test_success_with_reward_and_progress(self):
+        """Test parsing a full response with nested cumulative_progress and user_timezone."""
+        mock_settings = _make_user_settings()
+        mock_api_response = {
+            "habit_confirmed": True,
+            "habit_name": "Walking",
+            "streak_count": 5,
+            "got_reward": True,
+            "total_weight_applied": 15.0,
+            "reward": {"id": 3, "name": "Coffee", "pieces_required": 10},
+            "cumulative_progress": {
+                "pieces_earned": 7,
+                "pieces_required": 10,
+                "claimed": False,
+                "progress_percent": 70.0,
+            },
+            "user_timezone": "Asia/Almaty",
+        }
+
+        with patch(
+            "app.services.habit_reward_client.user_settings_repo"
+        ) as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=mock_settings)
+
+            with patch("app.services.habit_reward_client.settings") as mock_config:
+                mock_config.HABIT_REWARD_BASE_URL = "https://api.example.com"
+                mock_config.HABIT_REWARD_TIMEOUT = 10
+
+                with patch(
+                    "app.services.habit_reward_client.httpx.AsyncClient"
+                ) as mock_client_class:
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.raise_for_status = MagicMock()
+                    mock_response.json = MagicMock(return_value=mock_api_response)
+
+                    mock_client = AsyncMock()
+                    mock_client.post = AsyncMock(return_value=mock_response)
+                    mock_client_class.return_value.__aenter__.return_value = (
+                        mock_client
+                    )
+
+                    from app.services.habit_reward_client import (
+                        send_habit_completion,
+                    )
+
+                    result = await send_habit_completion(1, date(2026, 2, 10))
+
+                    assert result is not None
+                    assert result.got_reward is True
+                    assert result.reward is not None
+                    assert result.reward.name == "Coffee"
+                    assert result.reward.pieces_required == 10
+                    assert result.cumulative_progress is not None
+                    assert result.cumulative_progress.pieces_earned == 7
+                    assert result.cumulative_progress.pieces_required == 10
+                    assert result.cumulative_progress.claimed is False
+                    assert result.cumulative_progress.progress_percent == 70.0
+                    assert result.user_timezone == "Asia/Almaty"
+
+    @pytest.mark.asyncio
+    async def test_success_defaults_user_timezone(self):
+        """Test that user_timezone defaults to UTC when not in response."""
+        mock_settings = _make_user_settings()
+        mock_api_response = {
+            "habit_confirmed": True,
+            "habit_name": "Walking",
+            "streak_count": 1,
+            "got_reward": False,
+            "total_weight_applied": 1.0,
+            "reward": None,
+            "cumulative_progress": None,
+        }
+
+        with patch(
+            "app.services.habit_reward_client.user_settings_repo"
+        ) as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=mock_settings)
+
+            with patch("app.services.habit_reward_client.settings") as mock_config:
+                mock_config.HABIT_REWARD_BASE_URL = "https://api.example.com"
+                mock_config.HABIT_REWARD_TIMEOUT = 10
+
+                with patch(
+                    "app.services.habit_reward_client.httpx.AsyncClient"
+                ) as mock_client_class:
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.raise_for_status = MagicMock()
+                    mock_response.json = MagicMock(return_value=mock_api_response)
+
+                    mock_client = AsyncMock()
+                    mock_client.post = AsyncMock(return_value=mock_response)
+                    mock_client_class.return_value.__aenter__.return_value = (
+                        mock_client
+                    )
+
+                    from app.services.habit_reward_client import (
+                        send_habit_completion,
+                    )
+
+                    result = await send_habit_completion(1)
+
+                    assert result is not None
+                    assert result.user_timezone == "UTC"
+
+    @pytest.mark.asyncio
+    async def test_malformed_cumulative_progress_returns_none(self):
+        """Test that malformed cumulative_progress (missing required fields) returns None."""
+        mock_settings = _make_user_settings()
+        mock_api_response = {
+            "habit_confirmed": True,
+            "habit_name": "Walking",
+            "streak_count": 1,
+            "got_reward": True,
+            "total_weight_applied": 1.0,
+            "reward": {"id": 1, "name": "Coffee"},
+            "cumulative_progress": {"bad_field": "invalid"},
+        }
+
+        with patch(
+            "app.services.habit_reward_client.user_settings_repo"
+        ) as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=mock_settings)
+
+            with patch("app.services.habit_reward_client.settings") as mock_config:
+                mock_config.HABIT_REWARD_BASE_URL = "https://api.example.com"
+                mock_config.HABIT_REWARD_TIMEOUT = 10
+
+                with patch(
+                    "app.services.habit_reward_client.httpx.AsyncClient"
+                ) as mock_client_class:
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.raise_for_status = MagicMock()
+                    mock_response.json = MagicMock(return_value=mock_api_response)
+
+                    mock_client = AsyncMock()
+                    mock_client.post = AsyncMock(return_value=mock_response)
+                    mock_client_class.return_value.__aenter__.return_value = (
+                        mock_client
+                    )
+
+                    from app.services.habit_reward_client import (
+                        send_habit_completion,
+                    )
+
+                    result = await send_habit_completion(1)
+
+                    # Should return None due to Pydantic validation error
+                    # on the nested RewardProgressResponse
                     assert result is None
 
 
@@ -771,6 +939,126 @@ class TestFormatHabitRewardMessage:
         # HTML should be escaped, not rendered
         assert "&lt;b&gt;Malicious&lt;/b&gt;" in message
         assert "<b>Malicious</b>" not in message
+
+    def test_format_reward_with_partial_progress(self):
+        """Test progress bar rendering for partial progress (4/6 pieces)."""
+        from app.services.workout_service import _format_habit_reward_message
+
+        response = _make_habit_completion_response(
+            habit_name="Walking",
+            streak_count=3,
+            got_reward=True,
+            reward_name="Coffee",
+            pieces_earned=4,
+            pieces_required=6,
+        )
+
+        message = _format_habit_reward_message(response)
+
+        assert "🎁 <b>Reward:</b> Coffee" in message
+        assert "📊 <b>Progress:</b>" in message
+        assert "4/6" in message
+        # 12 * 4/6 = 8 filled, 4 empty
+        assert "████████░░░░" in message
+        # Should NOT show achieved message
+        assert "Reward achieved" not in message
+
+    def test_format_reward_all_pieces_collected(self):
+        """Test achieved message when all pieces collected (6/6)."""
+        from app.services.workout_service import _format_habit_reward_message
+
+        response = _make_habit_completion_response(
+            habit_name="Walking",
+            streak_count=3,
+            got_reward=True,
+            reward_name="Coffee",
+            pieces_earned=6,
+            pieces_required=6,
+        )
+
+        message = _format_habit_reward_message(response)
+
+        assert "🎁 <b>Reward:</b> Coffee" in message
+        assert "6/6" in message
+        assert "████████████" in message  # All 12 filled
+        assert "⏳ <b>Reward achieved! You can claim it now!</b>" in message
+
+    def test_format_reward_exceeded_pieces(self):
+        """Test achieved message when pieces_earned exceeds pieces_required."""
+        from app.services.workout_service import _format_habit_reward_message
+
+        response = _make_habit_completion_response(
+            habit_name="Walking",
+            streak_count=5,
+            got_reward=True,
+            reward_name="Coffee",
+            pieces_earned=8,
+            pieces_required=6,
+        )
+
+        message = _format_habit_reward_message(response)
+
+        assert "8/6" in message
+        # Clamped to 12 filled max
+        assert "████████████" in message
+        assert "Reward achieved" in message
+
+    def test_format_reward_with_one_piece(self):
+        """Test progress bar with minimal progress (1/10 pieces)."""
+        from app.services.workout_service import _format_habit_reward_message
+
+        response = _make_habit_completion_response(
+            habit_name="Running",
+            streak_count=1,
+            got_reward=True,
+            reward_name="Smoothie",
+            pieces_earned=1,
+            pieces_required=10,
+        )
+
+        message = _format_habit_reward_message(response)
+
+        assert "1/10" in message
+        # 12 * 1/10 = 1.2 -> round = 1 filled, 11 empty
+        assert "█░░░░░░░░░░░" in message
+        assert "Reward achieved" not in message
+
+    def test_format_reward_zero_pieces(self):
+        """Test progress bar with zero progress (0 pieces earned)."""
+        from app.services.workout_service import _format_habit_reward_message
+
+        response = _make_habit_completion_response(
+            habit_name="Walking",
+            streak_count=1,
+            got_reward=True,
+            reward_name="Coffee",
+            pieces_earned=0,
+            pieces_required=10,
+        )
+
+        message = _format_habit_reward_message(response)
+
+        assert "0/10" in message
+        assert "░░░░░░░░░░░░" in message  # All 12 empty
+        assert "Reward achieved" not in message
+
+    def test_format_reward_without_progress_data(self):
+        """Test reward message when cumulative_progress is None."""
+        from app.services.workout_service import _format_habit_reward_message
+
+        response = _make_habit_completion_response(
+            habit_name="Walking",
+            streak_count=3,
+            got_reward=True,
+            reward_name="Coffee",
+        )
+
+        message = _format_habit_reward_message(response)
+
+        assert "🎁 <b>Reward:</b> Coffee" in message
+        # No progress bar when cumulative_progress is None
+        assert "📊" not in message
+        assert "Reward achieved" not in message
 
 
 class TestNotifyHabitRewardTelegramNotification:

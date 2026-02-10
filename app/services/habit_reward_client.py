@@ -25,6 +25,15 @@ class RewardResponse(BaseModel):
     pieces_required: Optional[int] = None
 
 
+class RewardProgressResponse(BaseModel):
+    """Cumulative reward progress from Habit Reward API."""
+
+    pieces_earned: int
+    pieces_required: int
+    claimed: bool
+    progress_percent: float
+
+
 class HabitCompletionResponse(BaseModel):
     """Response from Habit Reward API with runtime validation."""
 
@@ -34,7 +43,8 @@ class HabitCompletionResponse(BaseModel):
     got_reward: bool
     total_weight_applied: float
     reward: Optional[RewardResponse] = None
-    cumulative_progress: Optional[dict] = None
+    cumulative_progress: Optional[RewardProgressResponse] = None
+    user_timezone: str = "UTC"
 
 
 async def send_habit_completion(
