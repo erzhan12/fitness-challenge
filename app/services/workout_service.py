@@ -219,8 +219,23 @@ def _format_habit_reward_message(response: HabitCompletionResponse) -> str:
     if response.got_reward and response.reward:
         reward_name = escape(response.reward.name)
         message_parts.append(f"\n🎁 <b>Reward:</b> {reward_name}")
+
+        # Progress bar for reward pieces
+        if response.cumulative_progress:
+            earned = response.cumulative_progress.pieces_earned
+            required = response.cumulative_progress.pieces_required
+            bar_width = 12
+            filled = max(0, min(bar_width, round(bar_width * earned / required))) if required > 0 else 0
+            bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
+            message_parts.append(f"\U0001f4ca <b>Progress:</b> {bar} {earned}/{required}")
+
+            if earned >= required:
+                message_parts.append("\u23f3 <b>Reward achieved! You can claim it now!</b>")
+    elif response.got_reward and not response.reward:
+        logger.warning("API returned got_reward=true but reward=null (possible schema drift)")
+        message_parts.append("\n\u274c No reward this time - keep going!")
     else:
-        message_parts.append("\n❌ No reward this time - keep going!")
+        message_parts.append("\n\u274c No reward this time - keep going!")
 
     return "\n".join(message_parts)
 
