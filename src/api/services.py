@@ -387,7 +387,7 @@ async def create_challenge_from_prompt(
     ]
 
     # Call LLM
-    raw_parsed = parse_challenge_prompt(text, exercise_types_for_llm, today)
+    raw_parsed = await parse_challenge_prompt(text, exercise_types_for_llm, today)
 
     # Validate LLM output through Pydantic schema
     try:

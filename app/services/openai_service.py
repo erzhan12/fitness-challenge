@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import date
 from typing import List, Dict, Any, Optional
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 from app.config import settings
 from app.models import ParseResult, ExerciseType
 from app.services.deterministic_parser import (
@@ -26,6 +26,12 @@ if "openrouter.ai" in settings.LLM_BASE_URL.lower():
     logger.info("Detected OpenRouter, adding required headers")
 
 client = OpenAI(
+    base_url=settings.LLM_BASE_URL,
+    api_key=settings.LLM_API_KEY,
+    default_headers=default_headers if default_headers else None,
+)
+
+async_client = AsyncOpenAI(
     base_url=settings.LLM_BASE_URL,
     api_key=settings.LLM_API_KEY,
     default_headers=default_headers if default_headers else None,
@@ -144,7 +150,7 @@ def parse_workout_message(text: str, exercise_types: List[ExerciseType], default
         return ParseResult(entries=[], is_valid=False, error_reason=user_friendly_msg)
 
 
-def parse_challenge_prompt(
+async def parse_challenge_prompt(
     text: str,
     exercise_types: List[ExerciseType],
     today: Optional[date] = None,
@@ -205,7 +211,7 @@ Schema:
 
     try:
         logger.info(f"🤖 Calling LLM to parse challenge prompt (model: {settings.LLM_MODEL})")
-        response = client.chat.completions.create(
+        response = await async_client.chat.completions.create(
             model=settings.LLM_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},

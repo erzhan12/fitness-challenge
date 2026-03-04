@@ -6,7 +6,7 @@ and HTML formatting to remain stable for future mobile/web clients.
 
 import datetime as dt
 from typing import Optional, List
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 
 # =============================================================================
@@ -159,7 +159,19 @@ class ChallengePromptRequest(BaseModel):
         ...,
         description="Natural language description of the challenge",
         examples=["pushups challenge for 30 days starting tomorrow, 2000 reps total"],
+        min_length=5,
+        max_length=500,
     )
+
+    @field_validator("text")
+    @classmethod
+    def validate_safe_input(cls, v: str) -> str:
+        suspicious_patterns = ["ignore previous", "ignore all", "system:"]
+        v_lower = v.lower()
+        for pattern in suspicious_patterns:
+            if pattern in v_lower:
+                raise ValueError("Invalid input format")
+        return v
 
 
 class ChallengePromptParsed(BaseModel):
