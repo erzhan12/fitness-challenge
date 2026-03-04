@@ -20,6 +20,7 @@ from src.api.services import (
     create_challenge_from_prompt,
     ExerciseTypeNotFoundError,
 )
+from app.services.openai_service import LLMUnavailableError
 from src.api.security import verify_api_key, get_current_user
 from src.core.models import AppUser
 
@@ -188,17 +189,12 @@ async def create_challenge_from_natural_language(
                 "Create a new exercise type first using /api/v1/exercises."
             ),
         )
-    except ValueError as e:
+    except LLMUnavailableError:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LLM service is currently unavailable. Please try again later.",
         )
-    except Exception as e:
-        if "unavailable" in str(e).lower() or "failed" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="LLM service is currently unavailable. Please try again later.",
-            )
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),

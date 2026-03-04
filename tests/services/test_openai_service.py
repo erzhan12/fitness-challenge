@@ -1,11 +1,8 @@
 """Unit tests for parse_challenge_prompt() in app/services/openai_service.py."""
 
 import json
-import math
 from datetime import date
 from unittest.mock import Mock, patch
-
-import pytest
 
 from app.models import ExerciseType
 from app.services.openai_service import parse_challenge_prompt
@@ -156,17 +153,17 @@ class TestParseChallengePrompt:
 
         assert result["start_date"] == "2026-03-05"
 
-    def test_llm_api_failure_returns_invalid(self):
-        """LLM API exception returns an is_valid=False dict."""
+    def test_llm_api_failure_raises_llm_unavailable(self):
+        """LLM API exception raises LLMUnavailableError."""
+        import pytest
+        from app.services.openai_service import LLMUnavailableError
+
         exercise = _make_exercise()
 
         with patch("app.services.openai_service.client.chat.completions.create") as mock_create:
             mock_create.side_effect = Exception("Connection error")
-            result = parse_challenge_prompt("some challenge", [exercise], today=TODAY)
-
-        assert result["is_valid"] is False
-        assert result["error_reason"] is not None
-        assert "failed" in result["error_reason"].lower() or "unavailable" in result["error_reason"].lower()
+            with pytest.raises(LLMUnavailableError, match="Connection error"):
+                parse_challenge_prompt("some challenge", [exercise], today=TODAY)
 
     def test_today_passed_in_system_prompt(self):
         """Today's date is included in the LLM system prompt."""

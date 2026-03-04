@@ -165,18 +165,20 @@ class ChallengePromptRequest(BaseModel):
 class ChallengePromptParsed(BaseModel):
     """Intermediate model representing what the LLM extracted from the prompt."""
 
-    exercise_type_name: str = Field(
-        ..., description="Matched exercise type name (internal name)"
+    is_valid: bool = Field(..., description="Whether the LLM successfully parsed the prompt")
+    error_reason: Optional[str] = Field(None, description="Error reason if is_valid is False")
+    exercise_type_name: Optional[str] = Field(
+        None, description="Matched exercise type name (internal name)"
     )
-    start_date: dt.date = Field(..., description="Challenge start date")
-    duration_days: int = Field(..., description="Number of days", ge=1)
+    start_date: Optional[dt.date] = Field(None, description="Challenge start date")
+    duration_days: Optional[int] = Field(None, description="Number of days", ge=1)
     target_total: Optional[int] = Field(
         None, description="Total reps/units for the full challenge", ge=1
     )
     daily_target: Optional[int] = Field(
         None, description="Daily reps/units target", ge=1
     )
-    challenge_name: str = Field(..., description="Name for the challenge")
+    challenge_name: Optional[str] = Field(None, description="Name for the challenge")
 
 
 # =============================================================================

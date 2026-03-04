@@ -1,6 +1,6 @@
 """Tests for /api/v1/challenges endpoints."""
 
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 
 from tests.api.conftest import make_challenge_model, make_exercise_type_model
 
@@ -303,8 +303,10 @@ class TestCreateChallengeFromPrompt:
             )
 
         assert response.status_code == 201
-        data = response.json()
-        assert data["challenge_name"] == "January Push-up Challenge"
+        # Verify derivation: 900 total / 30 days = 30/day
+        create_call_arg = mock_repos["challenge"].create.call_args[0][0]
+        assert create_call_arg["daily_target"] == 30
+        assert create_call_arg["challenge_name"] == "30-Day Push-ups Challenge"
 
     def test_create_from_prompt_success_daily_target_only(
         self, client, auth_and_user_headers, mock_repos, mock_challenge_data, mock_exercise_type_data
@@ -325,6 +327,9 @@ class TestCreateChallengeFromPrompt:
             )
 
         assert response.status_code == 201
+        # Verify daily_target is passed through as-is
+        create_call_arg = mock_repos["challenge"].create.call_args[0][0]
+        assert create_call_arg["daily_target"] == 50
 
     def test_create_from_prompt_exercise_type_not_found(
         self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
@@ -469,3 +474,46 @@ class TestCreateChallengeFromPrompt:
             )
 
         assert response.status_code == 400
+
+    def test_create_from_prompt_alias_fallback(
+        self, client, auth_and_user_headers, mock_repos, mock_challenge_data, mock_exercise_type_data
+    ):
+        """Test that alias fallback matching works when get_by_name misses."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+        # get_by_name returns None — forces alias fallback path
+        mock_repos["exercise_type"].get_by_name.return_value = None
+        mock_repos["challenge"].create.return_value = make_challenge_model(mock_challenge_data)
+
+        with patch("src.api.services.parse_challenge_prompt") as mock_parse:
+            # LLM returns alias "push-up" instead of canonical "pushups"
+            mock_parse.return_value = self._llm_payload(exercise_type_name="push-up")
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "push-up challenge for 30 days 900 reps total"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 201
+
+    def test_create_from_prompt_llm_unavailable_returns_503(
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
+    ):
+        """Test 503 when LLM API is unavailable."""
+        from app.services.openai_service import LLMUnavailableError
+
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+
+        with patch("src.api.services.parse_challenge_prompt") as mock_parse:
+            mock_parse.side_effect = LLMUnavailableError("Connection error")
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "pushups challenge for 30 days"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 503
+        assert "unavailable" in response.json()["detail"].lower()

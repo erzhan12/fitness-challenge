@@ -11,6 +11,10 @@ from app.services.deterministic_parser import (
 
 logger = logging.getLogger(__name__)
 
+
+class LLMUnavailableError(Exception):
+    """Raised when the LLM API call fails (network, rate-limit, outage, etc.)."""
+
 # OpenRouter requires HTTP-Referer header (optional but recommended)
 # Also add X-Title for better tracking
 default_headers = {}
@@ -219,16 +223,7 @@ Schema:
     except Exception as e:
         error_msg = str(e)
         logger.error(f"LLM challenge parse error: {type(e).__name__}: {error_msg}", exc_info=True)
-        return {
-            "exercise_type_name": None,
-            "start_date": None,
-            "duration_days": None,
-            "target_total": None,
-            "daily_target": None,
-            "challenge_name": None,
-            "is_valid": False,
-            "error_reason": "AI parsing failed. Please try again later.",
-        }
+        raise LLMUnavailableError(f"AI parsing failed: {error_msg}") from e
 
 
 def generate_motivational_response(exercise_name: str, stats: Dict[str, Any]) -> str:

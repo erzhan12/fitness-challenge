@@ -32,7 +32,7 @@ from src.api.models import (
     ExerciseChallengeOut,
     ExerciseChallengeCreate,
     ExerciseChallengeUpdate,
-    ChallengePromptRequest,
+    ChallengePromptParsed,
     ExerciseLogOut,
     ExerciseLogCreate,
     ExerciseStatsOut,
@@ -387,34 +387,31 @@ async def create_challenge_from_prompt(
     ]
 
     # Call LLM
-    parsed = parse_challenge_prompt(text, exercise_types_for_llm, today)
+    raw_parsed = parse_challenge_prompt(text, exercise_types_for_llm, today)
 
-    if not parsed.get("is_valid"):
-        raise ValueError(parsed.get("error_reason") or "Could not parse challenge description.")
+    # Validate LLM output through Pydantic schema
+    try:
+        parsed = ChallengePromptParsed(**raw_parsed)
+    except Exception as e:
+        raise ValueError(f"LLM returned invalid data: {e}")
 
-    # Validate required LLM output fields
-    exercise_type_name = parsed.get("exercise_type_name")
-    start_date_raw = parsed.get("start_date")
-    duration_days = parsed.get("duration_days")
-    challenge_name = parsed.get("challenge_name")
+    if not parsed.is_valid:
+        raise ValueError(parsed.error_reason or "Could not parse challenge description.")
 
-    if not exercise_type_name:
+    # After is_valid=True, these fields are required
+    if not parsed.exercise_type_name:
         raise ValueError("LLM did not return an exercise type name.")
-    if not start_date_raw:
+    if not parsed.start_date:
         raise ValueError("LLM did not return a start date.")
-    if not duration_days or duration_days < 1:
+    if not parsed.duration_days or parsed.duration_days < 1:
         raise ValueError("LLM did not return a valid duration (must be >= 1 day).")
-    if not challenge_name:
+    if not parsed.challenge_name:
         raise ValueError("LLM did not return a challenge name.")
 
-    # Parse start date
-    if isinstance(start_date_raw, str):
-        try:
-            start_date = date.fromisoformat(start_date_raw)
-        except ValueError:
-            raise ValueError(f"Invalid start_date format returned by LLM: '{start_date_raw}'")
-    else:
-        start_date = start_date_raw
+    exercise_type_name = parsed.exercise_type_name
+    start_date = parsed.start_date
+    duration_days = parsed.duration_days
+    challenge_name = parsed.challenge_name
 
     end_date = start_date + timedelta(days=duration_days - 1)
 
@@ -434,8 +431,8 @@ async def create_challenge_from_prompt(
         raise ExerciseTypeNotFoundError(exercise_type_name, available_names)
 
     # Resolve target_total / daily_target
-    target_total = parsed.get("target_total")
-    daily_target = parsed.get("daily_target")
+    target_total = parsed.target_total
+    daily_target = parsed.daily_target
 
     if target_total is None and daily_target is None:
         raise ValueError("Please specify either a total target (e.g. '2000 reps total') or a daily target (e.g. '50 reps daily').")
