@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     LLM_API_KEY: str
     LLM_BASE_URL: str
     LLM_MODEL: str
+    LLM_CHALLENGE_MAX_TOKENS: int = 500
+    LLM_CHALLENGE_TIMEOUT: float = 30.0
+    LLM_MOTIVATION_MAX_TOKENS: int = 60
 
     # Supabase (migration-only; optional at runtime)
     SUPABASE_URL: str | None = None

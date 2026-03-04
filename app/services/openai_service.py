@@ -227,9 +227,9 @@ Schema:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0,
-                max_tokens=500,
+                max_tokens=settings.LLM_CHALLENGE_MAX_TOKENS,
             ),
-            timeout=30.0,
+            timeout=settings.LLM_CHALLENGE_TIMEOUT,
         )
 
         content = response.choices[0].message.content
@@ -238,7 +238,7 @@ Schema:
         return data
 
     except asyncio.TimeoutError:
-        logger.error("LLM challenge parse timed out after 30s")
+        logger.error(f"LLM challenge parse timed out after {settings.LLM_CHALLENGE_TIMEOUT}s")
         raise LLMUnavailableError("AI parsing timed out. Please try again later.")
     except json.JSONDecodeError as e:
         logger.error(f"LLM returned invalid JSON: {e}", exc_info=True)
@@ -280,7 +280,7 @@ def generate_motivational_response(exercise_name: str, stats: Dict[str, Any]) ->
                 {"role": "user", "content": user_content},
             ],
             temperature=0.7,
-            max_tokens=60,
+            max_tokens=settings.LLM_MOTIVATION_MAX_TOKENS,
         )
         result = response.choices[0].message.content.strip()
         logger.debug(f"Generated response: {result}")
@@ -338,7 +338,7 @@ def generate_reminder_motivation(context: Dict[str, Any]) -> str:
                 {"role": "user", "content": user_content},
             ],
             temperature=0.7,
-            max_tokens=60,
+            max_tokens=settings.LLM_MOTIVATION_MAX_TOKENS,
         )
         result = response.choices[0].message.content.strip()
         logger.debug(f"Generated reminder: {result}")
