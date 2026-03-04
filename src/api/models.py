@@ -166,7 +166,14 @@ class ChallengePromptRequest(BaseModel):
     @field_validator("text")
     @classmethod
     def validate_safe_input(cls, v: str) -> str:
-        suspicious_patterns = ["ignore previous", "ignore all", "system:"]
+        suspicious_patterns = [
+            "ignore previous", "ignore all", "ignore above",
+            "disregard prior", "disregard previous",
+            "forget everything", "forget above",
+            "neglect above",
+            "system:", "assistant:", "[inst]",
+            "you are now",
+        ]
         v_lower = v.lower()
         for pattern in suspicious_patterns:
             if pattern in v_lower:

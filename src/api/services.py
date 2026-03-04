@@ -48,6 +48,9 @@ from app.services.openai_service import parse_challenge_prompt
 
 TZ = ZoneInfo(settings.TZ)
 
+# Allow 1 rep difference when validating target_total vs daily_target consistency (rounding tolerance)
+TARGET_CONSISTENCY_TOLERANCE = 1
+
 
 # =============================================================================
 # Helper functions for model conversion
@@ -415,10 +418,12 @@ async def create_challenge_from_prompt(
 
     end_date = start_date + timedelta(days=duration_days - 1)
 
-    # Look up exercise type by name (exact match first, then alias match)
-    exercise_type = await exercise_type_repo.get_by_name(exercise_type_name, user_id=user_id)
+    # Look up exercise type from already-fetched list (exact match, then case-insensitive alias)
+    exercise_type = next(
+        (et for et in exercise_type_models if et.name == exercise_type_name),
+        None,
+    )
     if exercise_type is None:
-        # Try case-insensitive match against all types
         name_lower = exercise_type_name.lower()
         for et in exercise_type_models:
             all_names = [et.name] + (et.aliases or [])
@@ -445,7 +450,7 @@ async def create_challenge_from_prompt(
     else:
         # Both provided — validate consistency; use target_total-derived daily_target
         expected_daily = math.ceil(target_total / duration_days)
-        if abs(daily_target - expected_daily) > 1:
+        if abs(daily_target - expected_daily) > TARGET_CONSISTENCY_TOLERANCE:
             raise ValueError(
                 f"Inconsistent targets: {target_total} total over {duration_days} days implies "
                 f"~{expected_daily}/day, but '{daily_target}/day' was also specified. "

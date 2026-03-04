@@ -219,3 +219,26 @@ class TestParseChallengePrompt:
         system_msg = call_args[1]["messages"][0]["content"]
         assert "squats" in system_msg
         assert "pushups" in system_msg
+
+    @pytest.mark.asyncio
+    async def test_parse_uses_deterministic_settings(self):
+        """Verify temperature=0 and json response format for deterministic parsing."""
+        llm_payload = {
+            "exercise_type_name": "pushups",
+            "start_date": "2026-03-04",
+            "duration_days": 30,
+            "target_total": 900,
+            "daily_target": None,
+            "challenge_name": "Push-ups Challenge",
+            "is_valid": True,
+            "error_reason": None,
+        }
+        exercise = _make_exercise()
+
+        with patch("app.services.openai_service.async_client.chat.completions.create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = _mock_llm_response(llm_payload)
+            await parse_challenge_prompt("pushups 900 total 30 days", [exercise], today=TODAY)
+
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["temperature"] == 0
+        assert call_kwargs["response_format"] == {"type": "json_object"}
