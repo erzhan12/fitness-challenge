@@ -32,6 +32,7 @@ from src.api.models import (
     ExerciseChallengeOut,
     ExerciseChallengeCreate,
     ExerciseChallengeUpdate,
+    ChallengePromptRequest,
     ExerciseLogOut,
     ExerciseLogCreate,
     ExerciseStatsOut,
@@ -42,6 +43,8 @@ from src.api.models import (
     SettingsOut,
     SettingsUpdate,
 )
+from app.models import ExerciseType as TelegramExerciseType
+from app.services.openai_service import parse_challenge_prompt
 
 TZ = ZoneInfo(settings.TZ)
 
@@ -331,6 +334,141 @@ async def update_challenge(
     if updated:
         return ExerciseChallengeOut(**_enrich_challenge(_model_to_dict(updated), today))
     return None
+
+
+class ExerciseTypeNotFoundError(Exception):
+    """Raised when an exercise type referenced by name cannot be found."""
+
+    def __init__(self, exercise_type_name: str, available_names: List[str]):
+        self.exercise_type_name = exercise_type_name
+        self.available_names = available_names
+        super().__init__(
+            f"Exercise type '{exercise_type_name}' not found. "
+            f"Available types: {', '.join(available_names)}"
+        )
+
+
+async def create_challenge_from_prompt(
+    text: str,
+    user_id: int,
+) -> ExerciseChallengeOut:
+    """
+    Parse a natural language challenge description and create the challenge.
+
+    The LLM extracts: exercise_type_name, start_date, duration_days,
+    target_total and/or daily_target, challenge_name.
+
+    - If only target_total given: daily_target = ceil(target_total / duration_days)
+    - If only daily_target given: target_total is computed on read (daily_target × total_days)
+    - If both given: validate consistency (within rounding tolerance of 1)
+
+    Raises:
+        ValueError: If LLM parsing fails or extracted data is invalid.
+        ExerciseTypeNotFoundError: If the exercise type name is not found for this user.
+    """
+    from datetime import timedelta
+
+    today = datetime.now(TZ).date()
+
+    # Fetch all exercise types for this user to pass to LLM and for lookup
+    exercise_type_models = await exercise_type_repo.get_all(user_id=user_id)
+
+    # Convert Django models to the lightweight ExerciseType used by openai_service
+    exercise_types_for_llm = [
+        TelegramExerciseType(
+            id=et.id,
+            name=et.name,
+            display_name=et.display_name,
+            emoji=et.emoji,
+            unit=et.unit,
+            aliases=et.aliases or [],
+        )
+        for et in exercise_type_models
+    ]
+
+    # Call LLM
+    parsed = parse_challenge_prompt(text, exercise_types_for_llm, today)
+
+    if not parsed.get("is_valid"):
+        raise ValueError(parsed.get("error_reason") or "Could not parse challenge description.")
+
+    # Validate required LLM output fields
+    exercise_type_name = parsed.get("exercise_type_name")
+    start_date_raw = parsed.get("start_date")
+    duration_days = parsed.get("duration_days")
+    challenge_name = parsed.get("challenge_name")
+
+    if not exercise_type_name:
+        raise ValueError("LLM did not return an exercise type name.")
+    if not start_date_raw:
+        raise ValueError("LLM did not return a start date.")
+    if not duration_days or duration_days < 1:
+        raise ValueError("LLM did not return a valid duration (must be >= 1 day).")
+    if not challenge_name:
+        raise ValueError("LLM did not return a challenge name.")
+
+    # Parse start date
+    if isinstance(start_date_raw, str):
+        try:
+            start_date = date.fromisoformat(start_date_raw)
+        except ValueError:
+            raise ValueError(f"Invalid start_date format returned by LLM: '{start_date_raw}'")
+    else:
+        start_date = start_date_raw
+
+    end_date = start_date + timedelta(days=duration_days - 1)
+
+    # Look up exercise type by name (exact match first, then alias match)
+    exercise_type = await exercise_type_repo.get_by_name(exercise_type_name, user_id=user_id)
+    if exercise_type is None:
+        # Try case-insensitive match against all types
+        name_lower = exercise_type_name.lower()
+        for et in exercise_type_models:
+            all_names = [et.name] + (et.aliases or [])
+            if any(n.lower() == name_lower for n in all_names):
+                exercise_type = et
+                break
+
+    if exercise_type is None:
+        available_names = [et.name for et in exercise_type_models]
+        raise ExerciseTypeNotFoundError(exercise_type_name, available_names)
+
+    # Resolve target_total / daily_target
+    target_total = parsed.get("target_total")
+    daily_target = parsed.get("daily_target")
+
+    if target_total is None and daily_target is None:
+        raise ValueError("Please specify either a total target (e.g. '2000 reps total') or a daily target (e.g. '50 reps daily').")
+
+    if target_total is not None and daily_target is None:
+        daily_target = math.ceil(target_total / duration_days)
+    elif daily_target is not None and target_total is None:
+        # daily_target is stored; target_total computed on read
+        pass
+    else:
+        # Both provided — validate consistency; use target_total-derived daily_target
+        expected_daily = math.ceil(target_total / duration_days)
+        if abs(daily_target - expected_daily) > 1:
+            raise ValueError(
+                f"Inconsistent targets: {target_total} total over {duration_days} days implies "
+                f"~{expected_daily}/day, but '{daily_target}/day' was also specified. "
+                "Please provide only one or ensure they match."
+            )
+        daily_target = expected_daily
+
+    if daily_target < 1:
+        raise ValueError("daily_target must be at least 1.")
+
+    challenge_data = ExerciseChallengeCreate(
+        exercise_type_id=exercise_type.id,
+        start_date=start_date,
+        end_date=end_date,
+        daily_target=daily_target,
+        challenge_name=challenge_name,
+        is_active=True,
+        is_default=False,
+    )
+    return await create_challenge(challenge_data, user_id=user_id)
 
 
 # =============================================================================

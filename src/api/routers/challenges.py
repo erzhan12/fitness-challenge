@@ -8,6 +8,7 @@ from src.api.models import (
     ExerciseChallengeOut,
     ExerciseChallengeCreate,
     ExerciseChallengeUpdate,
+    ChallengePromptRequest,
     ErrorResponse,
 )
 from src.api.services import (
@@ -16,6 +17,8 @@ from src.api.services import (
     get_exercise_type,
     create_challenge,
     update_challenge,
+    create_challenge_from_prompt,
+    ExerciseTypeNotFoundError,
 )
 from src.api.security import verify_api_key, get_current_user
 from src.core.models import AppUser
@@ -135,6 +138,71 @@ async def create_new_challenge(
             detail="end_date must be after or equal to start_date",
         )
     return await create_challenge(data, user_id=current_user.id)
+
+
+@router.post(
+    "/create-from-prompt",
+    response_model=ExerciseChallengeOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create challenge from natural language prompt",
+    description=(
+        "Accepts a natural language description and uses an LLM to parse it into "
+        "a structured challenge, then saves it. "
+        "Example input: 'pushups challenge for 30 days starting tomorrow, 2000 reps total'. "
+        "Requires API key authentication."
+    ),
+    tags=["Challenges"],
+    responses={
+        201: {"description": "Challenge created successfully"},
+        400: {"model": ErrorResponse, "description": "Could not parse prompt or invalid data"},
+        401: {"model": ErrorResponse, "description": "Missing API key"},
+        403: {"model": ErrorResponse, "description": "Invalid API key"},
+        404: {"model": ErrorResponse, "description": "Exercise type not found"},
+        503: {"model": ErrorResponse, "description": "LLM service unavailable"},
+    },
+)
+async def create_challenge_from_natural_language(
+    data: ChallengePromptRequest,
+    _: str = Depends(verify_api_key),
+    current_user: AppUser = Depends(get_current_user),
+) -> ExerciseChallengeOut:
+    """
+    Create a challenge from a natural language description.
+
+    - **text**: Free-form text describing the challenge
+      (e.g. "pushups challenge for 30 days starting tomorrow, 2000 reps total"
+      or "daily 50 squats for a month starting Jan 1")
+
+    The LLM extracts: exercise type, start date, duration, and target (total or daily).
+    If the exercise type is not found in the user's exercise types, a 404 is returned
+    with a list of available types.
+    """
+    try:
+        return await create_challenge_from_prompt(data.text, user_id=current_user.id)
+    except ExerciseTypeNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Exercise type '{e.exercise_type_name}' not found. "
+                f"Available types: {', '.join(e.available_names)}. "
+                "Create a new exercise type first using /api/v1/exercises."
+            ),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        if "unavailable" in str(e).lower() or "failed" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="LLM service is currently unavailable. Please try again later.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
 
 
 @router.patch(

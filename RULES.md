@@ -1131,3 +1131,47 @@ A simple check-then-mark pattern is non-atomic: two concurrent requests could bo
 - `tests/services/test_habit_reward_client.py` - Unit tests
 
 **Last Updated:** Fixed REST API to check all challenges complete before sending; added atomic claim pattern (2026-02-03)
+
+---
+
+## LLM-Powered Resource Creation Pattern
+
+When adding LLM-powered "create from prompt" endpoints, follow this pattern:
+
+### Structure
+
+1. **LLM parser function** in `app/services/openai_service.py`:
+   - Takes `text`, a list of domain objects (e.g. exercise types), and contextual args (e.g. `today`)
+   - Calls LLM with `response_format={"type": "json_object"}`, `temperature=0`
+   - Returns a dict with `is_valid: bool` and `error_reason: str | null`
+   - On LLM exception, returns `{"is_valid": False, "error_reason": "AI parsing failed..."}`
+
+2. **Import at module level** in `src/api/services.py`:
+   - Import the LLM parser at the **top of the file** (not inside the function), so tests can patch it as `src.api.services.parse_challenge_prompt`
+   - ❌ Wrong: `from app.services.openai_service import parse_challenge_prompt` inside function body
+   - ✅ Correct: at module level in `src/api/services.py`
+
+3. **Service orchestration function** in `src/api/services.py`:
+   - Fetches prerequisite data (exercise types, today's date)
+   - Calls LLM parser
+   - Validates output, raises `ValueError` for bad input
+   - Raises custom `SomethingNotFoundError(name, available_names)` when a referenced resource doesn't exist
+   - Delegates final DB write to existing `create_*()` function
+
+4. **Endpoint** in `src/api/routers/`:
+   - Catches `SomethingNotFoundError` → 404 with available names in detail
+   - Catches `ValueError` → 400
+   - Catches generic `Exception` → 503 if LLM-related, else 400
+
+### Test Patching
+
+Always patch at the import site (`src.api.services.parse_challenge_prompt`), NOT at the definition site (`app.services.openai_service.parse_challenge_prompt`). The mock only works where the name is looked up.
+
+### Files
+- `app/services/openai_service.py` — `parse_challenge_prompt()`
+- `src/api/services.py` — `create_challenge_from_prompt()`, `ExerciseTypeNotFoundError`
+- `src/api/routers/challenges.py` — `POST /challenges/create-from-prompt`
+- `tests/services/test_openai_service.py` — unit tests for LLM parser
+- `tests/api/test_challenges.py` — `TestCreateChallengeFromPrompt`
+
+**Last Updated:** Added LLM-powered challenge creation pattern (2026-03-04)

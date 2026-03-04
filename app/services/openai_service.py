@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import List, Dict, Any
+from datetime import date
+from typing import List, Dict, Any, Optional
 from openai import OpenAI
 from app.config import settings
 from app.models import ParseResult, ExerciseType
@@ -137,6 +138,97 @@ def parse_workout_message(text: str, exercise_types: List[ExerciseType], default
 
         # Fallback for API errors
         return ParseResult(entries=[], is_valid=False, error_reason=user_friendly_msg)
+
+
+def parse_challenge_prompt(
+    text: str,
+    exercise_types: List[ExerciseType],
+    today: Optional[date] = None,
+) -> Dict[str, Any]:
+    """
+    Uses LLM to parse a natural language challenge description into structured data.
+
+    Args:
+        text: Natural language challenge description (e.g. "pushups challenge for 30 days starting tomorrow, 2000 reps total")
+        exercise_types: List of valid exercise types the user has
+        today: Reference date for relative date resolution (defaults to today)
+
+    Returns:
+        Dict with keys:
+            exercise_type_name, start_date (ISO string), duration_days,
+            target_total (int or null), daily_target (int or null),
+            challenge_name, is_valid (bool), error_reason (str or null)
+    """
+    if today is None:
+        from datetime import date as dt_date
+        today = dt_date.today()
+
+    exercises_info = [
+        f"{et.name} (aliases: {', '.join(et.aliases or [])}, display: {et.display_name})"
+        for et in exercise_types
+    ]
+
+    system_prompt = f"""
+You are a fitness challenge parser. Extract structured challenge data from natural language text.
+
+Today's date: {today.isoformat()}
+
+Available exercise types (you MUST use one of these exact 'name' values):
+{json.dumps(exercises_info, indent=2)}
+
+Rules:
+1. Resolve relative dates ("tomorrow", "next Monday", "in 3 days") relative to today ({today.isoformat()}).
+2. If no start date is mentioned, default to today.
+3. Extract either target_total (e.g. "2000 reps total") or daily_target (e.g. "50 pushups daily"), or both.
+4. duration_days must be a positive integer.
+5. generate a short descriptive challenge_name if the user didn't provide one (e.g. "30-Day Push-ups Challenge").
+6. exercise_type_name MUST exactly match one of the 'name' fields listed above.
+7. If you cannot confidently match an exercise type, set is_valid to false.
+8. Return strict JSON only.
+
+Schema:
+{{
+  "exercise_type_name": "string (exact name from available types)",
+  "start_date": "string (ISO date, e.g. '2024-01-01')",
+  "duration_days": "integer (> 0)",
+  "target_total": "integer or null",
+  "daily_target": "integer or null",
+  "challenge_name": "string",
+  "is_valid": boolean,
+  "error_reason": "string or null"
+}}
+"""
+
+    try:
+        logger.info(f"🤖 Calling LLM to parse challenge prompt (model: {settings.LLM_MODEL})")
+        response = client.chat.completions.create(
+            model=settings.LLM_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0,
+        )
+
+        content = response.choices[0].message.content
+        logger.info("✅ LLM challenge parse SUCCESS")
+        data = json.loads(content)
+        return data
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"LLM challenge parse error: {type(e).__name__}: {error_msg}", exc_info=True)
+        return {
+            "exercise_type_name": None,
+            "start_date": None,
+            "duration_days": None,
+            "target_total": None,
+            "daily_target": None,
+            "challenge_name": None,
+            "is_valid": False,
+            "error_reason": "AI parsing failed. Please try again later.",
+        }
 
 
 def generate_motivational_response(exercise_name: str, stats: Dict[str, Any]) -> str:

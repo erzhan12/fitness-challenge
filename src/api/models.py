@@ -148,6 +148,38 @@ class ExerciseChallengeUpdate(BaseModel):
 
 
 # =============================================================================
+# Challenge from Prompt
+# =============================================================================
+
+
+class ChallengePromptRequest(BaseModel):
+    """Request model for creating a challenge from a natural language prompt."""
+
+    text: str = Field(
+        ...,
+        description="Natural language description of the challenge",
+        examples=["pushups challenge for 30 days starting tomorrow, 2000 reps total"],
+    )
+
+
+class ChallengePromptParsed(BaseModel):
+    """Intermediate model representing what the LLM extracted from the prompt."""
+
+    exercise_type_name: str = Field(
+        ..., description="Matched exercise type name (internal name)"
+    )
+    start_date: dt.date = Field(..., description="Challenge start date")
+    duration_days: int = Field(..., description="Number of days", ge=1)
+    target_total: Optional[int] = Field(
+        None, description="Total reps/units for the full challenge", ge=1
+    )
+    daily_target: Optional[int] = Field(
+        None, description="Daily reps/units target", ge=1
+    )
+    challenge_name: str = Field(..., description="Name for the challenge")
+
+
+# =============================================================================
 # Exercise Logs
 # =============================================================================
 

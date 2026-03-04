@@ -1,6 +1,8 @@
 """Tests for /api/v1/challenges endpoints."""
 
-from tests.api.conftest import make_challenge_model
+from unittest.mock import patch, AsyncMock
+
+from tests.api.conftest import make_challenge_model, make_exercise_type_model
 
 
 class TestListChallenges:
@@ -263,3 +265,207 @@ class TestUpdateChallenge:
         response = client.patch("/api/v1/challenges/1", json=update_data)
 
         assert response.status_code == 401
+
+
+class TestCreateChallengeFromPrompt:
+    """Tests for POST /api/v1/challenges/create-from-prompt."""
+
+    def _llm_payload(self, **overrides):
+        base = {
+            "exercise_type_name": "pushups",
+            "start_date": "2026-03-05",
+            "duration_days": 30,
+            "target_total": 900,
+            "daily_target": None,
+            "challenge_name": "30-Day Push-ups Challenge",
+            "is_valid": True,
+            "error_reason": None,
+        }
+        base.update(overrides)
+        return base
+
+    def test_create_from_prompt_success_target_total(
+        self, client, auth_and_user_headers, mock_repos, mock_challenge_data, mock_exercise_type_data
+    ):
+        """Test successful creation with target_total provided; daily_target computed."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+        mock_repos["exercise_type"].get_by_name.return_value = exercise_model
+        mock_repos["challenge"].create.return_value = make_challenge_model(mock_challenge_data)
+
+        with patch("src.api.services.parse_challenge_prompt") as mock_parse:
+            mock_parse.return_value = self._llm_payload()
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "pushups challenge for 30 days starting tomorrow 900 reps total"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["challenge_name"] == "January Push-up Challenge"
+
+    def test_create_from_prompt_success_daily_target_only(
+        self, client, auth_and_user_headers, mock_repos, mock_challenge_data, mock_exercise_type_data
+    ):
+        """Test successful creation with daily_target only."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+        mock_repos["exercise_type"].get_by_name.return_value = exercise_model
+        mock_repos["challenge"].create.return_value = make_challenge_model(mock_challenge_data)
+
+        with patch("src.api.services.parse_challenge_prompt") as mock_parse:
+            mock_parse.return_value = self._llm_payload(target_total=None, daily_target=50)
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "50 pushups daily for 30 days"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 201
+
+    def test_create_from_prompt_exercise_type_not_found(
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
+    ):
+        """Test 404 when exercise type from LLM not found in user's types."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+        mock_repos["exercise_type"].get_by_name.return_value = None
+
+        with patch("src.api.services.parse_challenge_prompt") as mock_parse:
+            mock_parse.return_value = self._llm_payload(exercise_type_name="swimming")
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "swimming challenge for 30 days 5000m total"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 404
+        assert "swimming" in response.json()["detail"].lower()
+        assert "pushups" in response.json()["detail"].lower()
+
+    def test_create_from_prompt_llm_parse_failure(
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
+    ):
+        """Test 400 when LLM returns is_valid=False."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+
+        with patch("src.api.services.parse_challenge_prompt") as mock_parse:
+            mock_parse.return_value = {
+                "exercise_type_name": None,
+                "start_date": None,
+                "duration_days": None,
+                "target_total": None,
+                "daily_target": None,
+                "challenge_name": None,
+                "is_valid": False,
+                "error_reason": "Cannot parse this input.",
+            }
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "abcdefg"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 400
+        assert "parse" in response.json()["detail"].lower()
+
+    def test_create_from_prompt_no_targets_provided(
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
+    ):
+        """Test 400 when LLM returns neither target_total nor daily_target."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+        mock_repos["exercise_type"].get_by_name.return_value = exercise_model
+
+        with patch("src.api.services.parse_challenge_prompt") as mock_parse:
+            mock_parse.return_value = self._llm_payload(target_total=None, daily_target=None)
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "pushups challenge for 30 days"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 400
+        assert "target" in response.json()["detail"].lower()
+
+    def test_create_from_prompt_inconsistent_targets(
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
+    ):
+        """Test 400 when both targets are provided but inconsistent."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+        mock_repos["exercise_type"].get_by_name.return_value = exercise_model
+
+        with patch("src.api.services.parse_challenge_prompt") as mock_parse:
+            # 2000 total / 30 days = 67/day, but LLM says 50/day — big inconsistency
+            mock_parse.return_value = self._llm_payload(target_total=2000, daily_target=50)
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "pushups challenge 2000 total and 50 daily for 30 days"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 400
+        assert "inconsistent" in response.json()["detail"].lower()
+
+    def test_create_from_prompt_unauthorized(self, client):
+        """Test 401 when no API key provided."""
+        response = client.post(
+            "/api/v1/challenges/create-from-prompt",
+            json={"text": "pushups challenge for 30 days"},
+        )
+
+        assert response.status_code == 401
+
+    def test_create_from_prompt_forbidden(self, client, invalid_auth_headers, user_context_headers):
+        """Test 403 when invalid API key provided."""
+        response = client.post(
+            "/api/v1/challenges/create-from-prompt",
+            json={"text": "pushups challenge for 30 days"},
+            headers={**invalid_auth_headers, **user_context_headers},
+        )
+
+        assert response.status_code == 403
+
+    def test_create_from_prompt_missing_text(self, client, auth_and_user_headers, mock_repos):
+        """Test 422 when request body is missing text field."""
+        response = client.post(
+            "/api/v1/challenges/create-from-prompt",
+            json={},
+            headers=auth_and_user_headers,
+        )
+
+        assert response.status_code == 422
+
+    def test_create_from_prompt_empty_text(self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data):
+        """Test 400 when empty text is provided and LLM cannot parse it."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+
+        with patch("src.api.services.parse_challenge_prompt") as mock_parse:
+            mock_parse.return_value = {
+                "exercise_type_name": None,
+                "start_date": None,
+                "duration_days": None,
+                "target_total": None,
+                "daily_target": None,
+                "challenge_name": None,
+                "is_valid": False,
+                "error_reason": "No challenge description provided.",
+            }
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": ""},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 400
