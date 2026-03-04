@@ -48,7 +48,9 @@ from app.services.openai_service import parse_challenge_prompt
 
 TZ = ZoneInfo(settings.TZ)
 
-# Allow 1 rep difference when validating target_total vs daily_target consistency (rounding tolerance)
+# Maximum allowed difference between LLM-provided daily_target and the computed
+# ceil(target_total / duration_days).  Set to 1 because ceil() can introduce a
+# ±1 rounding discrepancy (e.g. 901/30 = ceil 31, but LLM may return 30).
 TARGET_CONSISTENCY_TOLERANCE = 1
 
 

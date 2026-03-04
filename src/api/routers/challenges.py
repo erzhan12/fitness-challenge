@@ -2,7 +2,9 @@
 
 from datetime import date
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.api.models import (
     ExerciseChallengeOut,
@@ -25,6 +27,7 @@ from src.api.security import verify_api_key, get_current_user
 from src.core.models import AppUser
 
 router = APIRouter(prefix="/challenges", tags=["Challenges"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.get(
@@ -159,10 +162,13 @@ async def create_new_challenge(
         401: {"model": ErrorResponse, "description": "Missing API key"},
         403: {"model": ErrorResponse, "description": "Invalid API key"},
         404: {"model": ErrorResponse, "description": "Exercise type not found"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
         503: {"model": ErrorResponse, "description": "LLM service unavailable"},
     },
 )
+@limiter.limit("10/hour")
 async def create_challenge_from_natural_language(
+    request: Request,
     data: ChallengePromptRequest,
     _: str = Depends(verify_api_key),
     current_user: AppUser = Depends(get_current_user),

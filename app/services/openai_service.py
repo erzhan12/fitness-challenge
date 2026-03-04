@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from datetime import date
@@ -211,14 +212,18 @@ Schema:
 
     try:
         logger.info(f"🤖 Calling LLM to parse challenge prompt (model: {settings.LLM_MODEL})")
-        response = await async_client.chat.completions.create(
-            model=settings.LLM_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0,
+        response = await asyncio.wait_for(
+            async_client.chat.completions.create(
+                model=settings.LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+                max_tokens=500,
+            ),
+            timeout=30.0,
         )
 
         content = response.choices[0].message.content
@@ -226,6 +231,12 @@ Schema:
         data = json.loads(content)
         return data
 
+    except asyncio.TimeoutError:
+        logger.error("LLM challenge parse timed out after 30s")
+        raise LLMUnavailableError("AI parsing timed out. Please try again later.")
+    except json.JSONDecodeError as e:
+        logger.error(f"LLM returned invalid JSON: {e}", exc_info=True)
+        raise LLMUnavailableError("AI returned invalid response format")
     except Exception as e:
         error_msg = str(e)
         logger.error(f"LLM challenge parse error: {type(e).__name__}: {error_msg}", exc_info=True)

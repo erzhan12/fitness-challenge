@@ -11,6 +11,9 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from a2wsgi import WSGIMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 # Configure Django ORM before importing modules that touch Django models.
 from src.core import setup_django
@@ -133,6 +136,11 @@ Read-only endpoints (GET) are accessible without authentication.
     openapi_url="/openapi.json",
 )
 
+
+# Rate limiter (keyed by remote IP)
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Mount static files for Django admin FIRST (more specific route)
 # This must come before mounting /admin so /admin/static/... requests are handled here

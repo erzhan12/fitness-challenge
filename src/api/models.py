@@ -166,6 +166,10 @@ class ChallengePromptRequest(BaseModel):
     @field_validator("text")
     @classmethod
     def validate_safe_input(cls, v: str) -> str:
+        # Normalize: strip and collapse internal whitespace to defeat obfuscation
+        import re
+        v = v.strip()
+        normalized = re.sub(r"\s+", " ", v).lower()
         suspicious_patterns = [
             "ignore previous", "ignore all", "ignore above",
             "disregard prior", "disregard previous",
@@ -174,9 +178,8 @@ class ChallengePromptRequest(BaseModel):
             "system:", "assistant:", "[inst]",
             "you are now",
         ]
-        v_lower = v.lower()
         for pattern in suspicious_patterns:
-            if pattern in v_lower:
+            if pattern in normalized:
                 raise ValueError("Invalid input format")
         return v
 
