@@ -1,5 +1,6 @@
 """Tests for /api/v1/challenges endpoints."""
 
+from datetime import date, timedelta
 from unittest.mock import patch, AsyncMock
 
 import pytest
@@ -422,6 +423,28 @@ class TestCreateChallengeFromPrompt:
 
         assert response.status_code == 400
         assert "inconsistent" in response.json()["detail"].lower()
+
+    def test_create_from_prompt_start_date_too_far_in_past(
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
+    ):
+        """Test 400 when LLM returns a start_date more than a year in the past."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+        mock_repos["exercise_type"].get_by_name.return_value = exercise_model
+
+        ancient_start = (date.today() - timedelta(days=400)).isoformat()
+
+        with patch("src.api.services.parse_challenge_prompt", new_callable=AsyncMock) as mock_parse:
+            mock_parse.return_value = self._llm_payload(start_date=ancient_start)
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "pushups challenge for 30 days"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 400
+        assert "past" in response.json()["detail"].lower()
 
     def test_create_from_prompt_unauthorized(self, client):
         """Test 401 when no API key provided."""

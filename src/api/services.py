@@ -420,6 +420,12 @@ async def create_challenge_from_prompt(
 
     end_date = start_date + timedelta(days=duration_days - 1)
 
+    if start_date < today - timedelta(days=365):
+        raise ValueError(
+            f"start_date ({start_date}) is more than a year in the past. "
+            "Did you mean a future date?"
+        )
+
     # Look up exercise type from already-fetched list (exact match, then case-insensitive alias)
     exercise_type = next(
         (et for et in exercise_type_models if et.name == exercise_type_name),
