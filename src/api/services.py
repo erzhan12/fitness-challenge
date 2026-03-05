@@ -353,6 +353,63 @@ class ExerciseTypeNotFoundError(Exception):
         )
 
 
+def _resolve_exercise_type(name: str, exercise_type_models: List) -> Optional[Any]:
+    """Look up exercise type by exact name, then by case-insensitive alias."""
+    match = next(
+        (et for et in exercise_type_models if et.name == name),
+        None,
+    )
+    if match is not None:
+        return match
+    name_lower = name.lower()
+    for et in exercise_type_models:
+        all_names = [et.name] + (et.aliases or [])
+        if any(n.lower() == name_lower for n in all_names):
+            return et
+    return None
+
+
+def _compute_daily_target(
+    target_total: Optional[int],
+    daily_target: Optional[int],
+    duration_days: int,
+) -> int:
+    """Derive daily_target from target_total/daily_target, validating consistency."""
+    if target_total is None and daily_target is None:
+        raise ValueError(
+            "Please specify either a total target (e.g. '2000 reps total') "
+            "or a daily target (e.g. '50 reps daily')."
+        )
+
+    if target_total is not None and daily_target is None:
+        result = math.ceil(target_total / duration_days)
+    elif daily_target is not None and target_total is None:
+        result = daily_target
+    else:
+        expected_daily = math.ceil(target_total / duration_days)
+        if abs(daily_target - expected_daily) > TARGET_CONSISTENCY_TOLERANCE:
+            raise ValueError(
+                f"Inconsistent targets: {target_total} total over {duration_days} days implies "
+                f"~{expected_daily}/day, but '{daily_target}/day' was also specified. "
+                "Please provide only one or ensure they match."
+            )
+        result = expected_daily
+
+    if result < 1:
+        raise ValueError("daily_target must be at least 1.")
+    return result
+
+
+def _validate_challenge_dates(start_date: date, today: date) -> None:
+    """Validate that start_date is not unreasonably far in the past."""
+    from datetime import timedelta
+    if start_date < today - timedelta(days=365):
+        raise ValueError(
+            f"start_date ({start_date}) is more than a year in the past. "
+            "Did you mean a future date?"
+        )
+
+
 async def create_challenge_from_prompt(
     text: str,
     user_id: int,
@@ -362,10 +419,6 @@ async def create_challenge_from_prompt(
 
     The LLM extracts: exercise_type_name, start_date, duration_days,
     target_total and/or daily_target, challenge_name.
-
-    - If only target_total given: daily_target = ceil(target_total / duration_days)
-    - If only daily_target given: target_total is computed on read (daily_target × total_days)
-    - If both given: validate consistency (within rounding tolerance of 1)
 
     Raises:
         ValueError: If LLM parsing fails or extracted data is invalid.
@@ -378,7 +431,6 @@ async def create_challenge_from_prompt(
     # Fetch all exercise types for this user to pass to LLM and for lookup
     exercise_type_models = await exercise_type_repo.get_all(user_id=user_id)
 
-    # Convert Django models to the lightweight ExerciseType used by openai_service
     exercise_types_for_llm = [
         TelegramExerciseType(
             id=et.id,
@@ -391,10 +443,8 @@ async def create_challenge_from_prompt(
         for et in exercise_type_models
     ]
 
-    # Call LLM
+    # Call LLM and validate through Pydantic schema
     raw_parsed = await parse_challenge_prompt(text, exercise_types_for_llm, today)
-
-    # Validate LLM output through Pydantic schema
     try:
         parsed = ChallengePromptParsed(**raw_parsed)
     except Exception as e:
@@ -403,7 +453,6 @@ async def create_challenge_from_prompt(
     if not parsed.is_valid:
         raise ValueError(parsed.error_reason or "Could not parse challenge description.")
 
-    # After is_valid=True, these fields are required
     if not parsed.exercise_type_name:
         raise ValueError("LLM did not return an exercise type name.")
     if not parsed.start_date:
@@ -413,68 +462,25 @@ async def create_challenge_from_prompt(
     if not parsed.challenge_name:
         raise ValueError("LLM did not return a challenge name.")
 
-    exercise_type_name = parsed.exercise_type_name
     start_date = parsed.start_date
     duration_days = parsed.duration_days
-    challenge_name = parsed.challenge_name
-
     end_date = start_date + timedelta(days=duration_days - 1)
 
-    if start_date < today - timedelta(days=365):
-        raise ValueError(
-            f"start_date ({start_date}) is more than a year in the past. "
-            "Did you mean a future date?"
-        )
+    _validate_challenge_dates(start_date, today)
 
-    # Look up exercise type from already-fetched list (exact match, then case-insensitive alias)
-    exercise_type = next(
-        (et for et in exercise_type_models if et.name == exercise_type_name),
-        None,
-    )
-    if exercise_type is None:
-        name_lower = exercise_type_name.lower()
-        for et in exercise_type_models:
-            all_names = [et.name] + (et.aliases or [])
-            if any(n.lower() == name_lower for n in all_names):
-                exercise_type = et
-                break
-
+    exercise_type = _resolve_exercise_type(parsed.exercise_type_name, exercise_type_models)
     if exercise_type is None:
         available_names = [et.name for et in exercise_type_models]
-        raise ExerciseTypeNotFoundError(exercise_type_name, available_names)
+        raise ExerciseTypeNotFoundError(parsed.exercise_type_name, available_names)
 
-    # Resolve target_total / daily_target
-    target_total = parsed.target_total
-    daily_target = parsed.daily_target
-
-    if target_total is None and daily_target is None:
-        raise ValueError("Please specify either a total target (e.g. '2000 reps total') or a daily target (e.g. '50 reps daily').")
-
-    if target_total is not None and daily_target is None:
-        daily_target = math.ceil(target_total / duration_days)
-    elif daily_target is not None and target_total is None:
-        # daily_target is stored; target_total computed on read
-        pass
-    else:
-        # Both provided — validate consistency; use target_total-derived daily_target
-        expected_daily = math.ceil(target_total / duration_days)
-        if abs(daily_target - expected_daily) > TARGET_CONSISTENCY_TOLERANCE:
-            raise ValueError(
-                f"Inconsistent targets: {target_total} total over {duration_days} days implies "
-                f"~{expected_daily}/day, but '{daily_target}/day' was also specified. "
-                "Please provide only one or ensure they match."
-            )
-        daily_target = expected_daily
-
-    if daily_target < 1:
-        raise ValueError("daily_target must be at least 1.")
+    daily_target = _compute_daily_target(parsed.target_total, parsed.daily_target, duration_days)
 
     challenge_data = ExerciseChallengeCreate(
         exercise_type_id=exercise_type.id,
         start_date=start_date,
         end_date=end_date,
         daily_target=daily_target,
-        challenge_name=challenge_name,
+        challenge_name=parsed.challenge_name,
         is_active=True,
         is_default=False,
     )

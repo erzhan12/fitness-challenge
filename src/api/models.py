@@ -166,10 +166,15 @@ class ChallengePromptRequest(BaseModel):
     @field_validator("text")
     @classmethod
     def validate_safe_input(cls, v: str) -> str:
-        # Normalize: strip and collapse internal whitespace to defeat obfuscation
         import re
+        import unicodedata
         v = v.strip()
-        normalized = re.sub(r"\s+", " ", v).lower()
+        # Normalize Unicode (e.g. fullwidth chars, accented lookalikes) then
+        # collapse whitespace and strip non-alphanumeric to defeat obfuscation
+        # like "ign0re", zero-width spaces, or spaced-out letters.
+        decomposed = unicodedata.normalize("NFKD", v)
+        alpha_only = re.sub(r"[^a-zA-Z\s:\[\]]", "", decomposed).lower()
+        normalized = re.sub(r"\s+", " ", alpha_only)
         suspicious_patterns = [
             "ignore previous", "ignore all", "ignore above",
             "disregard prior", "disregard previous",

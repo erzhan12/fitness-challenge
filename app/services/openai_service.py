@@ -21,7 +21,7 @@ class LLMUnavailableError(Exception):
 default_headers = {}
 if "openrouter.ai" in settings.LLM_BASE_URL.lower():
     default_headers = {
-        "HTTP-Referer": "https://github.com/yourusername/fitness-challenge",  # Optional: your app URL
+        "HTTP-Referer": settings.REPO_URL,
         "X-Title": "Fitness Challenge Bot",  # Optional: your app name
     }
     logger.info("Detected OpenRouter, adding required headers")

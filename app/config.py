@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     ADMIN_API_KEY: str  # For securing cron endpoints
 
     # App
+    REPO_URL: str = "https://github.com/erzhan12/fitness-challenge"
     TZ: str = "Asia/Almaty"
     TARGET_CHAT_ID: int | None = None
     SUPERUSER_TELEGRAM_IDS: list[int] = []
