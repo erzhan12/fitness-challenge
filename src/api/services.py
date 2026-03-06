@@ -8,8 +8,11 @@ Migrated to use Django ORM via repositories instead of direct Supabase calls.
 """
 
 import math
-from datetime import date, datetime
-from typing import Optional, List, Dict, Any, Tuple
+from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING, Optional, List, Dict, Any, Tuple
+
+if TYPE_CHECKING:
+    from src.core.models import ExerciseType as ExerciseTypeModel
 
 try:
     from zoneinfo import ZoneInfo
@@ -353,7 +356,7 @@ class ExerciseTypeNotFoundError(Exception):
         )
 
 
-def _resolve_exercise_type(name: str, exercise_type_models: List) -> Optional[Any]:
+def _resolve_exercise_type(name: str, exercise_type_models: list) -> Optional["ExerciseTypeModel"]:
     """Look up exercise type by exact name, then by case-insensitive alias."""
     match = next(
         (et for et in exercise_type_models if et.name == name),
@@ -375,6 +378,9 @@ def _compute_daily_target(
     duration_days: int,
 ) -> int:
     """Derive daily_target from target_total/daily_target, validating consistency."""
+    if duration_days < 1:
+        raise ValueError("duration_days must be at least 1.")
+
     if target_total is None and daily_target is None:
         raise ValueError(
             "Please specify either a total target (e.g. '2000 reps total') "
@@ -402,7 +408,6 @@ def _compute_daily_target(
 
 def _validate_challenge_dates(start_date: date, today: date) -> None:
     """Validate that start_date is not unreasonably far in the past."""
-    from datetime import timedelta
     if start_date < today - timedelta(days=365):
         raise ValueError(
             f"start_date ({start_date}) is more than a year in the past. "
@@ -424,8 +429,6 @@ async def create_challenge_from_prompt(
         ValueError: If LLM parsing fails or extracted data is invalid.
         ExerciseTypeNotFoundError: If the exercise type name is not found for this user.
     """
-    from datetime import timedelta
-
     today = datetime.now(TZ).date()
 
     # Fetch all exercise types for this user to pass to LLM and for lookup

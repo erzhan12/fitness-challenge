@@ -169,12 +169,19 @@ class ChallengePromptRequest(BaseModel):
         import re
         import unicodedata
         v = v.strip()
-        # Normalize Unicode (e.g. fullwidth chars, accented lookalikes) then
-        # collapse whitespace and strip non-alphanumeric to defeat obfuscation
-        # like "ign0re", zero-width spaces, or spaced-out letters.
+        # Normalize Unicode (e.g. fullwidth chars, accented lookalikes)
         decomposed = unicodedata.normalize("NFKD", v)
-        alpha_only = re.sub(r"[^a-zA-Z\s:\[\]]", "", decomposed).lower()
-        normalized = re.sub(r"\s+", " ", alpha_only)
+        # Map common homoglyphs (Cyrillic/Greek lookalikes) and leet-speak to Latin
+        _homoglyph_map = str.maketrans(
+            "аеорсухіјёАВЕНІКМОРСТХοеіа0134578",
+            "aeopcyxijëABEHIKMOPCTXoeiaoieastb",
+        )
+        transliterated = decomposed.translate(_homoglyph_map)
+        # Strip non-Latin-alpha (removes digits, zero-width chars, symbols)
+        # then collapse any resulting gaps so "ign0re" → "ignore" not "ign re"
+        words = transliterated.split()
+        cleaned_words = [re.sub(r"[^a-zA-Z:\[\]]", "", w).lower() for w in words]
+        normalized = " ".join(w for w in cleaned_words if w)
         suspicious_patterns = [
             "ignore previous", "ignore all", "ignore above",
             "disregard prior", "disregard previous",
