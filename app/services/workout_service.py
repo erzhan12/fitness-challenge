@@ -735,16 +735,23 @@ async def process_incoming_message(
                 await send_telegram_message(chat_id, rejected_message)
             return
 
-        if text_lower == "/start":
+        if text_lower in ("/start", "/help"):
+            is_help = text_lower == "/help"
+            header = (
+                "📖 <b>Available Commands</b>\n\n"
+                if is_help
+                else "👋 <b>Welcome to Fitness Challenge Bot!</b>\n\n"
+            )
             welcome_message = (
-                "👋 <b>Welcome to Fitness Challenge Bot!</b>\n\n"
-                "I help you track your workouts. Just send me your exercises:\n\n"
+                header
+                + "I help you track your workouts. Just send me your exercises:\n\n"
                 "Examples:\n"
                 "• <code>20 pushups</code>\n"
                 "• <code>30 squats</code>\n"
                 "• <code>2 min plank</code>\n"
                 "• <code>20 pushups and 30 squats</code>\n\n"
                 "<b>Commands:</b>\n"
+                "• <code>/help</code> - Show this help message\n"
                 "• <code>/status</code> - Check your registration status\n"
                 "• <code>/challenge</code> - Create a new challenge via AI\n"
                 "• <code>/undo</code> - Remove last log entry\n"
