@@ -44,3 +44,45 @@ async def send_telegram_message(chat_id: int, text: str, parse_mode: str = "HTML
             logger.error(f"Failed to send Telegram message: {e}")
             # We don't raise here to avoid crashing the processing flow after DB writes
             return None
+
+
+async def send_telegram_message_with_keyboard(
+    chat_id: int,
+    text: str,
+    reply_markup: dict,
+    parse_mode: str = "HTML",
+):
+    """Sends a message with an inline keyboard to a Telegram chat."""
+    url = f"{TELEGRAM_API_BASE}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": parse_mode,
+        "reply_markup": reply_markup,
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, json=payload, timeout=10.0)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to send Telegram message with keyboard: {e}")
+            return None
+
+
+async def answer_callback_query(callback_query_id: str, text: str = None):
+    """Answers a callback query to dismiss the loading spinner on inline buttons."""
+    url = f"{TELEGRAM_API_BASE}/answerCallbackQuery"
+    payload = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, json=payload, timeout=5.0)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to answer callback query: {e}")
+            return None

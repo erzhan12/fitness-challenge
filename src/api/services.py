@@ -511,6 +511,27 @@ def _build_challenge_data(
     )
 
 
+async def validate_and_prepare_challenge(
+    text: str,
+    user_id: int,
+) -> Tuple[ChallengePromptParsed, ExerciseChallengeCreate]:
+    """Parse and validate a natural language challenge description without creating it.
+
+    Returns:
+        Tuple of (parsed LLM data, ready-to-create challenge data).
+
+    Raises:
+        ValueError: If LLM parsing fails or extracted data is invalid.
+        ExerciseTypeNotFoundError: If the exercise type name is not found for this user.
+    """
+    today = datetime.now(TZ).date()
+    exercise_type_models, exercise_types_for_llm = await _fetch_and_convert_exercise_types(user_id)
+    raw_parsed = await parse_challenge_prompt(text, exercise_types_for_llm, today)
+    parsed = _parse_and_validate_llm_response(raw_parsed, text)
+    challenge_data = _build_challenge_data(parsed, exercise_type_models, today)
+    return parsed, challenge_data
+
+
 async def create_challenge_from_prompt(
     text: str,
     user_id: int,
@@ -522,11 +543,7 @@ async def create_challenge_from_prompt(
         ValueError: If LLM parsing fails or extracted data is invalid.
         ExerciseTypeNotFoundError: If the exercise type name is not found for this user.
     """
-    today = datetime.now(TZ).date()
-    exercise_type_models, exercise_types_for_llm = await _fetch_and_convert_exercise_types(user_id)
-    raw_parsed = await parse_challenge_prompt(text, exercise_types_for_llm, today)
-    parsed = _parse_and_validate_llm_response(raw_parsed, text)
-    challenge_data = _build_challenge_data(parsed, exercise_type_models, today)
+    _, challenge_data = await validate_and_prepare_challenge(text, user_id)
     return await create_challenge(challenge_data, user_id=user_id)
 
 

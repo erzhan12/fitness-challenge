@@ -46,9 +46,17 @@ class TelegramMessage(BaseModel):
     text: Optional[str] = None
 
 
+class TelegramCallbackQuery(BaseModel):
+    id: str
+    from_: Optional[TelegramUser] = Field(None, alias="from")
+    message: Optional[TelegramMessage] = None
+    data: Optional[str] = None
+
+
 class TelegramUpdate(BaseModel):
     update_id: int
     message: Optional[TelegramMessage] = None
+    callback_query: Optional[TelegramCallbackQuery] = None
 
 
 # --- Database/Application Models ---
