@@ -680,6 +680,12 @@ async def process_incoming_message(
         # Handle commands
         text_lower = text.strip().lower()
 
+        # Strip @botname suffix from commands (e.g. "/challenge@MyBot" -> "/challenge")
+        if text_lower.startswith("/") and "@" in text_lower.split()[0]:
+            parts = text_lower.split(maxsplit=1)
+            cmd = parts[0].split("@")[0]
+            text_lower = cmd if len(parts) == 1 else f"{cmd} {parts[1]}"
+
         # Handle /status command BEFORE approval gate - allow all users to check status
         if text_lower == "/status":
             status_emoji = {
