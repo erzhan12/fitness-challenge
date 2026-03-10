@@ -1582,13 +1582,17 @@ async def process_callback_query(
 
     flow = get_flow(telegram_user_id)
 
-    if data == "confirm_challenge":
+    if data in ("confirm_challenge", "cancel_challenge"):
         if not flow or flow.step != "awaiting_confirm":
             await answer_callback_query(
                 callback_query_id, "Session expired. Send /challenge to start again."
             )
             return
 
+        # Use the chat_id from the original flow to ensure messages go to the right chat
+        target_chat_id = flow.chat_id
+
+    if data == "confirm_challenge":
         try:
             user = await app_user_repo.get_by_telegram_user_id(telegram_user_id)
             if not user or not user.is_approved:
@@ -1602,7 +1606,7 @@ async def process_callback_query(
             total_days = result.total_days
             target_total = result.daily_target * total_days
             await send_telegram_message(
-                chat_id,
+                target_chat_id,
                 f"✅ <b>Challenge Created!</b>\n\n"
                 f"📝 <b>{escape(result.challenge_name)}</b>\n"
                 f"🎯 {target_total:,} total · ~{result.daily_target:,}/day\n"
@@ -1615,7 +1619,7 @@ async def process_callback_query(
             clear_flow(telegram_user_id)
             logger.exception("Failed to create challenge from callback")
             await send_telegram_message(
-                chat_id,
+                target_chat_id,
                 f"❌ Failed to create challenge: {escape(str(e))}",
             )
             await answer_callback_query(callback_query_id, "Error creating challenge.")
@@ -1623,7 +1627,7 @@ async def process_callback_query(
     elif data == "cancel_challenge":
         clear_flow(telegram_user_id)
         await send_telegram_message(
-            chat_id, "❌ Challenge creation cancelled."
+            target_chat_id, "❌ Challenge creation cancelled."
         )
         await answer_callback_query(callback_query_id, "Cancelled.")
 
