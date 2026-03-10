@@ -44,6 +44,7 @@ async def set_webhook():
         "url": webhook_url,
         "drop_pending_updates": True,
         "secret_token": secret_token,
+        "allowed_updates": ["message", "callback_query"],
     }
 
     async with httpx.AsyncClient() as client:

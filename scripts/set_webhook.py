@@ -156,7 +156,10 @@ def set_webhook(drop_pending_updates=False):
     api_url = f"https://api.telegram.org/bot{token}/setWebhook"
     print(f"[DEBUG] API URL: {api_url}")
 
-    data = {"url": webhook_url}
+    data = {
+        "url": webhook_url,
+        "allowed_updates": ["message", "callback_query"],
+    }
     print(f"[DEBUG] Initial data payload: {data}")
 
     # Add secret token for webhook verification (security feature)
