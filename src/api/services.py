@@ -7,6 +7,7 @@ bot while returning structured data instead of HTML.
 Migrated to use Django ORM via repositories instead of direct Supabase calls.
 """
 
+import logging
 import math
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Optional, List, Dict, Any, Tuple
@@ -50,6 +51,11 @@ from app.models import ExerciseType as TelegramExerciseType
 from app.services.openai_service import parse_challenge_prompt
 
 TZ = ZoneInfo(settings.TZ)
+logger = logging.getLogger(__name__)
+
+# Upper-bound limits for LLM-created challenges
+MAX_DURATION_DAYS = 365
+MAX_DAILY_TARGET = 10_000
 
 # Maximum allowed difference between LLM-provided daily_target and the computed
 # ceil(target_total / duration_days).  Set to 1 because ceil() can introduce a
@@ -450,8 +456,12 @@ async def create_challenge_from_prompt(
     raw_parsed = await parse_challenge_prompt(text, exercise_types_for_llm, today)
     try:
         parsed = ChallengePromptParsed(**raw_parsed)
-    except Exception as e:
-        raise ValueError(f"LLM returned invalid data: {e}")
+    except Exception:
+        logger.warning("LLM returned unparseable data for prompt: %s | raw: %s", text, raw_parsed, exc_info=True)
+        raise ValueError(
+            "Could not understand your challenge description. "
+            "Please include exercise type, duration, and daily target."
+        )
 
     if not parsed.is_valid:
         raise ValueError(parsed.error_reason or "Could not parse challenge description.")
@@ -464,6 +474,15 @@ async def create_challenge_from_prompt(
         raise ValueError("LLM did not return a valid duration (must be >= 1 day).")
     if not parsed.challenge_name:
         raise ValueError("LLM did not return a challenge name.")
+
+    # Upper-bound sanity checks
+    if parsed.duration_days > MAX_DURATION_DAYS:
+        raise ValueError(f"Duration too long ({parsed.duration_days} days). Maximum is {MAX_DURATION_DAYS} days.")
+    daily = parsed.daily_target if parsed.daily_target is not None else (
+        math.ceil(parsed.target_total / parsed.duration_days) if parsed.target_total else None
+    )
+    if daily is not None and daily > MAX_DAILY_TARGET:
+        raise ValueError(f"Daily target too high ({daily}). Maximum is {MAX_DAILY_TARGET} per day.")
 
     start_date = parsed.start_date
     duration_days = parsed.duration_days

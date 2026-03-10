@@ -446,6 +446,86 @@ class TestCreateChallengeFromPrompt:
         assert response.status_code == 400
         assert "past" in response.json()["detail"].lower()
 
+    def test_create_from_prompt_duration_too_long(
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
+    ):
+        """Test 400 when duration exceeds MAX_DURATION_DAYS (365)."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+
+        with patch("src.api.services.parse_challenge_prompt", new_callable=AsyncMock) as mock_parse:
+            mock_parse.return_value = self._llm_payload(duration_days=500)
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "pushups challenge for 500 days"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 400
+        assert "Maximum is 365 days" in response.json()["detail"]
+
+    def test_create_from_prompt_daily_target_too_high(
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
+    ):
+        """Test 400 when daily_target exceeds MAX_DAILY_TARGET (10000)."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+
+        with patch("src.api.services.parse_challenge_prompt", new_callable=AsyncMock) as mock_parse:
+            mock_parse.return_value = self._llm_payload(daily_target=50000, target_total=None)
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "pushups 50000 reps daily for 30 days"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 400
+        assert "Maximum is 10000 per day" in response.json()["detail"]
+
+    def test_create_from_prompt_target_total_exceeds_daily_cap(
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
+    ):
+        """Test 400 when target_total / duration yields daily > MAX_DAILY_TARGET."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+
+        with patch("src.api.services.parse_challenge_prompt", new_callable=AsyncMock) as mock_parse:
+            # 600_001 / 30 = 20_000 daily — exceeds 10_000 cap
+            mock_parse.return_value = self._llm_payload(
+                target_total=600_001, daily_target=None, duration_days=30
+            )
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "pushups 600001 total in 30 days"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 400
+        assert "Maximum is 10000 per day" in response.json()["detail"]
+
+    def test_create_from_prompt_invalid_llm_data(
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
+    ):
+        """Test 400 with friendly message when LLM returns structurally invalid data."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+
+        with patch("src.api.services.parse_challenge_prompt", new_callable=AsyncMock) as mock_parse:
+            # Return data that will fail Pydantic validation
+            mock_parse.return_value = {"duration_days": "not-a-number", "garbage": True}
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "some weird input here"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 400
+        assert "could not understand" in response.json()["detail"].lower()
+
     def test_create_from_prompt_unauthorized(self, client):
         """Test 401 when no API key provided."""
         response = client.post(

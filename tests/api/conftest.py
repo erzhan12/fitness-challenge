@@ -20,6 +20,14 @@ from src.core.models import (  # noqa: E402
 )
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Reset slowapi rate limiter state before each test."""
+    from src.api.routers.challenges import limiter
+    limiter.reset()
+    yield
+
+
 @pytest.fixture
 def client():
     """Create a test client for the API."""
