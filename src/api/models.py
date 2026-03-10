@@ -6,7 +6,7 @@ and HTML formatting to remain stable for future mobile/web clients.
 
 import datetime as dt
 from typing import Optional, List
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 
 # =============================================================================
@@ -145,6 +145,74 @@ class ExerciseChallengeUpdate(BaseModel):
         if isinstance(data, dict) and "daily_target" in data and data["daily_target"] is None:
             raise ValueError("daily_target cannot be null")
         return data
+
+
+# =============================================================================
+# Challenge from Prompt
+# =============================================================================
+
+
+class ChallengePromptRequest(BaseModel):
+    """Request model for creating a challenge from a natural language prompt."""
+
+    text: str = Field(
+        ...,
+        description="Natural language description of the challenge",
+        examples=["pushups challenge for 30 days starting tomorrow, 2000 reps total"],
+        min_length=5,
+        max_length=500,
+    )
+
+    @field_validator("text")
+    @classmethod
+    def validate_safe_input(cls, v: str) -> str:
+        import re
+        import unicodedata
+        v = v.strip()
+        # Normalize Unicode (e.g. fullwidth chars, accented lookalikes)
+        decomposed = unicodedata.normalize("NFKD", v)
+        # Map common homoglyphs (Cyrillic/Greek lookalikes) and leet-speak to Latin
+        _homoglyph_map = str.maketrans(
+            "аеорсухіјёАВЕНІКМОРСТХοеіа0134578",
+            "aeopcyxijëABEHIKMOPCTXoeiaoieastb",
+        )
+        transliterated = decomposed.translate(_homoglyph_map)
+        # Strip non-Latin-alpha (removes digits, zero-width chars, symbols)
+        # then collapse any resulting gaps so "ign0re" → "ignore" not "ign re"
+        words = transliterated.split()
+        cleaned_words = [re.sub(r"[^a-zA-Z:\[\]]", "", w).lower() for w in words]
+        normalized = " ".join(w for w in cleaned_words if w)
+        suspicious_patterns = [
+            "ignore previous", "ignore all", "ignore above",
+            "disregard prior", "disregard previous",
+            "forget everything", "forget above",
+            "neglect above",
+            "system:", "assistant:", "[inst]",
+            "you are now",
+        ]
+        for pattern in suspicious_patterns:
+            if pattern in normalized:
+                raise ValueError("Invalid input format")
+        return v
+
+
+class ChallengePromptParsed(BaseModel):
+    """Intermediate model representing what the LLM extracted from the prompt."""
+
+    is_valid: bool = Field(..., description="Whether the LLM successfully parsed the prompt")
+    error_reason: Optional[str] = Field(None, description="Error reason if is_valid is False")
+    exercise_type_name: Optional[str] = Field(
+        None, description="Matched exercise type name (internal name)"
+    )
+    start_date: Optional[dt.date] = Field(None, description="Challenge start date")
+    duration_days: Optional[int] = Field(None, description="Number of days", ge=1)
+    target_total: Optional[int] = Field(
+        None, description="Total reps/units for the full challenge", ge=1
+    )
+    daily_target: Optional[int] = Field(
+        None, description="Daily reps/units target", ge=1
+    )
+    challenge_name: Optional[str] = Field(None, description="Name for the challenge")
 
 
 # =============================================================================

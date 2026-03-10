@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     LLM_API_KEY: str
     LLM_BASE_URL: str
     LLM_MODEL: str
+    # 500 tokens: the structured JSON response (exercise type, dates, targets,
+    # challenge name, error_reason) is ~100-200 tokens; 500 gives 2-3x headroom
+    # for verbose LLM output while preventing runaway completions.
+    LLM_CHALLENGE_MAX_TOKENS: int = 500
+    # 30s: OpenAI p95 latency for gpt-4o-mini is ~5-10s; 30s accommodates cold
+    # starts and transient slowdowns without making the user wait indefinitely.
+    LLM_CHALLENGE_TIMEOUT: float = 30.0
+    LLM_MOTIVATION_MAX_TOKENS: int = 60
 
     # Supabase (migration-only; optional at runtime)
     SUPABASE_URL: str | None = None
@@ -26,6 +34,7 @@ class Settings(BaseSettings):
     ADMIN_API_KEY: str  # For securing cron endpoints
 
     # App
+    REPO_URL: str = "https://github.com/erzhan12/fitness-challenge"
     TZ: str = "Asia/Almaty"
     TARGET_CHAT_ID: int | None = None
     SUPERUSER_TELEGRAM_IDS: list[int] = []
