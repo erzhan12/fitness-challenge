@@ -1621,9 +1621,9 @@ async def process_callback_query(
             )
             await answer_callback_query(callback_query_id, "Challenge created!")
 
-        except Exception:
+        except Exception as e:
             clear_flow(telegram_user_id)
-            logger.exception("Failed to create challenge from callback")
+            logger.exception("Failed to create challenge: %s: %s", type(e).__name__, e)
             await send_telegram_message(
                 target_chat_id,
                 "❌ Failed to create challenge. Please try again later or contact support.",
