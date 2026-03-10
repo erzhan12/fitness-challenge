@@ -1599,6 +1599,13 @@ async def process_callback_query(
         target_chat_id = flow.chat_id
 
     if data == "confirm_challenge":
+        # Re-check flow in case it expired between the guard above and here
+        if not flow or not flow.challenge_data:
+            await answer_callback_query(
+                callback_query_id, "Session expired. Send /challenge to start again."
+            )
+            return
+
         try:
             user = await app_user_repo.get_by_telegram_user_id(telegram_user_id)
             if not user or not user.is_approved:
@@ -1621,12 +1628,12 @@ async def process_callback_query(
             )
             await answer_callback_query(callback_query_id, "Challenge created!")
 
-        except Exception as e:
+        except Exception:
             clear_flow(telegram_user_id)
             logger.exception("Failed to create challenge from callback")
             await send_telegram_message(
                 target_chat_id,
-                f"❌ Failed to create challenge: {escape(str(e))}",
+                "❌ Failed to create challenge. Please try again later or contact support.",
             )
             await answer_callback_query(callback_query_id, "Error creating challenge.")
 

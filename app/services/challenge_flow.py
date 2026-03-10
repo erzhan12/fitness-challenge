@@ -3,9 +3,11 @@
 Manages two-step flow: awaiting_prompt -> awaiting_confirm -> done.
 Also handles per-user rate limiting for LLM challenge creation calls.
 
-Note: State is per-process. Multi-worker deployments (uvicorn --workers N)
-will have independent state per worker. This is acceptable for a single-worker
-Telegram bot deployment.
+CRITICAL: This module stores state in process-local dicts. Do NOT deploy
+with multiple uvicorn workers (--workers N > 1) — each worker maintains
+independent state, causing session loss when requests are load-balanced.
+For production scaling, replace in-memory state with Redis or
+database-backed session storage.
 """
 
 import time
