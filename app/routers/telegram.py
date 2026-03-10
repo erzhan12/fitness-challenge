@@ -72,7 +72,7 @@ async def telegram_webhook(
         cb = update.callback_query
         if not cb.data or len(cb.data) > 100:
             return {"status": "ignored", "reason": "invalid callback data"}
-        if cb.from_ and cb.message and cb.data:
+        if cb.from_ and cb.message and cb.message.chat and cb.data:
             background_tasks.add_task(
                 process_callback_query,
                 cb.id,

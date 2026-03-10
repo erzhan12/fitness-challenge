@@ -10,6 +10,7 @@ For production scaling, replace in-memory state with Redis or
 database-backed session storage.
 """
 
+import os
 import time
 import logging
 from dataclasses import dataclass, field
@@ -19,6 +20,16 @@ from typing import Dict, Optional
 from src.api.models import ChallengePromptParsed, ExerciseChallengeCreate
 
 logger = logging.getLogger(__name__)
+
+# Warn at import time if multi-worker deployment is detected
+_workers = int(os.environ.get("WEB_CONCURRENCY", os.environ.get("UVICORN_WORKERS", "1")))
+if _workers > 1:
+    logger.warning(
+        "challenge_flow uses in-memory state but %d workers detected "
+        "(WEB_CONCURRENCY/UVICORN_WORKERS). Sessions will be lost across workers. "
+        "Use --workers 1 or switch to Redis/DB-backed sessions.",
+        _workers,
+    )
 
 FLOW_TTL_SECONDS = 300  # 5 minutes
 RATE_LIMIT_WINDOW_SECONDS = 3600  # 1 hour
@@ -93,6 +104,9 @@ def check_rate_limit(telegram_user_id: int) -> bool:
     with _rate_limits_lock:
         timestamps = _rate_limits.get(telegram_user_id, [])
         timestamps = [t for t in timestamps if t > cutoff]
+        if not timestamps:
+            _rate_limits.pop(telegram_user_id, None)
+            return True
         _rate_limits[telegram_user_id] = timestamps
         return len(timestamps) < RATE_LIMIT_MAX_CALLS
 

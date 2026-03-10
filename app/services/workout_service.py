@@ -1589,7 +1589,7 @@ async def process_callback_query(
     flow = get_flow(telegram_user_id)
 
     if data in ("confirm_challenge", "cancel_challenge"):
-        if not flow or flow.step != "awaiting_confirm":
+        if not flow or flow.step != "awaiting_confirm" or not flow.challenge_data:
             await answer_callback_query(
                 callback_query_id, "Session expired. Send /challenge to start again."
             )
@@ -1599,13 +1599,6 @@ async def process_callback_query(
         target_chat_id = flow.chat_id
 
     if data == "confirm_challenge":
-        # Re-check flow in case it expired between the guard above and here
-        if not flow or not flow.challenge_data:
-            await answer_callback_query(
-                callback_query_id, "Session expired. Send /challenge to start again."
-            )
-            return
-
         try:
             user = await app_user_repo.get_by_telegram_user_id(telegram_user_id)
             if not user or not user.is_approved:
