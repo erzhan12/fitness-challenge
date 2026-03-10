@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Header, BackgroundTasks, HTTPException
 from app.config import settings
 from app.models import TelegramUpdate
-from app.services.workout_service import process_incoming_message
+from app.services.workout_service import process_incoming_message, process_callback_query
 from collections import OrderedDict
 from threading import Lock
 import logging
@@ -66,6 +66,22 @@ async def telegram_webhook(
                 int(age_seconds),
             )
             return {"status": "ignored", "reason": "stale update"}
+
+    # Handle callback queries (inline button presses)
+    if update.callback_query:
+        cb = update.callback_query
+        if not cb.data or len(cb.data) > 100 or not cb.data.replace("_", "").isalnum():
+            return {"status": "ignored", "reason": "invalid callback data"}
+        if cb.from_ and cb.message and cb.message.chat and cb.data:
+            background_tasks.add_task(
+                process_callback_query,
+                cb.id,
+                cb.data,
+                cb.from_.id,
+                cb.message.chat.id,
+            )
+            return {"status": "ok"}
+        return {"status": "ignored", "reason": "incomplete callback query"}
 
     if not update.message or not update.message.text:
         return {"status": "ignored", "reason": "no text message"}

@@ -15,9 +15,15 @@ from app.services.openai_service import (
     parse_workout_message,
     generate_motivational_response,
     generate_reminder_motivation,
+    LLMUnavailableError,
 )
 from app.services.deterministic_parser import get_numbers_from_message
-from app.services.telegram_client import send_telegram_message, send_chat_action
+from app.services.telegram_client import (
+    send_telegram_message,
+    send_chat_action,
+    send_telegram_message_with_keyboard,
+    answer_callback_query,
+)
 from app.services.habit_reward_client import send_habit_completion, HabitCompletionResponse
 from app.config import settings
 from src.core import setup_django
@@ -42,6 +48,17 @@ from src.api.services import (
     compute_exercise_stats,
     list_current_active_challenges,
     get_ordered_challenges,
+    validate_and_prepare_challenge,
+    create_challenge,
+    ExerciseTypeNotFoundError,
+)
+from app.services.challenge_flow import (
+    start_flow,
+    get_flow,
+    set_awaiting_confirm,
+    clear_flow,
+    check_rate_limit,
+    record_llm_call,
 )
 
 logger = logging.getLogger(__name__)
@@ -663,6 +680,12 @@ async def process_incoming_message(
         # Handle commands
         text_lower = text.strip().lower()
 
+        # Strip @botname suffix from commands (e.g. "/challenge@MyBot" -> "/challenge")
+        if text_lower.startswith("/") and "@" in text_lower.split()[0]:
+            parts = text_lower.split(maxsplit=1)
+            cmd = parts[0].split("@")[0]
+            text_lower = cmd if len(parts) == 1 else f"{cmd} {parts[1]}"
+
         # Handle /status command BEFORE approval gate - allow all users to check status
         if text_lower == "/status":
             status_emoji = {
@@ -723,6 +746,7 @@ async def process_incoming_message(
                 "• <code>20 pushups and 30 squats</code>\n\n"
                 "<b>Commands:</b>\n"
                 "• <code>/status</code> - Check your registration status\n"
+                "• <code>/challenge</code> - Create a new challenge via AI\n"
                 "• <code>/undo</code> - Remove last log entry\n"
                 "• <code>/recent [N]</code> - Show recent logs (default: 5)\n"
                 "• <code>/delete &lt;id&gt;</code> - Delete a specific log\n"
@@ -818,6 +842,26 @@ async def process_incoming_message(
                 await send_telegram_message(
                     chat_id, f"❌ Invalid log ID: {parts[1]}\nLog ID must be a number."
                 )
+            return
+
+        # Handle /challenge command
+        if text_lower == "/challenge":
+            start_flow(telegram_user_id, chat_id)
+            await send_telegram_message(
+                chat_id,
+                "📋 <b>Create a New Challenge</b>\n\n"
+                "Describe your challenge in one message, for example:\n"
+                "• <i>100 pushups in 30 days starting tomorrow</i>\n"
+                "• <i>500 squats over 2 weeks</i>\n"
+                "• <i>3000 pushups in 90 days</i>\n\n"
+                "⏱ You have 5 minutes to respond.",
+            )
+            return
+
+        # Check if user is in /challenge flow (awaiting prompt)
+        flow = get_flow(telegram_user_id)
+        if flow and flow.step == "awaiting_prompt" and not text.startswith("/"):
+            await _handle_challenge_prompt(text, telegram_user_id, user.id, chat_id)
             return
 
         # Handle /status command - show registration status
@@ -1449,3 +1493,149 @@ async def send_evening_reminder(reminder_hour: int):
             "Unexpected error during reminder computation/send; claim cleared"
         )
         raise
+
+
+# =============================================================================
+# Challenge creation flow (Telegram /challenge command)
+# =============================================================================
+
+
+def _format_challenge_preview(parsed, challenge_data) -> str:
+    """Format a challenge preview message for Telegram."""
+    total_days = (challenge_data.end_date - challenge_data.start_date).days + 1
+    target_total = challenge_data.daily_target * total_days
+    return (
+        "📋 <b>New Challenge Preview</b>\n\n"
+        f"📝 <b>Name:</b> {escape(parsed.challenge_name)}\n"
+        f"🏋️ <b>Exercise:</b> {escape(parsed.exercise_type_name)}\n"
+        f"📅 <b>Start:</b> {challenge_data.start_date}\n"
+        f"📅 <b>End:</b> {challenge_data.end_date}\n"
+        f"🎯 <b>Total target:</b> {target_total:,}\n"
+        f"📊 <b>Daily target:</b> ~{challenge_data.daily_target:,}/day\n\n"
+        "Ready to create this challenge?"
+    )
+
+
+CONFIRM_KEYBOARD = {
+    "inline_keyboard": [
+        [
+            {"text": "✅ Confirm", "callback_data": "confirm_challenge"},
+            {"text": "❌ Cancel", "callback_data": "cancel_challenge"},
+        ]
+    ]
+}
+
+
+async def _handle_challenge_prompt(
+    text: str, telegram_user_id: int, user_id: int, chat_id: int
+) -> None:
+    """Handle the user's natural language challenge description."""
+    if not check_rate_limit(telegram_user_id):
+        clear_flow(telegram_user_id)
+        await send_telegram_message(
+            chat_id,
+            "⚠️ You've reached the limit of 10 challenge creations per hour. "
+            "Please try again later.",
+        )
+        return
+
+    await send_chat_action(chat_id)
+    record_llm_call(telegram_user_id)
+
+    try:
+        parsed, challenge_data = await validate_and_prepare_challenge(text, user_id)
+    except LLMUnavailableError:
+        clear_flow(telegram_user_id)
+        await send_telegram_message(
+            chat_id,
+            "⚠️ AI service is temporarily unavailable. Please try again later.",
+        )
+        return
+    except ExerciseTypeNotFoundError as e:
+        clear_flow(telegram_user_id)
+        available = ", ".join(e.available_names) if e.available_names else "none"
+        await send_telegram_message(
+            chat_id,
+            f"❌ Exercise type '<b>{escape(e.exercise_type_name)}</b>' not found.\n\n"
+            f"Your available types: {escape(available)}\n\n"
+            "Send /challenge to try again.",
+        )
+        return
+    except ValueError as e:
+        clear_flow(telegram_user_id)
+        await send_telegram_message(
+            chat_id,
+            f"❌ {escape(str(e))}\n\nSend /challenge to try again.",
+        )
+        return
+
+    set_awaiting_confirm(telegram_user_id, parsed, challenge_data)
+
+    preview = _format_challenge_preview(parsed, challenge_data)
+    await send_telegram_message_with_keyboard(
+        chat_id, preview, CONFIRM_KEYBOARD
+    )
+
+
+async def process_callback_query(
+    callback_query_id: str,
+    data: str,
+    telegram_user_id: int,
+    chat_id: int,
+) -> None:
+    """Handle inline button presses for the /challenge flow."""
+    _ensure_orm()
+
+    flow = get_flow(telegram_user_id)
+
+    if data in ("confirm_challenge", "cancel_challenge"):
+        if not flow or flow.step != "awaiting_confirm" or not flow.challenge_data:
+            await answer_callback_query(
+                callback_query_id, "Session expired. Send /challenge to start again."
+            )
+            return
+
+        # Use the chat_id from the original flow to ensure messages go to the right chat
+        target_chat_id = flow.chat_id
+
+    if data == "confirm_challenge":
+        try:
+            user = await app_user_repo.get_by_telegram_user_id(telegram_user_id)
+            if not user or not user.is_approved:
+                await answer_callback_query(callback_query_id, "User not found or not approved.")
+                clear_flow(telegram_user_id)
+                return
+
+            result = await create_challenge(flow.challenge_data, user_id=user.id)
+            clear_flow(telegram_user_id)
+
+            total_days = result.total_days
+            target_total = result.daily_target * total_days
+            await send_telegram_message(
+                target_chat_id,
+                f"✅ <b>Challenge Created!</b>\n\n"
+                f"📝 <b>{escape(result.challenge_name)}</b>\n"
+                f"🎯 {target_total:,} total · ~{result.daily_target:,}/day\n"
+                f"📅 {result.start_date} → {result.end_date}\n\n"
+                "Good luck! 💪",
+            )
+            await answer_callback_query(callback_query_id, "Challenge created!")
+
+        except Exception as e:
+            clear_flow(telegram_user_id)
+            logger.exception("Failed to create challenge: %s: %s", type(e).__name__, e)
+            await send_telegram_message(
+                target_chat_id,
+                "❌ Failed to create challenge. Please try again later or contact support.",
+            )
+            await answer_callback_query(callback_query_id, "Error creating challenge.")
+
+    elif data == "cancel_challenge":
+        clear_flow(telegram_user_id)
+        await send_telegram_message(
+            target_chat_id, "❌ Challenge creation cancelled."
+        )
+        await answer_callback_query(callback_query_id, "Cancelled.")
+
+    else:
+        await answer_callback_query(callback_query_id)
