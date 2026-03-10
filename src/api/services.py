@@ -49,13 +49,10 @@ from src.api.models import (
 )
 from app.models import ExerciseType as TelegramExerciseType
 from app.services.openai_service import parse_challenge_prompt
+from app.constants import MAX_DURATION_DAYS, MAX_DAILY_TARGET, MAX_START_DATE_DRIFT_DAYS
 
 TZ = ZoneInfo(settings.TZ)
 logger = logging.getLogger(__name__)
-
-# Upper-bound limits for LLM-created challenges
-MAX_DURATION_DAYS = 365
-MAX_DAILY_TARGET = 10_000
 
 # Maximum allowed difference between LLM-provided daily_target and the computed
 # ceil(target_total / duration_days).  Set to 1 because ceil() can introduce a
@@ -362,7 +359,9 @@ class ExerciseTypeNotFoundError(Exception):
         )
 
 
-def _resolve_exercise_type(name: str, exercise_type_models: list) -> Optional["ExerciseTypeModel"]:
+def _resolve_exercise_type(
+    name: str, exercise_type_models: List["ExerciseTypeModel"],
+) -> Optional["ExerciseTypeModel"]:
     """Look up exercise type by exact name, then by case-insensitive alias."""
     match = next(
         (et for et in exercise_type_models if et.name == name),
@@ -413,33 +412,24 @@ def _compute_daily_target(
 
 
 def _validate_challenge_dates(start_date: date, today: date) -> None:
-    """Validate that start_date is not unreasonably far in the past."""
-    if start_date < today - timedelta(days=365):
+    """Validate that start_date is not unreasonably far in the past or future."""
+    if start_date < today - timedelta(days=MAX_START_DATE_DRIFT_DAYS):
         raise ValueError(
             f"start_date ({start_date}) is more than a year in the past. "
             "Did you mean a future date?"
         )
+    if start_date > today + timedelta(days=MAX_START_DATE_DRIFT_DAYS):
+        raise ValueError(
+            f"start_date ({start_date}) is more than a year in the future. "
+            "Did you mean a closer date?"
+        )
 
 
-async def create_challenge_from_prompt(
-    text: str,
+async def _fetch_and_convert_exercise_types(
     user_id: int,
-) -> ExerciseChallengeOut:
-    """
-    Parse a natural language challenge description and create the challenge.
-
-    The LLM extracts: exercise_type_name, start_date, duration_days,
-    target_total and/or daily_target, challenge_name.
-
-    Raises:
-        ValueError: If LLM parsing fails or extracted data is invalid.
-        ExerciseTypeNotFoundError: If the exercise type name is not found for this user.
-    """
-    today = datetime.now(TZ).date()
-
-    # Fetch all exercise types for this user to pass to LLM and for lookup
+) -> Tuple[List["ExerciseTypeModel"], List[TelegramExerciseType]]:
+    """Fetch user's exercise types and convert to LLM-compatible format."""
     exercise_type_models = await exercise_type_repo.get_all(user_id=user_id)
-
     exercise_types_for_llm = [
         TelegramExerciseType(
             id=et.id,
@@ -451,9 +441,13 @@ async def create_challenge_from_prompt(
         )
         for et in exercise_type_models
     ]
+    return exercise_type_models, exercise_types_for_llm
 
-    # Call LLM and validate through Pydantic schema
-    raw_parsed = await parse_challenge_prompt(text, exercise_types_for_llm, today)
+
+def _parse_and_validate_llm_response(
+    raw_parsed: Dict[str, Any], text: str,
+) -> ChallengePromptParsed:
+    """Parse raw LLM output through Pydantic and validate required fields + bounds."""
     try:
         parsed = ChallengePromptParsed(**raw_parsed)
     except Exception:
@@ -484,6 +478,15 @@ async def create_challenge_from_prompt(
     if daily is not None and daily > MAX_DAILY_TARGET:
         raise ValueError(f"Daily target too high ({daily}). Maximum is {MAX_DAILY_TARGET} per day.")
 
+    return parsed
+
+
+def _build_challenge_data(
+    parsed: ChallengePromptParsed,
+    exercise_type_models: List["ExerciseTypeModel"],
+    today: date,
+) -> ExerciseChallengeCreate:
+    """Resolve exercise type, validate dates, compute targets, and build creation data."""
     start_date = parsed.start_date
     duration_days = parsed.duration_days
     end_date = start_date + timedelta(days=duration_days - 1)
@@ -497,7 +500,7 @@ async def create_challenge_from_prompt(
 
     daily_target = _compute_daily_target(parsed.target_total, parsed.daily_target, duration_days)
 
-    challenge_data = ExerciseChallengeCreate(
+    return ExerciseChallengeCreate(
         exercise_type_id=exercise_type.id,
         start_date=start_date,
         end_date=end_date,
@@ -506,6 +509,24 @@ async def create_challenge_from_prompt(
         is_active=True,
         is_default=False,
     )
+
+
+async def create_challenge_from_prompt(
+    text: str,
+    user_id: int,
+) -> ExerciseChallengeOut:
+    """
+    Parse a natural language challenge description and create the challenge.
+
+    Raises:
+        ValueError: If LLM parsing fails or extracted data is invalid.
+        ExerciseTypeNotFoundError: If the exercise type name is not found for this user.
+    """
+    today = datetime.now(TZ).date()
+    exercise_type_models, exercise_types_for_llm = await _fetch_and_convert_exercise_types(user_id)
+    raw_parsed = await parse_challenge_prompt(text, exercise_types_for_llm, today)
+    parsed = _parse_and_validate_llm_response(raw_parsed, text)
+    challenge_data = _build_challenge_data(parsed, exercise_type_models, today)
     return await create_challenge(challenge_data, user_id=user_id)
 
 

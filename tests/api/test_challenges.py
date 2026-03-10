@@ -713,6 +713,17 @@ class TestValidateChallengeDates:
         today = date(2026, 3, 7)
         _validate_challenge_dates(date(2026, 12, 1), today)
 
+    def test_exactly_365_days_ahead_ok(self):
+        from src.api.services import _validate_challenge_dates
+        today = date(2026, 3, 7)
+        _validate_challenge_dates(today + timedelta(days=365), today)
+
+    def test_366_days_ahead_raises(self):
+        from src.api.services import _validate_challenge_dates
+        today = date(2026, 3, 7)
+        with pytest.raises(ValueError, match="more than a year in the future"):
+            _validate_challenge_dates(today + timedelta(days=366), today)
+
 
 class TestResolveExerciseType:
     """Unit tests for _resolve_exercise_type helper."""
