@@ -26,7 +26,16 @@ from django.conf import settings
 from app.routers import telegram, admin
 
 # Import API routers
-from src.api.routers import exercises, challenges, logs, stats, workouts, settings as settings_router, users
+from src.api.routers import (
+    exercises,
+    challenges,
+    exception_days,
+    logs,
+    stats,
+    workouts,
+    settings as settings_router,
+    users,
+)
 
 # Configure Logging
 logging.basicConfig(
@@ -47,6 +56,10 @@ openapi_tags = [
     {
         "name": "Challenges",
         "description": "Manage fitness challenges - time-bounded goals for exercises.",
+    },
+    {
+        "name": "Challenge Exception Days",
+        "description": "Manage one-off rest days that pause the daily target without blocking logs.",
     },
     {
         "name": "Logs",
@@ -160,6 +173,7 @@ app.include_router(admin.router)
 # Include REST API routers under /api/v1 prefix
 app.include_router(exercises.router, prefix="/api/v1")
 app.include_router(challenges.router, prefix="/api/v1")
+app.include_router(exception_days.router, prefix="/api/v1")
 app.include_router(logs.router, prefix="/api/v1")
 app.include_router(stats.router, prefix="/api/v1")
 app.include_router(workouts.router, prefix="/api/v1")

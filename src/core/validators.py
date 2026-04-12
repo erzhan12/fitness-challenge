@@ -1,5 +1,7 @@
 """Validation helpers for core models and data."""
 
+from typing import Iterable
+
 from django.core.exceptions import ValidationError
 
 try:
@@ -74,6 +76,66 @@ def validate_timezone_field(value: str) -> None:
         validate_timezone(value)
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
+
+
+def normalize_exception_weekdays(value) -> str:
+    """Normalize an exception-weekdays input into canonical CSV form.
+
+    Accepts:
+        - An empty string / None / empty iterable → "".
+        - A CSV string of ISO weekday ints (e.g. "6,7" → "6,7").
+        - An iterable of ints (e.g. [7, 6, 6] → "6,7").
+
+    Returns the canonical CSV: deduped, sorted ascending, no whitespace.
+
+    Raises ValueError if any token is not an integer in 1..7 (ISO weekday).
+    """
+    if value is None or value == "":
+        return ""
+
+    if isinstance(value, str):
+        tokens = [token.strip() for token in value.split(",")]
+        # Reject empty tokens (catches "1,,2" and ",1")
+        if any(token == "" for token in tokens):
+            raise ValueError(
+                f"Invalid exception_weekdays {value!r}: empty token in CSV"
+            )
+        try:
+            ints = [int(token) for token in tokens]
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid exception_weekdays {value!r}: non-integer token"
+            ) from exc
+    elif isinstance(value, Iterable):
+        try:
+            ints = [int(token) for token in value]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid exception_weekdays {value!r}: non-integer entry"
+            ) from exc
+    else:
+        raise ValueError(
+            f"Invalid exception_weekdays {value!r}: expected str or iterable of ints"
+        )
+
+    for token in ints:
+        if not (1 <= token <= 7):
+            raise ValueError(
+                f"Invalid exception_weekdays {value!r}: {token} is outside ISO range 1..7"
+            )
+
+    canonical = sorted(set(ints))
+    return ",".join(str(i) for i in canonical)
+
+
+def parse_exception_weekdays(value: str) -> set[int]:
+    """Parse a stored canonical CSV back into a set of ISO weekday ints (1..7).
+
+    Empty string returns an empty set. Mirrors ``normalize_exception_weekdays``.
+    """
+    if not value:
+        return set()
+    return {int(token) for token in value.split(",")}
 
 
 def validate_habit_id(habit_id: int) -> None:

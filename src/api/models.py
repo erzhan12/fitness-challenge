@@ -75,7 +75,11 @@ class ExerciseChallengeOut(BaseModel):
     end_date: dt.date = Field(..., description="Challenge end date")
     target_total: int = Field(
         ...,
-        description="Total target count for the challenge (computed: daily_target × total_days)",
+        description=(
+            "Total target count for the challenge "
+            "(computed: daily_target × effective_total_days, where "
+            "effective_total_days subtracts exception days from the calendar span)"
+        ),
         json_schema_extra={"readOnly": True},
     )
     daily_target: int = Field(..., description="Daily target count")
@@ -85,10 +89,28 @@ class ExerciseChallengeOut(BaseModel):
         False, description="Whether this is the default challenge for number-only input"
     )
 
+    # Exception (rest day) configuration
+    exception_weekdays: List[int] = Field(
+        default_factory=list,
+        description="Recurring exception weekdays (ISO 1=Mon..7=Sun)",
+    )
+    exception_dates: List[dt.date] = Field(
+        default_factory=list,
+        description="One-off exception (rest) dates within the challenge window",
+    )
+
     # Computed fields
     total_days: Optional[int] = Field(
         None,
-        description="Total number of days in the challenge",
+        description="Calendar total number of days in the challenge",
+        json_schema_extra={"readOnly": True},
+    )
+    effective_total_days: Optional[int] = Field(
+        None,
+        description=(
+            "Total scheduled (non-exception) days in the challenge, used for "
+            "target_total math. Equals total_days when there are no exceptions."
+        ),
         json_schema_extra={"readOnly": True},
     )
     is_current: Optional[bool] = Field(
@@ -96,6 +118,16 @@ class ExerciseChallengeOut(BaseModel):
         description="Whether today falls within the challenge dates",
         json_schema_extra={"readOnly": True},
     )
+
+
+def _validate_iso_weekdays(value: List[int]) -> List[int]:
+    """Validate ISO weekday list (1..7), dedupe, sort ascending."""
+    for w in value:
+        if not (1 <= w <= 7):
+            raise ValueError(
+                f"exception_weekdays must contain ISO weekday ints 1..7; got {w}"
+            )
+    return sorted(set(value))
 
 
 class ExerciseChallengeCreate(BaseModel):
@@ -120,6 +152,37 @@ class ExerciseChallengeCreate(BaseModel):
     is_default: bool = Field(
         False, description="Whether this is the default challenge"
     )
+    exception_weekdays: List[int] = Field(
+        default_factory=list,
+        description="Recurring exception weekdays (ISO 1=Mon..7=Sun)",
+        examples=[[6, 7]],
+    )
+    exception_dates: List[dt.date] = Field(
+        default_factory=list,
+        description="One-off exception dates; each must fall in [start_date, end_date]",
+    )
+
+    @field_validator("exception_weekdays")
+    @classmethod
+    def _check_weekdays(cls, v: List[int]) -> List[int]:
+        return _validate_iso_weekdays(v)
+
+    @model_validator(mode="after")
+    def _check_exception_dates_in_window(self) -> "ExerciseChallengeCreate":
+        if not self.exception_dates:
+            return self
+        # Dedupe + sort + window check
+        deduped = sorted(set(self.exception_dates))
+        for d in deduped:
+            if not (self.start_date <= d <= self.end_date):
+                raise ValueError(
+                    f"exception_dates entry {d.isoformat()} is outside challenge window "
+                    f"[{self.start_date.isoformat()}, {self.end_date.isoformat()}]"
+                )
+        # model_validator(mode='after') runs on the constructed instance —
+        # mutate via direct attribute assignment.
+        object.__setattr__(self, "exception_dates", deduped)
+        return self
 
 
 class ExerciseChallengeUpdate(BaseModel):
@@ -133,6 +196,14 @@ class ExerciseChallengeUpdate(BaseModel):
     is_default: Optional[bool] = Field(
         None, description="Whether this is the default challenge"
     )
+    exception_weekdays: Optional[List[int]] = Field(
+        None,
+        description="Recurring exception weekdays (ISO 1=Mon..7=Sun); replaces existing set",
+    )
+    exception_dates: Optional[List[dt.date]] = Field(
+        None,
+        description="One-off exception dates; replaces (NOT merges) the existing set",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -145,6 +216,25 @@ class ExerciseChallengeUpdate(BaseModel):
         if isinstance(data, dict) and "daily_target" in data and data["daily_target"] is None:
             raise ValueError("daily_target cannot be null")
         return data
+
+    @field_validator("exception_weekdays")
+    @classmethod
+    def _check_weekdays(cls, v: Optional[List[int]]) -> Optional[List[int]]:
+        if v is None:
+            return v
+        return _validate_iso_weekdays(v)
+
+    @field_validator("exception_dates")
+    @classmethod
+    def _dedupe_exception_dates(
+        cls, v: Optional[List[dt.date]]
+    ) -> Optional[List[dt.date]]:
+        # PATCH cannot enforce window membership without start_date/end_date,
+        # which may be absent. The router/service must re-validate against the
+        # current (or new) window before persisting.
+        if v is None:
+            return v
+        return sorted(set(v))
 
 
 # =============================================================================
@@ -213,6 +303,78 @@ class ChallengePromptParsed(BaseModel):
         None, description="Daily reps/units target", ge=1
     )
     challenge_name: Optional[str] = Field(None, description="Name for the challenge")
+    exception_weekdays: Optional[List[int]] = Field(
+        None,
+        description="Recurring exception weekdays (ISO 1=Mon..7=Sun); empty/None = none",
+    )
+    exception_dates: Optional[List[dt.date]] = Field(
+        None,
+        description="Explicit one-off exception dates extracted from the prompt",
+    )
+
+
+# =============================================================================
+# Challenge Exception Days
+# =============================================================================
+
+
+class ChallengeExceptionDayOut(BaseModel):
+    """JSON representation of a one-off challenge exception (rest) day."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(..., description="Unique identifier")
+    challenge_id: int = Field(..., description="Owning challenge id")
+    date: dt.date = Field(..., description="Exception date")
+    reason: str = Field("", description="Optional reason / label")
+    created_at: dt.datetime = Field(..., description="When this exception was added")
+
+
+class ChallengeExceptionDayCreate(BaseModel):
+    """Request model for adding a one-off exception day to a challenge."""
+
+    date: dt.date = Field(
+        ...,
+        description="Exception date; must fall within the challenge window",
+        examples=["2026-04-20"],
+    )
+    reason: Optional[str] = Field(
+        None,
+        description="Optional human-readable label",
+        examples=["Easter Monday"],
+        max_length=200,
+    )
+
+
+class ExceptionPromptDateEntry(BaseModel):
+    """One date the LLM exception parser extracted from the user prompt."""
+
+    date: dt.date = Field(..., description="Exception date")
+    reason: Optional[str] = Field(
+        None, description="Optional human-readable label extracted from the prompt"
+    )
+
+
+class ExceptionPromptParsed(BaseModel):
+    """Intermediate model returned by ``parse_exception_prompt`` for /exception add."""
+
+    is_valid: bool = Field(..., description="Whether the LLM successfully parsed the prompt")
+    error_reason: Optional[str] = Field(
+        None, description="Error reason when is_valid is False"
+    )
+    exception_weekdays: List[int] = Field(
+        default_factory=list,
+        description="Recurring exception weekdays the user mentioned (ISO 1..7)",
+    )
+    exception_dates: List[ExceptionPromptDateEntry] = Field(
+        default_factory=list,
+        description="One-off exception dates the user mentioned (with optional reason)",
+    )
+
+    @field_validator("exception_weekdays")
+    @classmethod
+    def _check_weekdays(cls, v: List[int]) -> List[int]:
+        return _validate_iso_weekdays(v)
 
 
 # =============================================================================
@@ -303,13 +465,34 @@ class ExerciseStatsOut(BaseModel):
     # Challenge context
     challenge_id: Optional[int] = Field(None, description="ID of the active challenge")
     challenge_name: Optional[str] = Field(None, description="Name of the challenge")
-    day_number: int = Field(..., description="Current day number in the challenge")
-    total_days: int = Field(..., description="Total days in the challenge")
+    day_number: int = Field(
+        ...,
+        description=(
+            "Current day number counted across scheduled (non-rest) days only. "
+            "On a rest day this is frozen at the count of scheduled days strictly "
+            "before today, so the daily ring does not advance through exceptions."
+        ),
+    )
+    total_days: int = Field(
+        ...,
+        description=(
+            "Effective scheduled days in the challenge — calendar days minus "
+            "exception (rest) days. NOTE: this differs from "
+            "ExerciseChallengeOut.total_days, which is the calendar span. "
+            "Clients that need the calendar span should read it from the "
+            "challenge resource."
+        ),
+    )
 
     # Targets
     target_total: int = Field(
         ...,
-        description="Total target for the challenge (computed: daily_target × total_days)",
+        description=(
+            "Total target across scheduled days "
+            "(computed: daily_target × effective scheduled days, which "
+            "excludes rest days). Equals 0 when every day in the window "
+            "is a rest day."
+        ),
         json_schema_extra={"readOnly": True},
     )
     daily_target: int = Field(..., description="Daily target count")
@@ -326,13 +509,27 @@ class ExerciseStatsOut(BaseModel):
         ..., description="Current status: 'ahead', 'on_track', or 'behind'"
     )
     catch_up_reps: int = Field(
-        0, description="Number of reps needed to catch up (if behind)"
+        0,
+        description=(
+            "Number of reps needed to catch up (if behind). Always 0 on rest "
+            "days because the daily ring is hidden when is_today_exception is True."
+        ),
     )
 
     # Completion status
     is_daily_complete: bool = Field(
         default=False,
         description="True if cumulative progress is on track or ahead of expected progress for this challenge",
+    )
+
+    # Exception (rest) day flag
+    is_today_exception: bool = Field(
+        default=False,
+        description=(
+            "True when today is an exception (rest) day for this challenge. "
+            "When True, the daily ring should be hidden in the Telegram stats card "
+            "and the day_number is frozen at the previous scheduled day."
+        ),
     )
 
 

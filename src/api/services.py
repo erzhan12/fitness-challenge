@@ -21,10 +21,15 @@ except ImportError:
     from backports.zoneinfo import ZoneInfo
 
 from app.config import settings
-from src.core.utils import calculate_expected_progress, calculate_status_and_deficit
+from src.core.utils import (
+    calculate_expected_progress,
+    calculate_status_and_deficit,
+    expand_exception_dates,
+)
 from src.core.repositories import (
     exercise_type_repo,
     challenge_repo,
+    challenge_exception_day_repo,
     log_repo,
     user_stats_repo,
     user_settings_repo,
@@ -36,6 +41,7 @@ from src.api.models import (
     ExerciseChallengeOut,
     ExerciseChallengeCreate,
     ExerciseChallengeUpdate,
+    ChallengeExceptionDayOut,
     ChallengePromptParsed,
     ExerciseLogOut,
     ExerciseLogCreate,
@@ -163,8 +169,30 @@ async def update_exercise_type(
 # =============================================================================
 
 
-def _enrich_challenge(challenge_data: Dict[str, Any], today: date) -> Dict[str, Any]:
-    """Add computed fields to challenge data."""
+def _parse_exception_weekdays_csv(value: Any) -> List[int]:
+    """Parse the canonical CSV stored on ExerciseChallenge.exception_weekdays."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.split(",") if p.strip()]
+        return sorted({int(p) for p in parts})
+    # Already a list/tuple
+    return sorted({int(w) for w in value})
+
+
+def _enrich_challenge(
+    challenge_data: Dict[str, Any],
+    today: date,
+    exception_dates: Optional[set] = None,
+) -> Dict[str, Any]:
+    """Add computed fields to challenge data.
+
+    When ``exception_dates`` is provided (caller already prefetched the
+    one-off rows), it is unioned with any recurring weekday exceptions to
+    produce ``effective_total_days``. When it is None, only weekday
+    exceptions are considered — caller is responsible for hydrating the
+    ``exception_dates`` field on the response if needed.
+    """
     start = date.fromisoformat(challenge_data["start_date"]) if isinstance(challenge_data["start_date"], str) else challenge_data["start_date"]
     end = date.fromisoformat(challenge_data["end_date"]) if isinstance(challenge_data["end_date"], str) else challenge_data["end_date"]
     total_days = (end - start).days + 1
@@ -172,8 +200,17 @@ def _enrich_challenge(challenge_data: Dict[str, Any], today: date) -> Dict[str, 
         raise ValueError(f"Invalid date range: start={start}, end={end}, total_days={total_days}")
     challenge_data["total_days"] = total_days
     challenge_data["is_current"] = start <= today <= end
-    # target_total is computed from daily_target × total_days
-    challenge_data["target_total"] = challenge_data["daily_target"] * total_days
+
+    # Exception-aware effective day count
+    weekdays = _parse_exception_weekdays_csv(challenge_data.get("exception_weekdays", ""))
+    challenge_data["exception_weekdays"] = weekdays
+    explicit_dates = exception_dates or set()
+    exception_set = expand_exception_dates(start, end, weekdays, explicit_dates)
+    effective_total_days = max(0, total_days - len(exception_set))
+    challenge_data["effective_total_days"] = effective_total_days
+
+    # target_total reflects scheduled (non-exception) days only.
+    challenge_data["target_total"] = challenge_data["daily_target"] * effective_total_days
     return challenge_data
 
 
@@ -209,10 +246,19 @@ async def list_challenges(
         if include:
             filtered_challenges.append(c)
 
-    return [
-        ExerciseChallengeOut(**_enrich_challenge(_model_to_dict(c), today))
-        for c in filtered_challenges
-    ]
+    challenge_ids = [c.id for c in filtered_challenges]
+    exception_map = await challenge_exception_day_repo.list_dates_for_challenges(
+        challenge_ids,
+        user_id=user_id,
+    )
+    result: List[ExerciseChallengeOut] = []
+    for c in filtered_challenges:
+        data = _model_to_dict(c)
+        dates_set = exception_map.get(c.id, set())
+        enriched = _enrich_challenge(data, today, exception_dates=dates_set)
+        enriched["exception_dates"] = sorted(dates_set)
+        result.append(ExerciseChallengeOut(**enriched))
+    return result
 
 
 async def list_current_active_challenges(
@@ -272,9 +318,16 @@ async def get_challenge(
     """Get a single challenge by ID."""
     today = datetime.now(TZ).date()
     challenge = await challenge_repo.get_by_id(challenge_id, user_id=user_id)
-    if challenge:
-        return ExerciseChallengeOut(**_enrich_challenge(_model_to_dict(challenge), today))
-    return None
+    if challenge is None:
+        return None
+    exception_rows = await challenge_exception_day_repo.list_for_challenge(
+        challenge_id,
+        user_id=user_id,
+    )
+    dates_set = {row.date for row in exception_rows}
+    data = _enrich_challenge(_model_to_dict(challenge), today, exception_dates=dates_set)
+    data["exception_dates"] = sorted(dates_set)
+    return ExerciseChallengeOut(**data)
 
 
 async def get_active_challenge_for_type(
@@ -312,8 +365,25 @@ async def create_challenge(
 
     insert_data = data.model_dump()
     insert_data["user_id"] = user_id
-    created = await challenge_repo.create(insert_data)
-    return ExerciseChallengeOut(**_enrich_challenge(_model_to_dict(created), today))
+
+    # Convert weekday list -> CSV for ExerciseChallenge column;
+    # peel off exception_dates so they don't reach the parent insert.
+    exception_dates_payload: List[date] = list(insert_data.pop("exception_dates", []) or [])
+    weekdays = insert_data.pop("exception_weekdays", []) or []
+    insert_data["exception_weekdays"] = ",".join(str(w) for w in sorted(set(weekdays)))
+
+    # Atomic insert: parent row + one-off exception days happen inside a
+    # single transaction, so a failure on the child rows rolls back the
+    # parent. ``create_with_exception_dates`` no-ops the bulk insert when
+    # ``exception_dates_payload`` is empty.
+    created = await challenge_repo.create_with_exception_dates(
+        insert_data, exception_dates_payload
+    )
+
+    dates_set = set(exception_dates_payload)
+    enriched = _enrich_challenge(_model_to_dict(created), today, exception_dates=dates_set)
+    enriched["exception_dates"] = sorted(dates_set)
+    return ExerciseChallengeOut(**enriched)
 
 
 async def update_challenge(
@@ -321,30 +391,257 @@ async def update_challenge(
     data: ExerciseChallengeUpdate,
     user_id: int,
 ) -> Optional[ExerciseChallengeOut]:
-    """Update a challenge."""
-    today = datetime.now(TZ).date()
+    """Update a challenge.
 
+    ``exception_dates`` REPLACES the existing one-off rest dates (not merges).
+    ``exception_weekdays`` REPLACES the recurring weekday set.
+    """
     update_data = data.model_dump(exclude_unset=True)
     if not update_data:
         return await get_challenge(challenge_id, user_id)
 
+    # Peel off exception fields — they're handled outside challenge_repo.update
+    has_dates_update = "exception_dates" in update_data
+    new_exception_dates = update_data.pop("exception_dates", None) or []
+    has_weekdays_update = "exception_weekdays" in update_data
+    if has_weekdays_update:
+        wd = update_data.pop("exception_weekdays", None) or []
+        update_data["exception_weekdays"] = ",".join(str(w) for w in sorted(set(wd)))
+
+    # Need existing for window math whenever date or exception_dates change
+    existing = None
+    if (
+        "start_date" in update_data
+        or "end_date" in update_data
+        or has_dates_update
+    ):
+        existing = await challenge_repo.get_by_id(challenge_id, user_id=user_id)
+        if existing is None:
+            return None
+
     # Validate date range if dates are being updated
     if "start_date" in update_data or "end_date" in update_data:
-        existing = await challenge_repo.get_by_id(challenge_id, user_id=user_id)
-        if existing:
-            new_start = update_data.get("start_date", existing.start_date)
-            new_end = update_data.get("end_date", existing.end_date)
-            if new_end < new_start:
-                raise ValueError(f"end_date ({new_end}) must be >= start_date ({new_start})")
+        new_start = update_data.get("start_date", existing.start_date)
+        new_end = update_data.get("end_date", existing.end_date)
+        if new_end < new_start:
+            raise ValueError(f"end_date ({new_end}) must be >= start_date ({new_start})")
 
-    updated = await challenge_repo.update(
+    # Window-validate any new exception_dates against the (possibly updated) window
+    if has_dates_update and new_exception_dates:
+        eff_start = update_data.get("start_date", existing.start_date)
+        eff_end = update_data.get("end_date", existing.end_date)
+        for d in new_exception_dates:
+            if not (eff_start <= d <= eff_end):
+                raise ValueError(
+                    f"exception_dates entry {d.isoformat()} is outside challenge window "
+                    f"[{eff_start.isoformat()}, {eff_end.isoformat()}]"
+                )
+
+    # When the window changes WITHOUT an explicit exception_dates payload,
+    # trim any existing one-off rest rows that now fall outside the new
+    # window. Otherwise stale rows would survive past a PATCH and could
+    # silently re-activate if the window is later expanded — and the
+    # response model would also hand them back, contradicting the in-window
+    # invariant. We skip this when ``has_dates_update`` is true because the
+    # explicit body is the user's authoritative replacement set.
+    window_changed = (
+        ("start_date" in update_data or "end_date" in update_data)
+        and not has_dates_update
+    )
+    if window_changed:
+        eff_start = update_data.get("start_date", existing.start_date)
+        eff_end = update_data.get("end_date", existing.end_date)
+        existing_rows = await challenge_exception_day_repo.list_for_challenge(
+            challenge_id, user_id=user_id
+        )
+        surviving = [
+            row.date for row in existing_rows if eff_start <= row.date <= eff_end
+        ]
+        if len(surviving) != len(existing_rows):
+            await challenge_exception_day_repo.replace_dates(
+                challenge_id,
+                surviving,
+                user_id=user_id,
+            )
+
+    updated = None
+    if update_data:
+        updated = await challenge_repo.update(
+            challenge_id,
+            update_data,
+            user_id=user_id,
+        )
+        if updated is None:
+            return None
+
+    if has_dates_update:
+        await challenge_exception_day_repo.replace_dates(
+            challenge_id,
+            list(new_exception_dates),
+            user_id=user_id,
+        )
+
+    # Build the response from `updated` (or `existing` when only exception_dates changed)
+    # rather than re-fetching via get_challenge — keeps the response consistent with the
+    # repo write that just happened and avoids an extra round-trip.
+    challenge_model = updated or existing
+    if challenge_model is None:
+        # Neither path ran any read; need a fresh fetch to populate the response.
+        challenge_model = await challenge_repo.get_by_id(challenge_id, user_id=user_id)
+        if challenge_model is None:
+            return None
+
+    if has_dates_update:
+        dates_set = set(new_exception_dates)
+    else:
+        rows = await challenge_exception_day_repo.list_for_challenge(
+            challenge_id, user_id=user_id
+        )
+        dates_set = {row.date for row in rows}
+
+    today = datetime.now(TZ).date()
+    enriched = _enrich_challenge(
+        _model_to_dict(challenge_model), today, exception_dates=dates_set
+    )
+    enriched["exception_dates"] = sorted(dates_set)
+    return ExerciseChallengeOut(**enriched)
+
+
+# =============================================================================
+# Challenge Exception Days
+# =============================================================================
+
+
+def _exception_day_to_out(row, challenge_id: int) -> ChallengeExceptionDayOut:
+    """Convert a ChallengeExceptionDay ORM row to its API representation."""
+    return ChallengeExceptionDayOut(
+        id=row.id,
+        challenge_id=challenge_id,
+        date=row.date,
+        reason=row.reason or "",
+        created_at=row.created_at,
+    )
+
+
+async def list_exception_days(
+    challenge_id: int,
+    user_id: int,
+) -> List[ChallengeExceptionDayOut]:
+    """List all one-off exception (rest) days for a challenge.
+
+    Returns rows ordered by date. Enforces ownership via the parent challenge.
+    """
+    rows = await challenge_exception_day_repo.list_for_challenge(
         challenge_id,
-        update_data,
         user_id=user_id,
     )
-    if updated:
-        return ExerciseChallengeOut(**_enrich_challenge(_model_to_dict(updated), today))
-    return None
+    return [_exception_day_to_out(r, challenge_id) for r in rows]
+
+
+async def add_exception_day(
+    challenge_id: int,
+    exception_date: date,
+    reason: str,
+    user_id: int,
+) -> ChallengeExceptionDayOut:
+    """Idempotently add a one-off exception day.
+
+    Verifies the date falls within the challenge window. Raises
+    ``ValueError`` on out-of-window dates and ``ExerciseChallenge.DoesNotExist``
+    when the parent challenge cannot be found / owned by ``user_id``.
+    """
+    challenge = await challenge_repo.get_by_id(challenge_id, user_id=user_id)
+    if challenge is None:
+        from src.core.models import ExerciseChallenge
+        raise ExerciseChallenge.DoesNotExist
+    if not (challenge.start_date <= exception_date <= challenge.end_date):
+        raise ValueError(
+            f"Exception date {exception_date.isoformat()} is outside challenge "
+            f"window [{challenge.start_date.isoformat()}, {challenge.end_date.isoformat()}]"
+        )
+    row, _created = await challenge_exception_day_repo.add(
+        challenge_id,
+        exception_date,
+        reason=reason or "",
+        user_id=user_id,
+    )
+    return _exception_day_to_out(row, challenge_id)
+
+
+async def remove_exception_day(
+    challenge_id: int,
+    exception_date: date,
+    user_id: int,
+) -> bool:
+    """Delete a one-off exception day. Returns True if a row was removed."""
+    return await challenge_exception_day_repo.remove(
+        challenge_id,
+        exception_date,
+        user_id=user_id,
+    )
+
+
+async def replace_exception_dates(
+    challenge_id: int,
+    dates: List[date],
+    user_id: int,
+) -> List[ChallengeExceptionDayOut]:
+    """Replace the full one-off exception-date set for a challenge.
+
+    Validates each date is within the challenge window before replacing.
+    """
+    challenge = await challenge_repo.get_by_id(challenge_id, user_id=user_id)
+    if challenge is None:
+        from src.core.models import ExerciseChallenge
+        raise ExerciseChallenge.DoesNotExist
+    for d in dates:
+        if not (challenge.start_date <= d <= challenge.end_date):
+            raise ValueError(
+                f"Exception date {d.isoformat()} is outside challenge window "
+                f"[{challenge.start_date.isoformat()}, {challenge.end_date.isoformat()}]"
+            )
+    rows = await challenge_exception_day_repo.replace_dates(
+        challenge_id,
+        list(dates),
+        user_id=user_id,
+    )
+    return [_exception_day_to_out(r, challenge_id) for r in rows]
+
+
+async def set_exception_weekdays(
+    challenge_id: int,
+    weekdays: List[int],
+    user_id: int,
+) -> Optional[ExerciseChallengeOut]:
+    """Replace the recurring exception-weekday set for a challenge."""
+    csv = ",".join(str(w) for w in sorted(set(weekdays)))
+    updated = await challenge_repo.update(
+        challenge_id,
+        {"exception_weekdays": csv},
+        user_id=user_id,
+    )
+    if updated is None:
+        return None
+    return await get_challenge(challenge_id, user_id)
+
+
+async def clear_exception_days(
+    challenge_id: int,
+    user_id: int,
+) -> Optional[ExerciseChallengeOut]:
+    """Clear ALL exception days (recurring + one-off) for a challenge."""
+    challenge = await challenge_repo.get_by_id(challenge_id, user_id=user_id)
+    if challenge is None:
+        return None
+    await challenge_exception_day_repo.replace_dates(
+        challenge_id, [], user_id=user_id
+    )
+    await challenge_repo.update(
+        challenge_id,
+        {"exception_weekdays": ""},
+        user_id=user_id,
+    )
+    return await get_challenge(challenge_id, user_id)
 
 
 class ExerciseTypeNotFoundError(Exception):
@@ -469,14 +766,13 @@ def _parse_and_validate_llm_response(
     if not parsed.challenge_name:
         raise ValueError("LLM did not return a challenge name.")
 
-    # Upper-bound sanity checks
+    # Upper-bound sanity check on duration. The MAX_DAILY_TARGET cap is
+    # enforced in _build_challenge_data() against the *effective* daily target,
+    # because a target_total over a window with exception days can pass a
+    # naive precheck (target_total / calendar_days) and still produce an
+    # over-cap daily_target after exceptions shrink the schedule.
     if parsed.duration_days > MAX_DURATION_DAYS:
         raise ValueError(f"Duration too long ({parsed.duration_days} days). Maximum is {MAX_DURATION_DAYS} days.")
-    daily = parsed.daily_target if parsed.daily_target is not None else (
-        math.ceil(parsed.target_total / parsed.duration_days) if parsed.target_total else None
-    )
-    if daily is not None and daily > MAX_DAILY_TARGET:
-        raise ValueError(f"Daily target too high ({daily}). Maximum is {MAX_DAILY_TARGET} per day.")
 
     return parsed
 
@@ -486,7 +782,19 @@ def _build_challenge_data(
     exercise_type_models: List["ExerciseTypeModel"],
     today: date,
 ) -> ExerciseChallengeCreate:
-    """Resolve exercise type, validate dates, compute targets, and build creation data."""
+    """Resolve exercise type, validate dates, compute targets, and build creation data.
+
+    Honours exception days extracted by the LLM:
+      * ``exception_weekdays`` and ``exception_dates`` are normalized and
+        passed through to ``ExerciseChallengeCreate`` (which validates them
+        a second time inside Pydantic).
+      * When the LLM returns ``target_total`` (and not an explicit
+        ``daily_target``), the daily target is divided by **effective** days
+        — i.e. "1000 reps over weekdays in January" distributes across
+        weekdays only.
+      * An all-exception window with no explicit ``daily_target`` is rejected
+        with a clear error.
+    """
     start_date = parsed.start_date
     duration_days = parsed.duration_days
     end_date = start_date + timedelta(days=duration_days - 1)
@@ -498,7 +806,51 @@ def _build_challenge_data(
         available_names = [et.name for et in exercise_type_models]
         raise ExerciseTypeNotFoundError(parsed.exercise_type_name, available_names)
 
-    daily_target = _compute_daily_target(parsed.target_total, parsed.daily_target, duration_days)
+    # Normalize exception fields from the LLM. Reject (don't silently drop)
+    # any explicit date the LLM returned that falls outside the resolved
+    # challenge window — otherwise "April challenge except May 1" would
+    # create a successful challenge missing the rest day the user asked for.
+    weekdays = sorted(set(parsed.exception_weekdays or []))
+    raw_dates = sorted(set(parsed.exception_dates or []))
+    out_of_window = [d for d in raw_dates if not (start_date <= d <= end_date)]
+    if out_of_window:
+        raise ValueError(
+            f"Exception dates outside challenge window "
+            f"[{start_date.isoformat()}, {end_date.isoformat()}]: "
+            f"{[d.isoformat() for d in out_of_window]}."
+        )
+    explicit_dates = raw_dates
+    exception_set = expand_exception_dates(
+        start_date, end_date, weekdays, explicit_dates
+    )
+    effective_days = max(0, duration_days - len(exception_set))
+
+    # Use effective days for derived targets so a "1000 reps over weekdays"
+    # prompt distributes across the weekdays only.
+    if parsed.daily_target is not None:
+        daily_target = _compute_daily_target(
+            parsed.target_total, parsed.daily_target, duration_days
+        )
+    else:
+        if effective_days < 1:
+            raise ValueError(
+                "Cannot derive a daily target — every day in the requested "
+                "window is an exception day. Specify a daily target explicitly."
+            )
+        daily_target = _compute_daily_target(
+            parsed.target_total, parsed.daily_target, effective_days
+        )
+
+    # Cap check happens here (not in _parse_and_validate_llm_response) so it
+    # sees the *effective* daily_target — i.e. the value after exception days
+    # have shrunk the schedule. This closes the bypass where target_total
+    # divided by calendar days passes the cap but divided by effective days
+    # would exceed it.
+    if daily_target > MAX_DAILY_TARGET:
+        raise ValueError(
+            f"Daily target too high ({daily_target}). "
+            f"Maximum is {MAX_DAILY_TARGET} per day."
+        )
 
     return ExerciseChallengeCreate(
         exercise_type_id=exercise_type.id,
@@ -508,6 +860,8 @@ def _build_challenge_data(
         challenge_name=parsed.challenge_name,
         is_active=True,
         is_default=False,
+        exception_weekdays=weekdays,
+        exception_dates=explicit_dates,
     )
 
 
@@ -570,12 +924,22 @@ async def compute_exercise_stats(
     This is the core stats computation extracted from workout_service,
     returning structured data instead of HTML.
 
+    Exception (rest) days are honored:
+      * ``effective_total_days`` = calendar days minus exceptions in window
+      * ``effective_day_number`` skips exception days; on a rest day it is
+        frozen at the count of scheduled days strictly before today
+      * ``target_total`` = ``daily_target × effective_total_days`` (can be 0)
+      * ``cumulative_total`` is unchanged — logs on rest days still bank
+      * ``is_today_exception`` flags the rest day so the daily ring is hidden
+
     Args:
         exercise_type_id: The exercise type to compute stats for
         target_date: Date context (defaults to today)
         added_count: Optional count to add (for preview before insertion)
         etype: Optional pre-fetched exercise type data (to avoid duplicate queries)
-        challenge: Optional pre-fetched challenge data (to avoid duplicate queries)
+        challenge: Optional pre-fetched challenge data. May contain a
+            ``_exception_dates`` set populated by bulk callers — when present,
+            no per-call DB lookup is performed.
     """
     today_local = target_date or datetime.now(TZ).date()
 
@@ -597,12 +961,14 @@ async def compute_exercise_stats(
             target_date=today_local,
         )
 
-    # Default values
+    # Default values (no challenge context)
     challenge_id = None
     challenge_name = None
     day_number = 1
     total_days = 30
+    effective_total_days = 30
     daily_target = 33
+    is_today_exception = False
 
     if challenge:
         challenge_id = challenge["id"]
@@ -610,14 +976,53 @@ async def compute_exercise_stats(
         start_date = date.fromisoformat(challenge["start_date"]) if isinstance(challenge["start_date"], str) else challenge["start_date"]
         end_date = date.fromisoformat(challenge["end_date"]) if isinstance(challenge["end_date"], str) else challenge["end_date"]
         total_days = (end_date - start_date).days + 1
-        # Clamp day_number to challenge window for historical snapshots
-        day_number = max(1, min((today_local - start_date).days + 1, total_days))
         daily_target = challenge["daily_target"]
 
-    # target_total is always computed from daily_target × total_days
-    target_total = daily_target * total_days
+        # Resolve exception set: prefer caller-supplied (bulk N+1 avoidance),
+        # otherwise read from the repo.
+        weekdays = _parse_exception_weekdays_csv(challenge.get("exception_weekdays", ""))
+        if "_exception_dates" in challenge:
+            explicit_dates = challenge["_exception_dates"] or set()
+        else:
+            rows = await challenge_exception_day_repo.list_for_challenge(
+                challenge_id,
+                user_id=user_id,
+            )
+            explicit_dates = {row.date for row in rows}
+        exception_set = expand_exception_dates(
+            start_date, end_date, weekdays, explicit_dates
+        )
 
-    # Query cumulative total
+        # Effective totals (allow 0)
+        effective_total_days = max(0, total_days - len(exception_set))
+
+        # Effective day_number: count non-exception days in [start, min(today, end)].
+        # If today is itself an exception, freeze at the count strictly before today.
+        clamped_today = min(today_local, end_date)
+        if clamped_today < start_date:
+            day_number = 0
+        else:
+            cutoff = clamped_today
+            if today_local in exception_set:
+                cutoff = today_local - timedelta(days=1)
+            if cutoff < start_date:
+                day_number = 0
+            else:
+                span_days = (cutoff - start_date).days + 1
+                if not weekdays and not explicit_dates:
+                    day_number = span_days
+                else:
+                    skipped = sum(
+                        1 for d in exception_set if start_date <= d <= cutoff
+                    )
+                    day_number = max(0, span_days - skipped)
+
+        is_today_exception = today_local in exception_set
+
+    # target_total reflects scheduled (non-exception) days only.
+    target_total = daily_target * effective_total_days
+
+    # Query cumulative total — logs on rest days still count.
     current_total = await log_repo.get_cumulative_count(
         exercise_type_id,
         challenge_id,
@@ -626,14 +1031,18 @@ async def compute_exercise_stats(
     )
     new_cumulative = current_total + added_count
 
-    # Status and deficit
+    # Status and deficit are computed against effective_total_days so the
+    # math collapses to "no work expected" on an all-exception window.
     status, deficit = calculate_status_and_deficit(
-        new_cumulative, daily_target, day_number, total_days
+        new_cumulative,
+        daily_target,
+        day_number,
+        max(1, effective_total_days),
     )
 
     # Catch-up calculation - show for any positive deficit
     catch_up_reps = 0
-    if deficit > 0:
+    if deficit > 0 and not is_today_exception:
         catch_up_reps = math.ceil(deficit)
 
     # Today's total
@@ -650,9 +1059,16 @@ async def compute_exercise_stats(
         min(100.0, (new_cumulative / target_total) * 100) if target_total > 0 else 0
     )
 
-    # Determine if on track with cumulative progress (not just today's target)
-    expected = calculate_expected_progress(daily_target, day_number, total_days)
-    daily_complete = new_cumulative >= expected
+    # Determine if on track with cumulative progress (not just today's target).
+    # On a rest day, "daily complete" is implicitly true — there is no daily
+    # ring to fail.
+    if is_today_exception:
+        daily_complete = True
+    else:
+        expected = calculate_expected_progress(
+            daily_target, day_number, max(1, effective_total_days)
+        )
+        daily_complete = new_cumulative >= expected
 
     return ExerciseStatsOut(
         exercise_type_id=exercise_type_id,
@@ -661,7 +1077,7 @@ async def compute_exercise_stats(
         challenge_id=challenge_id,
         challenge_name=challenge_name,
         day_number=day_number,
-        total_days=total_days,
+        total_days=effective_total_days,
         target_total=target_total,
         daily_target=daily_target,
         today_total=new_today_total,
@@ -670,6 +1086,7 @@ async def compute_exercise_stats(
         status=status,
         catch_up_reps=catch_up_reps,
         is_daily_complete=daily_complete,
+        is_today_exception=is_today_exception,
     )
 
 
@@ -678,18 +1095,47 @@ async def get_all_exercise_stats(
     target_date: Optional[date] = None,
     challenge_only: bool = True,
 ) -> List[ExerciseStatsOut]:
-    """Get stats for all exercises (optionally limited to those with challenges)."""
+    """Get stats for all exercises (optionally limited to those with challenges).
+
+    Bulk-prefetches exception dates for all matched challenges to avoid an
+    N+1 lookup inside ``compute_exercise_stats``.
+    """
+    today_local = target_date or datetime.now(TZ).date()
+
     exercise_types = await list_exercise_types(
         user_id=user_id,
         is_active=True,
         challenge_only=challenge_only,
     )
+
+    # Resolve the active challenge for each exercise type up front so we can
+    # bulk-prefetch their exception dates.
+    type_to_challenge: Dict[int, Optional[Dict[str, Any]]] = {}
+    for et in exercise_types:
+        type_to_challenge[et.id] = await get_active_challenge_for_type(
+            et.id,
+            user_id=user_id,
+            target_date=today_local,
+        )
+    challenge_ids = [
+        c["id"] for c in type_to_challenge.values() if c is not None
+    ]
+    exception_map = await challenge_exception_day_repo.list_dates_for_challenges(
+        challenge_ids,
+        user_id=user_id,
+    )
+
     stats = []
     for et in exercise_types:
+        challenge = type_to_challenge.get(et.id)
+        if challenge is not None:
+            challenge = dict(challenge)
+            challenge["_exception_dates"] = exception_map.get(challenge["id"], set())
         stat = await compute_exercise_stats(
             et.id,
             user_id=user_id,
             target_date=target_date,
+            challenge=challenge,
         )
         stats.append(stat)
     return stats

@@ -1,6 +1,6 @@
 from django.db import models
 
-from .validators import validate_timezone_field
+from .validators import normalize_exception_weekdays, validate_timezone_field
 
 
 class AppUser(models.Model):
@@ -124,12 +124,49 @@ class ExerciseChallenge(models.Model):
     daily_target = models.IntegerField()
     is_active = models.BooleanField(default=True)
     is_default = models.BooleanField(default=False)
+    # Recurring exception weekdays as canonical CSV of ISO ints (1=Mon..7=Sun).
+    # Empty string means no recurring exceptions. See ``normalize_exception_weekdays``.
+    exception_weekdays = models.CharField(max_length=20, blank=True, default="")
 
     class Meta:
         db_table = "exercise_challenges"
 
+    def save(self, *args, **kwargs):
+        # Normalize the CSV on every save so the DB always holds canonical
+        # form (sorted, deduped, validated). Raises ValueError on bad input.
+        self.exception_weekdays = normalize_exception_weekdays(self.exception_weekdays)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.challenge_name} ({self.start_date} - {self.end_date})"
+
+
+class ChallengeExceptionDay(models.Model):
+    """One-off exception (rest) day attached to a challenge.
+
+    Combined with ``ExerciseChallenge.exception_weekdays`` to compute the
+    full exception set for stats math. The challenge's daily target does not
+    apply on these days, but logs may still be recorded and bank reps toward
+    the cumulative total.
+    """
+
+    challenge = models.ForeignKey(
+        ExerciseChallenge,
+        on_delete=models.CASCADE,
+        related_name="exception_days",
+    )
+    date = models.DateField()
+    reason = models.CharField(max_length=200, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "challenge_exception_days"
+        unique_together = [("challenge", "date")]
+        indexes = [models.Index(fields=["challenge", "date"])]
+        ordering = ["date"]
+
+    def __str__(self):
+        return f"{self.challenge_id} rest day on {self.date}"
 
 
 class ExerciseLog(models.Model):
