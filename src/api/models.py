@@ -78,7 +78,9 @@ class ExerciseChallengeOut(BaseModel):
         description=(
             "Total target count for the challenge "
             "(computed: daily_target × effective_total_days, where "
-            "effective_total_days subtracts exception days from the calendar span)"
+            "effective_total_days subtracts exception days from the calendar span). "
+            "Concrete example: 100 daily × 20 effective days = 2000 target_total, "
+            "even if the calendar window is 30 days with 10 exception days."
         ),
         json_schema_extra={"readOnly": True},
     )

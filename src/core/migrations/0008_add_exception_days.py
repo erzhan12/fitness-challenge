@@ -20,6 +20,16 @@ class Migration(migrations.Migration):
         ('core', '0007_remove_target_total'),
     ]
 
+    # NOTE: deliberately no RunPython backfill step. Existing
+    # ExerciseChallenge rows keep ``exception_weekdays=""`` (the
+    # AddField default below) and zero ChallengeExceptionDay rows.
+    # Effective-day math in src/api/services.py treats both as
+    # "no exceptions", so pre-feature challenges remain bit-for-bit
+    # identical: same daily_target, same total_days, same target_total,
+    # same status, same reminder/Habit Reward behavior. Future
+    # developers: do not add a backfill here without re-running the
+    # `tests/api/test_services_exception_stats.py` baseline tests —
+    # they pin the no-exception math and would catch any drift.
     operations = [
         migrations.AddField(
             model_name='exercisechallenge',
