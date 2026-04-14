@@ -40,7 +40,7 @@ from src.core.repositories import (
     app_user_repo,
     user_settings_repo,
 )
-from src.core.validators import validate_telegram_user_id
+from src.core.validators import sanitize_llm_prompt, validate_telegram_user_id
 from src.core.utils import (
     calculate_expected_progress,
     ensure_date,
@@ -1700,6 +1700,22 @@ async def _handle_challenge_prompt(
         )
         return
 
+    # Run the same homoglyph/prompt-injection filter the REST endpoint
+    # applies via ChallengePromptRequest. Without this, Telegram bypasses
+    # the Pydantic validator entirely and jailbreak attempts reach the LLM.
+    # Check happens BEFORE record_llm_call so a rejection does not
+    # consume the user's hourly LLM budget.
+    try:
+        text = sanitize_llm_prompt(text)
+    except ValueError:
+        clear_flow(telegram_user_id)
+        await send_telegram_message(
+            chat_id,
+            "❌ Your message contains patterns we can't process. "
+            "Please rephrase and try again.",
+        )
+        return
+
     await send_chat_action(chat_id)
     record_llm_call(telegram_user_id)
 
@@ -2109,6 +2125,20 @@ async def _handle_exception_prompt(
             chat_id,
             "⚠️ You've reached the limit of 10 AI calls per hour. "
             "Please try again later.",
+        )
+        return
+
+    # Same homoglyph/prompt-injection filter ``/challenge`` uses — the
+    # ``parse_exception_prompt`` system prompt has its own ignore-instructions
+    # wording as a second layer, but we still want to bail out before the
+    # LLM call (cheaper, keeps LLM budget intact, never sees jailbreak text).
+    try:
+        text = sanitize_llm_prompt(text)
+    except ValueError:
+        await send_telegram_message(
+            chat_id,
+            "❌ Your message contains patterns we can't process. "
+            "Please rephrase and try again.",
         )
         return
 

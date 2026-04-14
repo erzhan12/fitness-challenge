@@ -31,7 +31,25 @@ router = APIRouter(
     description=(
         "Returns the one-off exception (rest) days attached to a challenge, "
         "ordered by date. Recurring weekday exceptions live on the parent "
-        "challenge as ``exception_weekdays`` and are not returned here."
+        "challenge as ``exception_weekdays`` and are **not** returned here.\n\n"
+        "To get the full rest-day picture for a challenge (recurring **and** "
+        "one-off), combine this endpoint with ``GET /api/v1/challenges/{id}``:\n\n"
+        "```\n"
+        "# 1. One-off exception dates (this endpoint)\n"
+        "GET /api/v1/challenges/1/exception-days\n"
+        '→ [{"id": 7, "date": "2026-04-20", "reason": "Easter Monday", ...}]\n'
+        "\n"
+        "# 2. Recurring weekdays (from the parent challenge)\n"
+        "GET /api/v1/challenges/1\n"
+        '→ {"id": 1, ..., "exception_weekdays": "6,7"}\n'
+        "# ISO weekday ints, 1=Mon..7=Sun → here Sat+Sun are recurring rest days.\n"
+        "```\n\n"
+        "A date is a rest day iff it appears in either list. If you only "
+        "need an aggregate count, "
+        "``GET /api/v1/stats/exercises/{exercise_type_id}`` already merges "
+        "both sources and reports ``total_days`` as the *effective* "
+        "(non-rest) day count — prefer that over computing the union "
+        "client-side."
     ),
     responses={
         200: {"description": "List of exception days"},

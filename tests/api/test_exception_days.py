@@ -159,6 +159,25 @@ class TestCreateExceptionDay:
         )
         assert response.status_code == 401
 
+    def test_post_rejects_sql_injection_payload(
+        self, client, mock_repos, auth_and_user_headers
+    ):
+        """A SQL-injection-shaped ``date`` is rejected by Pydantic parsing
+        with 422 — proves the stack never passes raw user strings to the
+        ORM. Defense-in-depth: Django's ORM already parameterizes queries,
+        but we want an explicit regression that a garbage ``date`` never
+        even reaches the repo layer.
+        """
+        response = client.post(
+            "/api/v1/challenges/1/exception-days",
+            json={"date": "2026-04-20'; DROP TABLE challenges--", "reason": "x"},
+            headers=auth_and_user_headers,
+        )
+
+        assert response.status_code == 422
+        # Never reached the repo — Pydantic stopped it at the boundary.
+        mock_repos["challenge_exception_day"].add.assert_not_awaited()
+
 
 class TestDeleteExceptionDay:
     """DELETE /api/v1/challenges/{id}/exception-days/{date}."""

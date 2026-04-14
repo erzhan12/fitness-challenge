@@ -1,5 +1,7 @@
 """Validation helpers for core models and data."""
 
+import re
+import unicodedata
 from typing import Iterable
 
 from django.core.exceptions import ValidationError
@@ -8,6 +10,58 @@ try:
     from zoneinfo import available_timezones
 except ImportError:
     from backports.zoneinfo import available_timezones
+
+
+# Homoglyph table covering common Cyrillic/Greek lookalikes + a few
+# leet-speak digit substitutions. Maps each char to its Latin equivalent
+# so normalized text like "ign0re" or "игнорировать" collapses into the
+# same bucket the suspicious-pattern check scans.
+_HOMOGLYPH_MAP = str.maketrans(
+    "аеорсухіјёАВЕНІКМОРСТХοеіа0134578",
+    "aeopcyxijëABEHIKMOPCTXoeiaoieastb",
+)
+
+# Patterns that strongly suggest prompt-injection attempts. Hits here
+# cause ``sanitize_llm_prompt`` to raise — we prefer false-positives on
+# unusual phrasing over letting a jailbreak slip into the LLM context.
+_INJECTION_PATTERNS = (
+    "ignore previous", "ignore all", "ignore above",
+    "disregard prior", "disregard previous",
+    "forget everything", "forget above",
+    "neglect above",
+    "system:", "assistant:", "[inst]",
+    "you are now",
+)
+
+
+def sanitize_llm_prompt(text: str) -> str:
+    """Reject prompts that look like injection attempts; return the stripped text.
+
+    Applied to any free-text the user ships off to the LLM (``/challenge``,
+    ``/exception add``, the REST ``ChallengePromptRequest``). Normalizes
+    Unicode homoglyphs and leet-speak so common evasions ("ign0re",
+    "ігноре previous") collapse into the same suspicious-pattern check.
+
+    Side-effect-free: the returned string is the caller-supplied text
+    with leading/trailing whitespace removed. The normalization pipeline
+    is only used for pattern detection — we never mangle what we hand
+    to the LLM, so the parser still sees the user's literal wording.
+
+    Raises:
+        ValueError: If the text matches any entry in ``_INJECTION_PATTERNS``.
+    """
+    text = text.strip()
+    decomposed = unicodedata.normalize("NFKD", text)
+    transliterated = decomposed.translate(_HOMOGLYPH_MAP)
+    # Strip non-Latin-alpha (removes digits, zero-width chars, symbols)
+    # then collapse any resulting gaps so "ign0re" → "ignore" not "ign re"
+    words = transliterated.split()
+    cleaned_words = [re.sub(r"[^a-zA-Z:\[\]]", "", w).lower() for w in words]
+    normalized = " ".join(w for w in cleaned_words if w)
+    for pattern in _INJECTION_PATTERNS:
+        if pattern in normalized:
+            raise ValueError("Invalid input format")
+    return text
 
 _AVAILABLE_TIMEZONES = None
 

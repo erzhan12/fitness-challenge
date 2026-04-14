@@ -258,34 +258,11 @@ class ChallengePromptRequest(BaseModel):
     @field_validator("text")
     @classmethod
     def validate_safe_input(cls, v: str) -> str:
-        import re
-        import unicodedata
-        v = v.strip()
-        # Normalize Unicode (e.g. fullwidth chars, accented lookalikes)
-        decomposed = unicodedata.normalize("NFKD", v)
-        # Map common homoglyphs (Cyrillic/Greek lookalikes) and leet-speak to Latin
-        _homoglyph_map = str.maketrans(
-            "аеорсухіјёАВЕНІКМОРСТХοеіа0134578",
-            "aeopcyxijëABEHIKMOPCTXoeiaoieastb",
-        )
-        transliterated = decomposed.translate(_homoglyph_map)
-        # Strip non-Latin-alpha (removes digits, zero-width chars, symbols)
-        # then collapse any resulting gaps so "ign0re" → "ignore" not "ign re"
-        words = transliterated.split()
-        cleaned_words = [re.sub(r"[^a-zA-Z:\[\]]", "", w).lower() for w in words]
-        normalized = " ".join(w for w in cleaned_words if w)
-        suspicious_patterns = [
-            "ignore previous", "ignore all", "ignore above",
-            "disregard prior", "disregard previous",
-            "forget everything", "forget above",
-            "neglect above",
-            "system:", "assistant:", "[inst]",
-            "you are now",
-        ]
-        for pattern in suspicious_patterns:
-            if pattern in normalized:
-                raise ValueError("Invalid input format")
-        return v
+        # Delegates to the shared helper so the Telegram handlers
+        # (``_handle_challenge_prompt`` / ``_handle_exception_prompt``)
+        # apply the exact same rules — see src/core/validators.py.
+        from src.core.validators import sanitize_llm_prompt
+        return sanitize_llm_prompt(v)
 
 
 class ChallengePromptParsed(BaseModel):
