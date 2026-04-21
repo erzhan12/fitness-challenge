@@ -4,6 +4,7 @@ from .models import (
     UserSettings,
     ExerciseType,
     ExerciseChallenge,
+    ChallengeExceptionDay,
     ExerciseLog,
     UserStats,
     AppSettings,
@@ -97,6 +98,7 @@ class ExerciseChallengeAdmin(admin.ModelAdmin):
         "start_date",
         "end_date",
         "daily_target",
+        "exception_weekdays",
         "is_active",
         "is_default",
     ]
@@ -112,6 +114,20 @@ class ExerciseChallengeAdmin(admin.ModelAdmin):
     date_hierarchy = "start_date"
     ordering = ["user", "-start_date"]
     raw_id_fields = ["user", "exercise_type"]
+
+
+@admin.register(ChallengeExceptionDay)
+class ChallengeExceptionDayAdmin(admin.ModelAdmin):
+    list_display = ["challenge", "date", "reason", "created_at"]
+    list_filter = ["challenge", "date"]
+    search_fields = [
+        "challenge__challenge_name",
+        "challenge__user__username",
+        "reason",
+    ]
+    date_hierarchy = "date"
+    raw_id_fields = ["challenge"]
+    readonly_fields = ["created_at"]
 
 
 @admin.register(ExerciseLog)

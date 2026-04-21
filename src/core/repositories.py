@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date
 from typing import List, Optional, Tuple
 from asgiref.sync import sync_to_async
 
@@ -20,6 +20,7 @@ from .models import (
     UserSettings,
     ExerciseType,
     ExerciseChallenge,
+    ChallengeExceptionDay,
     ExerciseLog,
     UserStats,
     AppSettings,
@@ -453,6 +454,34 @@ class ExerciseChallengeRepository:
         return ExerciseChallenge.objects.create(**data)
 
     @sync_to_async
+    def create_with_exception_dates(
+        self,
+        data: dict,
+        exception_dates: List[date],
+    ) -> ExerciseChallenge:
+        """Create a challenge and its one-off exception days atomically.
+
+        Both the parent ``ExerciseChallenge`` row and the matching
+        ``ChallengeExceptionDay`` rows are inserted inside a single
+        ``transaction.atomic()`` block. If the bulk insert of exception days
+        fails for any reason, the parent challenge row is rolled back so the
+        user is never left with a half-created challenge missing the rest
+        days they confirmed.
+        """
+        from django.db import transaction
+
+        with transaction.atomic():
+            challenge = ExerciseChallenge.objects.create(**data)
+            if exception_dates:
+                ChallengeExceptionDay.objects.bulk_create(
+                    [
+                        ChallengeExceptionDay(challenge=challenge, date=d)
+                        for d in sorted(set(exception_dates))
+                    ]
+                )
+            return challenge
+
+    @sync_to_async
     def update(
         self, id: int, data: dict, user_id: Optional[int] = None
     ) -> Optional[ExerciseChallenge]:
@@ -468,6 +497,117 @@ class ExerciseChallengeRepository:
             return challenge
         except ExerciseChallenge.DoesNotExist:
             return None
+
+
+class ChallengeExceptionDayRepository:
+    """Repository for ChallengeExceptionDay (one-off challenge rest days)."""
+
+    @sync_to_async
+    def list_for_challenge(
+        self, challenge_id: int, user_id: Optional[int] = None
+    ) -> List[ChallengeExceptionDay]:
+        """List exception days for a challenge, ordered by date.
+
+        Optionally enforces ownership by joining through challenge.user_id.
+        """
+        queryset = ChallengeExceptionDay.objects.filter(challenge_id=challenge_id)
+        if user_id is not None:
+            queryset = queryset.filter(challenge__user_id=user_id)
+        return list(queryset.order_by("date"))
+
+    @sync_to_async
+    def list_dates_for_challenges(
+        self,
+        challenge_ids: List[int],
+        user_id: Optional[int] = None,
+    ) -> dict[int, set[date]]:
+        """Bulk-fetch exception date sets for many challenges in one query.
+
+        Used by ``get_all_exercise_stats`` to avoid N+1 lookups when
+        rendering the multi-challenge stats card.
+        """
+        if not challenge_ids:
+            return {}
+        queryset = ChallengeExceptionDay.objects.filter(challenge_id__in=challenge_ids)
+        if user_id is not None:
+            queryset = queryset.filter(challenge__user_id=user_id)
+        result: dict[int, set[date]] = {cid: set() for cid in challenge_ids}
+        for row in queryset.values("challenge_id", "date"):
+            result[row["challenge_id"]].add(row["date"])
+        return result
+
+    @sync_to_async
+    def add(
+        self,
+        challenge_id: int,
+        date: date,
+        reason: str = "",
+        user_id: Optional[int] = None,
+    ) -> Tuple[ChallengeExceptionDay, bool]:
+        """Idempotently add an exception day. Returns (row, created).
+
+        Verifies the parent challenge exists (and is owned by user_id when
+        provided) before inserting. Raises ExerciseChallenge.DoesNotExist
+        when the parent challenge cannot be found / accessed.
+        """
+        challenge_qs = ExerciseChallenge.objects.filter(id=challenge_id)
+        if user_id is not None:
+            challenge_qs = challenge_qs.filter(user_id=user_id)
+        # Trigger DoesNotExist for callers when the parent isn't accessible.
+        challenge_qs.get()
+        row, created = ChallengeExceptionDay.objects.get_or_create(
+            challenge_id=challenge_id,
+            date=date,
+            defaults={"reason": reason},
+        )
+        return row, created
+
+    @sync_to_async
+    def remove(
+        self,
+        challenge_id: int,
+        date: date,
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Delete a one-off exception day. Returns True if a row was removed."""
+        queryset = ChallengeExceptionDay.objects.filter(
+            challenge_id=challenge_id, date=date
+        )
+        if user_id is not None:
+            queryset = queryset.filter(challenge__user_id=user_id)
+        deleted, _ = queryset.delete()
+        return deleted > 0
+
+    @sync_to_async
+    def replace_dates(
+        self,
+        challenge_id: int,
+        dates: List[date],
+        user_id: Optional[int] = None,
+    ) -> List[ChallengeExceptionDay]:
+        """Replace the full one-off exception-date set for a challenge.
+
+        Delete-then-insert in a single transaction. Used by ``PATCH
+        /challenges/{id}`` so the request body's ``exception_dates`` becomes
+        the authoritative set. Verifies challenge ownership before mutating.
+        """
+        from django.db import transaction
+
+        with transaction.atomic():
+            challenge_qs = ExerciseChallenge.objects.filter(id=challenge_id)
+            if user_id is not None:
+                challenge_qs = challenge_qs.filter(user_id=user_id)
+            challenge_qs.get()  # raises DoesNotExist if not accessible
+            ChallengeExceptionDay.objects.filter(challenge_id=challenge_id).delete()
+            rows = [
+                ChallengeExceptionDay(challenge_id=challenge_id, date=d) for d in dates
+            ]
+            ChallengeExceptionDay.objects.bulk_create(rows)
+            return list(
+                ChallengeExceptionDay.objects.filter(
+                    challenge_id=challenge_id
+                ).order_by("date")
+            )
 
 
 class ExerciseLogRepository:
@@ -898,6 +1038,7 @@ app_user_repo = AppUserRepository()
 user_settings_repo = UserSettingsRepository()
 exercise_type_repo = ExerciseTypeRepository()
 challenge_repo = ExerciseChallengeRepository()
+challenge_exception_day_repo = ChallengeExceptionDayRepository()
 log_repo = ExerciseLogRepository()
 user_stats_repo = UserStatsRepository()
 app_settings_repo = AppSettingsRepository()

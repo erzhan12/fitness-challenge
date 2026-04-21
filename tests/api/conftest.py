@@ -323,7 +323,15 @@ def mock_repos(app_user_model):
     challenge_repo.get_active_for_type = AsyncMock(return_value=None)
     challenge_repo.get_current_active = AsyncMock(return_value=[])
     challenge_repo.create = AsyncMock(return_value=None)
+    challenge_repo.create_with_exception_dates = AsyncMock(return_value=None)
     challenge_repo.update = AsyncMock(return_value=None)
+
+    challenge_exception_day_repo = Mock()
+    challenge_exception_day_repo.list_for_challenge = AsyncMock(return_value=[])
+    challenge_exception_day_repo.list_dates_for_challenges = AsyncMock(return_value={})
+    challenge_exception_day_repo.add = AsyncMock(return_value=(None, False))
+    challenge_exception_day_repo.remove = AsyncMock(return_value=False)
+    challenge_exception_day_repo.replace_dates = AsyncMock(return_value=[])
 
     log_repo = Mock()
     log_repo.get_all = AsyncMock(return_value=([], 0))
@@ -349,12 +357,14 @@ def mock_repos(app_user_model):
 
     with patch("src.api.services.exercise_type_repo", exercise_type_repo), \
          patch("src.api.services.challenge_repo", challenge_repo), \
+         patch("src.api.services.challenge_exception_day_repo", challenge_exception_day_repo), \
          patch("src.api.services.log_repo", log_repo), \
          patch("src.api.services.user_stats_repo", user_stats_repo), \
          patch("src.api.security.app_user_repo", app_user_repo):
         yield {
             "exercise_type": exercise_type_repo,
             "challenge": challenge_repo,
+            "challenge_exception_day": challenge_exception_day_repo,
             "log": log_repo,
             "user_stats": user_stats_repo,
             "app_user": app_user_repo,

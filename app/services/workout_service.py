@@ -13,6 +13,7 @@ except ImportError:
 from app.models import ExerciseType, ParseResult, ExerciseEntry
 from app.services.openai_service import (
     parse_workout_message,
+    parse_exception_prompt,
     generate_motivational_response,
     generate_reminder_motivation,
     LLMUnavailableError,
@@ -32,28 +33,36 @@ from django.utils import timezone
 from src.core.repositories import (
     exercise_type_repo,
     challenge_repo,
+    challenge_exception_day_repo,
     log_repo,
     user_stats_repo,
     app_settings_repo,
     app_user_repo,
     user_settings_repo,
 )
-from src.core.validators import validate_telegram_user_id
+from src.core.validators import sanitize_llm_prompt, validate_telegram_user_id
 from src.core.utils import (
     calculate_expected_progress,
-    calculate_status_and_deficit,
     ensure_date,
+    expand_exception_dates,
 )
+from datetime import timedelta
 from src.api.services import (
     compute_exercise_stats,
     list_current_active_challenges,
     get_ordered_challenges,
     validate_and_prepare_challenge,
     create_challenge,
+    list_exception_days,
+    add_exception_day,
+    remove_exception_day,
+    clear_exception_days,
+    set_exception_weekdays,
     ExerciseTypeNotFoundError,
 )
 from app.services.challenge_flow import (
     start_flow,
+    start_exception_flow,
     get_flow,
     set_awaiting_confirm,
     clear_flow,
@@ -159,6 +168,57 @@ def _is_daily_complete(
     return cumulative_total >= expected
 
 
+def _parse_weekdays_csv(value: Any) -> List[int]:
+    """Parse the canonical CSV stored on ExerciseChallenge.exception_weekdays."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.split(",") if p.strip()]
+        return sorted({int(p) for p in parts})
+    return sorted({int(w) for w in value})
+
+
+def _compute_effective_progress(
+    start_date: date,
+    end_date: date,
+    today_local: date,
+    weekdays: List[int],
+    explicit_dates: set,
+) -> Tuple[int, int, bool]:
+    """Return (effective_total_days, effective_day_number, is_today_exception).
+
+    Mirrors compute_exercise_stats's effective math so reminders/habit-reward
+    consumers can apply identical "skip rest day" semantics without round-tripping
+    through the full stats helper.
+    """
+    total_days = (end_date - start_date).days + 1
+    if total_days <= 0:
+        return 0, 0, False
+
+    exception_set = expand_exception_dates(
+        start_date, end_date, weekdays, explicit_dates
+    )
+    effective_total_days = max(0, total_days - len(exception_set))
+
+    clamped_today = min(today_local, end_date)
+    is_today_exception = today_local in exception_set
+    if clamped_today < start_date:
+        return effective_total_days, 0, is_today_exception
+
+    cutoff = clamped_today
+    if is_today_exception:
+        cutoff = today_local - timedelta(days=1)
+    if cutoff < start_date:
+        return effective_total_days, 0, is_today_exception
+
+    span_days = (cutoff - start_date).days + 1
+    if not weekdays and not explicit_dates:
+        return effective_total_days, span_days, is_today_exception
+
+    skipped = sum(1 for d in exception_set if start_date <= d <= cutoff)
+    return effective_total_days, max(0, span_days - skipped), is_today_exception
+
+
 async def _check_all_challenges_complete(
     challenges_data: List[Dict],
     today_local: date,
@@ -166,8 +226,15 @@ async def _check_all_challenges_complete(
 ) -> bool:
     """Check if all active challenges are on track with cumulative progress.
 
+    Exception (rest) days are honored: a challenge whose ``today_local`` is a
+    rest day cannot block Habit Reward — its expected progress is computed
+    against the previous scheduled day, and if today is itself a rest day the
+    challenge is treated as complete regardless of today's logs.
+
     Args:
-        challenges_data: List of active challenge dicts
+        challenges_data: List of active challenge dicts. Each dict must contain
+            ``id``, ``start_date``, ``end_date``, ``daily_target`` and
+            (optionally) ``exception_weekdays`` (CSV string).
         today_local: Current date in local timezone
 
     Returns:
@@ -182,6 +249,10 @@ async def _check_all_challenges_complete(
         today_local,
         user_id=user_id,
     )
+    exception_map = await challenge_exception_day_repo.list_dates_for_challenges(
+        challenge_ids,
+        user_id=user_id,
+    )
 
     for challenge in challenges_data:
         challenge_id = challenge["id"]
@@ -189,27 +260,24 @@ async def _check_all_challenges_complete(
         end_date = ensure_date(challenge["end_date"])
 
         daily_target = challenge["daily_target"]
+        weekdays = _parse_weekdays_csv(challenge.get("exception_weekdays", ""))
+        explicit_dates = exception_map.get(challenge_id, set())
 
-        # Calculate day number and clamp to challenge window
-        total_days = (end_date - start_date).days + 1
-        day_number = max(1, min((today_local - start_date).days + 1, total_days))
-
-        # Get cumulative total for this challenge up to today
-        cumulative_total = cumulative_counts.get(challenge_id, 0)
-
-        # Check if on track using the updated _is_daily_complete logic
-        is_complete = _is_daily_complete(
-            cumulative_total=cumulative_total,
-            daily_target=daily_target,
-            day_number=day_number,
-            total_days=total_days,
+        effective_total_days, day_number, is_today_exception = _compute_effective_progress(
+            start_date, end_date, today_local, weekdays, explicit_dates
         )
 
-        # If any challenge is not complete (behind), return False
-        if not is_complete:
+        # Rest day: never blocks Habit Reward.
+        if is_today_exception:
+            continue
+
+        cumulative_total = cumulative_counts.get(challenge_id, 0)
+        expected = calculate_expected_progress(
+            daily_target, day_number, max(1, effective_total_days)
+        )
+        if cumulative_total < expected:
             return False
 
-    # All challenges are complete (on track or ahead)
     return True
 
 
@@ -287,6 +355,7 @@ async def notify_habit_reward_if_complete(
             "start_date": c.start_date,
             "end_date": c.end_date,
             "daily_target": c.daily_target,
+            "exception_weekdays": getattr(c, "exception_weekdays", "") or "",
         }
         for c in challenges
     ]
@@ -360,49 +429,73 @@ async def get_exercise_stats_and_message(
     # Reuse computed daily completion flag from shared stats helper
     daily_complete = stats_out.is_daily_complete
 
-    # Format the HTML message from the stats
-    progress_percent = stats_out.progress_percent / 100.0  # Convert to 0-1 range
-    filled_blocks = int(progress_percent * PROGRESS_BAR_WIDTH)
-    bar = "█" * filled_blocks + "░" * (PROGRESS_BAR_WIDTH - filled_blocks)
-
     unit_label = "min" if etype.unit in ["minutes", "min"] else ""
 
-    # Add checkmark if this challenge is caught up (no deficit)
-    checkmark = "✅ " if daily_complete else ""
+    if stats_out.is_today_exception:
+        # Rest-day card: hide the daily ring entirely. Show the cumulative
+        # progress line and a banked-reps badge — logs on rest days still
+        # add to cumulative_total.
+        progress_percent = stats_out.progress_percent / 100.0
+        filled_blocks = int(progress_percent * PROGRESS_BAR_WIDTH)
+        bar = "█" * filled_blocks + "░" * (PROGRESS_BAR_WIDTH - filled_blocks)
 
-    # Differentiate formatting based on added_count
-    if added_count > 0:
-        if unit_label:
-            header = f"{checkmark}{etype.emoji} <b>{etype.display_name}</b>: +{added_count} {unit_label}"
+        if added_count > 0:
+            if unit_label:
+                header = f"🏖️ {etype.emoji} <b>{etype.display_name}</b>: +{added_count} {unit_label}"
+            else:
+                header = f"🏖️ {etype.emoji} <b>{etype.display_name}</b>: +{added_count}"
         else:
-            header = f"{checkmark}{etype.emoji} <b>{etype.display_name}</b>: +{added_count}"
-    else:
-        header = f"{checkmark}{etype.emoji} <b>{etype.display_name}</b>"
+            header = f"🏖️ {etype.emoji} <b>{etype.display_name}</b>"
 
-    msg_part = (
-        f"{header}\n"
-        f"Day {stats_out.day_number}/{stats_out.total_days} • "
-        f"Today: {stats_out.today_total} • "
-        f"Total: {stats_out.cumulative_total}/{stats_out.target_total}\n"
-        f"{bar} {int(stats_out.progress_percent)}%\n"
-    )
-
-    # Add catch-up / ahead / on-track message
-    if stats_out.catch_up_reps > 0:
-        msg_part += f"Need {stats_out.catch_up_reps} more to catch up!\n"
-    else:
-        # Compute "ahead" amount vs expected cumulative by day_number
-        expected = calculate_expected_progress(
-            stats_out.daily_target,
-            stats_out.day_number,
-            stats_out.total_days,
+        msg_part = (
+            f"{header}\n"
+            f"🏖️ Rest day — banked {stats_out.today_total} "
+            f"{unit_label or 'reps'} today\n"
+            f"Total: {stats_out.cumulative_total}/{stats_out.target_total}\n"
+            f"{bar} {int(stats_out.progress_percent)}%\n"
         )
-        diff = stats_out.cumulative_total - expected  # positive means ahead
-        ahead_reps = max(0, int(diff))
-        if ahead_reps > 0:
-            msg_part += f"You're doing great — you are {ahead_reps} reps ahead!\n"
-        elif stats_out.today_total == stats_out.daily_target:
-            msg_part += "You're doing great — you're on track!\n"
+    else:
+        # Format the HTML message from the stats
+        progress_percent = stats_out.progress_percent / 100.0  # Convert to 0-1 range
+        filled_blocks = int(progress_percent * PROGRESS_BAR_WIDTH)
+        bar = "█" * filled_blocks + "░" * (PROGRESS_BAR_WIDTH - filled_blocks)
+
+        # Add checkmark if this challenge is caught up (no deficit)
+        checkmark = "✅ " if daily_complete else ""
+
+        # Differentiate formatting based on added_count
+        if added_count > 0:
+            if unit_label:
+                header = f"{checkmark}{etype.emoji} <b>{etype.display_name}</b>: +{added_count} {unit_label}"
+            else:
+                header = f"{checkmark}{etype.emoji} <b>{etype.display_name}</b>: +{added_count}"
+        else:
+            header = f"{checkmark}{etype.emoji} <b>{etype.display_name}</b>"
+
+        msg_part = (
+            f"{header}\n"
+            f"Day {stats_out.day_number}/{stats_out.total_days} • "
+            f"Today: {stats_out.today_total} • "
+            f"Total: {stats_out.cumulative_total}/{stats_out.target_total}\n"
+            f"{bar} {int(stats_out.progress_percent)}%\n"
+        )
+
+        # Add catch-up / ahead / on-track message
+        if stats_out.catch_up_reps > 0:
+            msg_part += f"Need {stats_out.catch_up_reps} more to catch up!\n"
+        else:
+            # Compute "ahead" amount vs expected cumulative by day_number
+            expected = calculate_expected_progress(
+                stats_out.daily_target,
+                stats_out.day_number,
+                max(1, stats_out.total_days),
+            )
+            diff = stats_out.cumulative_total - expected  # positive means ahead
+            ahead_reps = max(0, int(diff))
+            if ahead_reps > 0:
+                msg_part += f"You're doing great — you are {ahead_reps} reps ahead!\n"
+            elif stats_out.today_total == stats_out.daily_target:
+                msg_part += "You're doing great — you're on track!\n"
 
     # Return stats dict for backward compatibility with existing code
     stats = {
@@ -754,6 +847,7 @@ async def process_incoming_message(
                 "• <code>/help</code> - Show this help message\n"
                 "• <code>/status</code> - Check your registration status\n"
                 "• <code>/challenge</code> - Create a new challenge via AI\n"
+                "• <code>/exception</code> - Manage rest days (list/add/remove/clear)\n"
                 "• <code>/undo</code> - Remove last log entry\n"
                 "• <code>/recent [N]</code> - Show recent logs (default: 5)\n"
                 "• <code>/delete &lt;id&gt;</code> - Delete a specific log\n"
@@ -862,6 +956,13 @@ async def process_incoming_message(
                 "• <i>500 squats over 2 weeks</i>\n"
                 "• <i>3000 pushups in 90 days</i>\n\n"
                 "⏱ You have 5 minutes to respond.",
+            )
+            return
+
+        # Handle /exception command (rest-day management)
+        if text_lower == "/exception" or text_lower.startswith("/exception "):
+            await _handle_exception_command(
+                text, telegram_user_id, user.id, chat_id
             )
             return
 
@@ -1296,8 +1397,23 @@ async def check_daily_reminders(hour: Optional[int] = None):
     today_counts = await log_repo.get_today_counts_by_challenge_ids(
         challenge_ids, today_local
     )
+    exception_map = await challenge_exception_day_repo.list_dates_for_challenges(
+        challenge_ids
+    )
 
     for ch in challenges:
+        # Skip "missing you" reminders on rest days for this challenge.
+        weekdays = _parse_weekdays_csv(getattr(ch, "exception_weekdays", "") or "")
+        explicit_dates = exception_map.get(ch.id, set())
+        exception_set = expand_exception_dates(
+            ensure_date(ch.start_date),
+            ensure_date(ch.end_date),
+            weekdays,
+            explicit_dates,
+        )
+        if today_local in exception_set:
+            continue
+
         # Check if logged today
         today_count = today_counts.get(ch.id, 0)
         if today_count <= 0:
@@ -1334,8 +1450,12 @@ async def compute_evening_reminder(
     cumulative_counts = await log_repo.get_cumulative_counts_by_challenge_ids(
         challenge_ids, today_local
     )
+    exception_map = await challenge_exception_day_repo.list_dates_for_challenges(
+        challenge_ids
+    )
 
-    # Determine which challenges are NOT caught up (cumulative behind expected)
+    # Determine which challenges are NOT caught up (cumulative behind expected).
+    # Challenges whose ``today_local`` is a rest day are skipped entirely.
     incomplete_challenges = []
 
     for ch in challenges:
@@ -1343,11 +1463,17 @@ async def compute_evening_reminder(
         end_date = ensure_date(ch.end_date)
 
         daily_target = ch.daily_target
-        total_days = (end_date - start_date).days + 1
-        day_number = max(1, min((today_local - start_date).days + 1, total_days))
+        weekdays = _parse_weekdays_csv(getattr(ch, "exception_weekdays", "") or "")
+        explicit_dates = exception_map.get(ch.id, set())
+
+        effective_total_days, day_number, is_today_exception = _compute_effective_progress(
+            start_date, end_date, today_local, weekdays, explicit_dates
+        )
+        if is_today_exception:
+            continue
 
         expected = calculate_expected_progress(
-            daily_target, day_number, total_days
+            daily_target, day_number, max(1, effective_total_days)
         )
         cumulative_total = cumulative_counts.get(ch.id, 0)
 
@@ -1507,20 +1633,48 @@ async def send_evening_reminder(reminder_hour: int):
 # =============================================================================
 
 
+_WEEKDAY_NAMES = {1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat", 7: "Sun"}
+
+
 def _format_challenge_preview(parsed, challenge_data) -> str:
-    """Format a challenge preview message for Telegram."""
+    """Format a challenge preview message for Telegram.
+
+    Includes any exception (rest) days extracted from the prompt and uses
+    the *effective* day count for the target_total so the preview cannot
+    disagree with the eventual "Challenge Created" message.
+    """
     total_days = (challenge_data.end_date - challenge_data.start_date).days + 1
-    target_total = challenge_data.daily_target * total_days
-    return (
-        "📋 <b>New Challenge Preview</b>\n\n"
-        f"📝 <b>Name:</b> {escape(parsed.challenge_name)}\n"
-        f"🏋️ <b>Exercise:</b> {escape(parsed.exercise_type_name)}\n"
-        f"📅 <b>Start:</b> {challenge_data.start_date}\n"
-        f"📅 <b>End:</b> {challenge_data.end_date}\n"
-        f"🎯 <b>Total target:</b> {target_total:,}\n"
-        f"📊 <b>Daily target:</b> ~{challenge_data.daily_target:,}/day\n\n"
-        "Ready to create this challenge?"
+    weekdays = list(challenge_data.exception_weekdays or [])
+    explicit_dates = list(challenge_data.exception_dates or [])
+    exception_set = expand_exception_dates(
+        challenge_data.start_date,
+        challenge_data.end_date,
+        weekdays,
+        explicit_dates,
     )
+    effective_days = max(0, total_days - len(exception_set))
+    target_total = challenge_data.daily_target * effective_days
+
+    lines = [
+        "📋 <b>New Challenge Preview</b>",
+        "",
+        f"📝 <b>Name:</b> {escape(parsed.challenge_name)}",
+        f"🏋️ <b>Exercise:</b> {escape(parsed.exercise_type_name)}",
+        f"📅 <b>Start:</b> {challenge_data.start_date}",
+        f"📅 <b>End:</b> {challenge_data.end_date}",
+        f"🗓 <b>Days:</b> {effective_days} active / {total_days} calendar",
+        f"🎯 <b>Total target:</b> {target_total:,}",
+        f"📊 <b>Daily target:</b> ~{challenge_data.daily_target:,}/day",
+    ]
+    if weekdays:
+        names = ", ".join(_WEEKDAY_NAMES[w] for w in weekdays)
+        lines.append(f"🏖️ <b>Rest weekdays:</b> {names}")
+    if explicit_dates:
+        date_strs = ", ".join(d.isoformat() for d in explicit_dates)
+        lines.append(f"🏖️ <b>Rest dates:</b> {date_strs}")
+    lines.append("")
+    lines.append("Ready to create this challenge?")
+    return "\n".join(lines)
 
 
 CONFIRM_KEYBOARD = {
@@ -1543,6 +1697,22 @@ async def _handle_challenge_prompt(
             chat_id,
             "⚠️ You've reached the limit of 10 challenge creations per hour. "
             "Please try again later.",
+        )
+        return
+
+    # Run the same homoglyph/prompt-injection filter the REST endpoint
+    # applies via ChallengePromptRequest. Without this, Telegram bypasses
+    # the Pydantic validator entirely and jailbreak attempts reach the LLM.
+    # Check happens BEFORE record_llm_call so a rejection does not
+    # consume the user's hourly LLM budget.
+    try:
+        text = sanitize_llm_prompt(text)
+    except ValueError:
+        clear_flow(telegram_user_id)
+        await send_telegram_message(
+            chat_id,
+            "❌ Your message contains patterns we can't process. "
+            "Please rephrase and try again.",
         )
         return
 
@@ -1590,59 +1760,466 @@ async def process_callback_query(
     telegram_user_id: int,
     chat_id: int,
 ) -> None:
-    """Handle inline button presses for the /challenge flow."""
+    """Handle inline button presses for the /challenge and /exception flows.
+
+    Uses the flow ``kind`` discriminator so an in-flight ``/challenge`` cannot
+    be confirmed by an ``/exception`` callback (or vice-versa).
+    """
     _ensure_orm()
 
     flow = get_flow(telegram_user_id)
 
     if data in ("confirm_challenge", "cancel_challenge"):
-        if not flow or flow.step != "awaiting_confirm" or not flow.challenge_data:
+        if (
+            not flow
+            or flow.kind != "challenge"
+            or flow.step != "awaiting_confirm"
+            or not flow.challenge_data
+        ):
             await answer_callback_query(
                 callback_query_id, "Session expired. Send /challenge to start again."
             )
             return
 
-        # Use the chat_id from the original flow to ensure messages go to the right chat
         target_chat_id = flow.chat_id
 
-    if data == "confirm_challenge":
-        try:
-            user = await app_user_repo.get_by_telegram_user_id(telegram_user_id)
-            if not user or not user.is_approved:
-                await answer_callback_query(callback_query_id, "User not found or not approved.")
+        if data == "confirm_challenge":
+            try:
+                user = await app_user_repo.get_by_telegram_user_id(telegram_user_id)
+                if not user or not user.is_approved:
+                    await answer_callback_query(callback_query_id, "User not found or not approved.")
+                    clear_flow(telegram_user_id)
+                    return
+
+                result = await create_challenge(flow.challenge_data, user_id=user.id)
                 clear_flow(telegram_user_id)
-                return
 
-            result = await create_challenge(flow.challenge_data, user_id=user.id)
+                # result.target_total is already computed against effective days,
+                # so the success message cannot disagree with the preview.
+                await send_telegram_message(
+                    target_chat_id,
+                    f"✅ <b>Challenge Created!</b>\n\n"
+                    f"📝 <b>{escape(result.challenge_name)}</b>\n"
+                    f"🎯 {result.target_total:,} total · ~{result.daily_target:,}/day\n"
+                    f"📅 {result.start_date} → {result.end_date}\n\n"
+                    "Good luck! 💪",
+                )
+                await answer_callback_query(callback_query_id, "Challenge created!")
+
+            except Exception as e:
+                clear_flow(telegram_user_id)
+                logger.exception("Failed to create challenge: %s: %s", type(e).__name__, e)
+                await send_telegram_message(
+                    target_chat_id,
+                    "❌ Failed to create challenge. Please try again later or contact support.",
+                )
+                await answer_callback_query(callback_query_id, "Error creating challenge.")
+
+        else:  # cancel_challenge
             clear_flow(telegram_user_id)
-
-            total_days = result.total_days
-            target_total = result.daily_target * total_days
             await send_telegram_message(
-                target_chat_id,
-                f"✅ <b>Challenge Created!</b>\n\n"
-                f"📝 <b>{escape(result.challenge_name)}</b>\n"
-                f"🎯 {target_total:,} total · ~{result.daily_target:,}/day\n"
-                f"📅 {result.start_date} → {result.end_date}\n\n"
-                "Good luck! 💪",
+                target_chat_id, "❌ Challenge creation cancelled."
             )
-            await answer_callback_query(callback_query_id, "Challenge created!")
+            await answer_callback_query(callback_query_id, "Cancelled.")
 
-        except Exception as e:
+    elif data in ("confirm_exception", "cancel_exception"):
+        if (
+            not flow
+            or flow.kind != "exception"
+            or flow.step != "awaiting_confirm"
+            or not flow.exception_payload
+        ):
+            await answer_callback_query(
+                callback_query_id,
+                "Session expired. Send /exception add ... to start again.",
+            )
+            return
+
+        target_chat_id = flow.chat_id
+
+        if data == "confirm_exception":
+            try:
+                user = await app_user_repo.get_by_telegram_user_id(telegram_user_id)
+                if not user or not user.is_approved:
+                    await answer_callback_query(callback_query_id, "User not found or not approved.")
+                    clear_flow(telegram_user_id)
+                    return
+
+                payload = flow.exception_payload
+                challenge_id = payload["challenge_id"]
+
+                # Apply weekday set if present (replace).
+                if payload.get("weekdays"):
+                    await set_exception_weekdays(
+                        challenge_id, payload["weekdays"], user_id=user.id
+                    )
+
+                # Apply each one-off date — idempotent add() preserves any
+                # existing rows that the user did not mention.
+                added = 0
+                for entry in payload.get("dates", []):
+                    try:
+                        await add_exception_day(
+                            challenge_id,
+                            entry["date"],
+                            entry.get("reason") or "",
+                            user_id=user.id,
+                        )
+                        added += 1
+                    except ValueError as ve:
+                        logger.warning("Skipping out-of-window exception date: %s", ve)
+
+                clear_flow(telegram_user_id)
+                await send_telegram_message(
+                    target_chat_id,
+                    f"✅ Exception days saved ({added} one-off + "
+                    f"{len(payload.get('weekdays', []))} recurring weekday).",
+                )
+                await answer_callback_query(callback_query_id, "Saved.")
+            except Exception as e:
+                clear_flow(telegram_user_id)
+                logger.exception("Failed to save exception days: %s: %s", type(e).__name__, e)
+                await send_telegram_message(
+                    target_chat_id,
+                    "❌ Failed to save exception days. Please try again later.",
+                )
+                await answer_callback_query(callback_query_id, "Error saving exceptions.")
+
+        else:  # cancel_exception
             clear_flow(telegram_user_id)
-            logger.exception("Failed to create challenge: %s: %s", type(e).__name__, e)
             await send_telegram_message(
-                target_chat_id,
-                "❌ Failed to create challenge. Please try again later or contact support.",
+                target_chat_id, "❌ Exception update cancelled."
             )
-            await answer_callback_query(callback_query_id, "Error creating challenge.")
-
-    elif data == "cancel_challenge":
-        clear_flow(telegram_user_id)
-        await send_telegram_message(
-            target_chat_id, "❌ Challenge creation cancelled."
-        )
-        await answer_callback_query(callback_query_id, "Cancelled.")
+            await answer_callback_query(callback_query_id, "Cancelled.")
 
     else:
         await answer_callback_query(callback_query_id)
+
+
+# =============================================================================
+# /exception command — manage rest days
+# =============================================================================
+
+
+EXCEPTION_CONFIRM_KEYBOARD = {
+    "inline_keyboard": [
+        [
+            {"text": "✅ Confirm", "callback_data": "confirm_exception"},
+            {"text": "❌ Cancel", "callback_data": "cancel_exception"},
+        ]
+    ]
+}
+
+
+_EXCEPTION_USAGE = (
+    "🏖️ <b>/exception — manage rest days</b>\n\n"
+    "Subcommands:\n"
+    "• <code>/exception list</code> — show current rest days\n"
+    "• <code>/exception add &lt;text&gt;</code> — add rest days (e.g. <i>weekends</i>, "
+    "<i>Apr 20 Easter Monday</i>)\n"
+    "• <code>/exception remove YYYY-MM-DD</code> — delete a single date\n"
+    "• <code>/exception clear</code> — remove all rest days\n\n"
+    "Operates on your default challenge."
+)
+
+
+async def _resolve_default_challenge(user_id: int):
+    """Return the user's default challenge model, or None.
+
+    Uses ``is_default=True`` per the plan — no disambiguation keyboard.
+    """
+    challenges = await challenge_repo.get_all(
+        filters={"is_default": True}, user_id=user_id
+    )
+    return challenges[0] if challenges else None
+
+
+def _format_exception_list(
+    challenge,
+    rows: List[Any],
+) -> str:
+    """Render the full set of recurring + one-off rest days for a challenge."""
+    weekdays = _parse_weekdays_csv(getattr(challenge, "exception_weekdays", "") or "")
+    explicit = [r.date for r in rows]
+    exception_set = expand_exception_dates(
+        challenge.start_date, challenge.end_date, weekdays, explicit
+    )
+    total_days = (challenge.end_date - challenge.start_date).days + 1
+    effective_days = max(0, total_days - len(exception_set))
+
+    lines = [
+        "🏖️ <b>Rest days</b>",
+        f"📝 {escape(challenge.challenge_name)}",
+        f"📅 {challenge.start_date} → {challenge.end_date}",
+        f"🗓 {effective_days} active / {total_days} calendar days",
+        "",
+    ]
+    if weekdays:
+        names = ", ".join(_WEEKDAY_NAMES[w] for w in weekdays)
+        lines.append(f"🔁 <b>Recurring weekdays:</b> {names}")
+    else:
+        lines.append("🔁 <b>Recurring weekdays:</b> none")
+
+    if rows:
+        lines.append("")
+        lines.append("📌 <b>One-off dates:</b>")
+        for row in rows:
+            line = f"• {row.date.isoformat()}"
+            if row.reason:
+                line += f" — {escape(row.reason)}"
+            lines.append(line)
+    else:
+        lines.append("📌 <b>One-off dates:</b> none")
+
+    return "\n".join(lines)
+
+
+def _format_exception_preview(
+    challenge,
+    weekdays: List[int],
+    dates: List[Dict[str, Any]],
+) -> str:
+    """Render the Confirm/Cancel preview for ``/exception add``."""
+    # Combine the proposed weekday set with the existing one — set_exception_weekdays
+    # is a REPLACE operation, but the preview should show what the user is choosing.
+    new_weekdays = sorted(set(weekdays)) if weekdays else []
+
+    # Compute effective days assuming the new state will be applied additively
+    # over current one-off rows. We don't have the existing row set here; pass
+    # only the proposed dates so the preview reflects the *delta* the user asked for.
+    explicit = [d["date"] for d in dates]
+    proposed_set = expand_exception_dates(
+        challenge.start_date, challenge.end_date, new_weekdays, explicit
+    )
+    total_days = (challenge.end_date - challenge.start_date).days + 1
+    effective_after = max(0, total_days - len(proposed_set))
+
+    lines = [
+        "🏖️ <b>Add rest days?</b>",
+        f"📝 {escape(challenge.challenge_name)}",
+        "",
+    ]
+    if new_weekdays:
+        names = ", ".join(_WEEKDAY_NAMES[w] for w in new_weekdays)
+        lines.append(f"🔁 <b>Recurring weekdays (replaces existing):</b> {names}")
+    if dates:
+        lines.append("📌 <b>One-off dates:</b>")
+        for d in dates:
+            line = f"• {d['date'].isoformat()}"
+            if d.get("reason"):
+                line += f" — {escape(d['reason'])}"
+            lines.append(line)
+    if not new_weekdays and not dates:
+        lines.append("(nothing to add)")
+
+    lines.append("")
+    lines.append(
+        f"🗓 New effective days: {effective_after} of {total_days} "
+        f"(based on this change alone)"
+    )
+    lines.append("")
+    lines.append("Apply these rest days?")
+    return "\n".join(lines)
+
+
+async def _handle_exception_command(
+    text: str,
+    telegram_user_id: int,
+    user_id: int,
+    chat_id: int,
+) -> None:
+    """Top-level dispatcher for the ``/exception`` Telegram command."""
+    _ensure_orm()
+
+    parts = text.split(maxsplit=2)
+    # parts[0] = "/exception"
+    sub = parts[1].lower() if len(parts) >= 2 else ""
+
+    challenge = await _resolve_default_challenge(user_id)
+
+    if sub == "":
+        await send_telegram_message(chat_id, _EXCEPTION_USAGE)
+        return
+
+    if challenge is None:
+        await send_telegram_message(
+            chat_id,
+            "❌ No default challenge found.\n\n"
+            "Create one with <code>/challenge</code>, then mark it as default "
+            "via the admin or API before using <code>/exception</code>.",
+        )
+        return
+
+    if sub == "list":
+        rows = await list_exception_days(challenge.id, user_id=user_id)
+        # list_exception_days returns ChallengeExceptionDayOut, but
+        # _format_exception_list expects objects with .date and .reason
+        # — those attributes exist on the Out model too.
+        await send_telegram_message(chat_id, _format_exception_list(challenge, rows))
+        return
+
+    if sub == "clear":
+        await clear_exception_days(challenge.id, user_id=user_id)
+        await send_telegram_message(
+            chat_id, "✅ All rest days cleared for your default challenge."
+        )
+        return
+
+    if sub == "remove":
+        if len(parts) < 3:
+            await send_telegram_message(
+                chat_id,
+                "❌ Usage: <code>/exception remove YYYY-MM-DD</code>",
+            )
+            return
+        try:
+            target_date = date.fromisoformat(parts[2].strip())
+        except ValueError:
+            await send_telegram_message(
+                chat_id,
+                f"❌ Invalid date '<code>{escape(parts[2])}</code>'. "
+                "Expected ISO format YYYY-MM-DD.",
+            )
+            return
+        removed = await remove_exception_day(
+            challenge.id, target_date, user_id=user_id
+        )
+        if removed:
+            await send_telegram_message(
+                chat_id, f"✅ Removed rest day {target_date.isoformat()}."
+            )
+        else:
+            await send_telegram_message(
+                chat_id,
+                f"ℹ️ No rest day on {target_date.isoformat()} to remove.",
+            )
+        return
+
+    if sub == "add":
+        if len(parts) < 3 or not parts[2].strip():
+            await send_telegram_message(
+                chat_id,
+                "❌ Usage: <code>/exception add &lt;description&gt;</code>\n"
+                "Example: <code>/exception add weekends</code>",
+            )
+            return
+        await _handle_exception_prompt(
+            parts[2], challenge, telegram_user_id, user_id, chat_id
+        )
+        return
+
+    # Unknown subcommand
+    await send_telegram_message(chat_id, _EXCEPTION_USAGE)
+
+
+async def _handle_exception_prompt(
+    text: str,
+    challenge,
+    telegram_user_id: int,
+    user_id: int,
+    chat_id: int,
+) -> None:
+    """LLM-parse free-text rest days and stage a Confirm/Cancel preview."""
+    if not check_rate_limit(telegram_user_id):
+        await send_telegram_message(
+            chat_id,
+            "⚠️ You've reached the limit of 10 AI calls per hour. "
+            "Please try again later.",
+        )
+        return
+
+    # Same homoglyph/prompt-injection filter ``/challenge`` uses — the
+    # ``parse_exception_prompt`` system prompt has its own ignore-instructions
+    # wording as a second layer, but we still want to bail out before the
+    # LLM call (cheaper, keeps LLM budget intact, never sees jailbreak text).
+    try:
+        text = sanitize_llm_prompt(text)
+    except ValueError:
+        await send_telegram_message(
+            chat_id,
+            "❌ Your message contains patterns we can't process. "
+            "Please rephrase and try again.",
+        )
+        return
+
+    await send_chat_action(chat_id)
+    record_llm_call(telegram_user_id)
+
+    # Resolve relative phrases ("tomorrow", "next Friday") against the
+    # configured app timezone, not the host's local time. Otherwise users in
+    # non-UTC deployments can see "tomorrow" land on the wrong day around
+    # local midnight.
+    today_local = datetime.now(TZ).date()
+
+    try:
+        parsed = await parse_exception_prompt(
+            text,
+            challenge_window=(challenge.start_date, challenge.end_date),
+            today=today_local,
+        )
+    except LLMUnavailableError:
+        await send_telegram_message(
+            chat_id,
+            "⚠️ AI service is temporarily unavailable. Please try again later.",
+        )
+        return
+
+    if not parsed.get("is_valid"):
+        reason = parsed.get("error_reason") or "Could not parse rest days from your message."
+        await send_telegram_message(
+            chat_id,
+            f"❌ {escape(str(reason))}\n\n"
+            "Try something like <code>/exception add weekends</code> "
+            "or <code>/exception add Apr 20 Easter Monday</code>.",
+        )
+        return
+
+    raw_weekdays = parsed.get("exception_weekdays") or []
+    weekdays: List[int] = []
+    for w in raw_weekdays:
+        try:
+            iv = int(w)
+            if 1 <= iv <= 7:
+                weekdays.append(iv)
+        except (TypeError, ValueError):
+            continue
+    weekdays = sorted(set(weekdays))
+
+    raw_dates = parsed.get("exception_dates") or []
+    dates_payload: List[Dict[str, Any]] = []
+    for entry in raw_dates:
+        if not isinstance(entry, dict):
+            continue
+        raw_date = entry.get("date")
+        if not raw_date:
+            continue
+        try:
+            d = date.fromisoformat(str(raw_date))
+        except ValueError:
+            continue
+        # Drop out-of-window
+        if not (challenge.start_date <= d <= challenge.end_date):
+            continue
+        dates_payload.append({"date": d, "reason": entry.get("reason") or ""})
+
+    if not weekdays and not dates_payload:
+        await send_telegram_message(
+            chat_id,
+            "❌ I couldn't extract any rest days from that. "
+            "Try <code>/exception add weekends</code> "
+            "or <code>/exception add Apr 20</code>.",
+        )
+        return
+
+    start_exception_flow(
+        telegram_user_id=telegram_user_id,
+        chat_id=chat_id,
+        challenge_id=challenge.id,
+        weekdays=weekdays,
+        dates=dates_payload,
+    )
+
+    preview = _format_exception_preview(challenge, weekdays, dates_payload)
+    await send_telegram_message_with_keyboard(
+        chat_id, preview, EXCEPTION_CONFIRM_KEYBOARD
+    )

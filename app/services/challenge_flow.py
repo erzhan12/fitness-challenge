@@ -15,7 +15,7 @@ import time
 import logging
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from src.api.models import ChallengePromptParsed, ExerciseChallengeCreate
 
@@ -40,9 +40,16 @@ RATE_LIMIT_MAX_CALLS = 10
 class ChallengeFlowState:
     step: str  # "awaiting_prompt" or "awaiting_confirm"
     chat_id: int
+    # Discriminator: "challenge" (the /challenge create flow) or "exception"
+    # (the /exception add flow). Confirm/Cancel callbacks check this field
+    # so the two flows cannot collide on the same telegram_user_id.
+    kind: str = "challenge"
     created_at: float = field(default_factory=time.time)
     parsed_data: Optional[ChallengePromptParsed] = None
     challenge_data: Optional[ExerciseChallengeCreate] = None
+    # Used by the "exception" flow to stash the resolved challenge id and the
+    # parsed weekday/date payload until the user confirms.
+    exception_payload: Optional[Dict[str, Any]] = None
 
 
 # Keyed by telegram_user_id
@@ -59,6 +66,32 @@ def start_flow(telegram_user_id: int, chat_id: int) -> None:
         _flows[telegram_user_id] = ChallengeFlowState(
             step="awaiting_prompt",
             chat_id=chat_id,
+            kind="challenge",
+        )
+
+
+def start_exception_flow(
+    telegram_user_id: int,
+    chat_id: int,
+    challenge_id: int,
+    weekdays: List[int],
+    dates: List[Dict[str, Any]],
+) -> None:
+    """Open the /exception add confirm/cancel state for a user.
+
+    Goes straight to ``awaiting_confirm`` since the LLM has already parsed
+    the user's input by the time this is called.
+    """
+    with _flows_lock:
+        _flows[telegram_user_id] = ChallengeFlowState(
+            step="awaiting_confirm",
+            chat_id=chat_id,
+            kind="exception",
+            exception_payload={
+                "challenge_id": challenge_id,
+                "weekdays": list(weekdays),
+                "dates": list(dates),  # list of {date: date, reason: str|None}
+            },
         )
 
 

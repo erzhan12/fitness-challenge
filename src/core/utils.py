@@ -1,7 +1,7 @@
 """Shared utility functions used by both API and Telegram layers."""
 
-from datetime import date
-from typing import Tuple
+from datetime import date, timedelta
+from typing import Iterable, Tuple
 
 
 def calculate_expected_progress(
@@ -56,6 +56,43 @@ def calculate_status(
         cumulative, daily_target, day_number, total_days
     )
     return status
+
+
+def expand_exception_dates(
+    start: date,
+    end: date,
+    iso_weekdays: Iterable[int],
+    explicit_dates: Iterable[date],
+) -> set[date]:
+    """Build the full set of exception dates for a challenge window.
+
+    Walks ``[start, end]`` (inclusive on both ends) and includes any day
+    whose ``isoweekday()`` is in ``iso_weekdays`` (1=Mon..7=Sun), then
+    unions in any ``explicit_dates`` clamped to the window. Dates outside
+    ``[start, end]`` are silently dropped.
+
+    Returns an empty set when both inputs are empty or when ``start > end``.
+
+    Reused by stats math, challenge creation, and the ``/exception`` parser.
+    """
+    if start > end:
+        return set()
+
+    weekday_set = {int(w) for w in iso_weekdays}
+    result: set[date] = set()
+
+    if weekday_set:
+        cur = start
+        while cur <= end:
+            if cur.isoweekday() in weekday_set:
+                result.add(cur)
+            cur += timedelta(days=1)
+
+    for d in explicit_dates:
+        if start <= d <= end:
+            result.add(d)
+
+    return result
 
 
 def ensure_date(value) -> date:

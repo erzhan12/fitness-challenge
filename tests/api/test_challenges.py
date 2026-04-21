@@ -1,6 +1,7 @@
 """Tests for /api/v1/challenges endpoints."""
 
 from datetime import date, timedelta
+from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock
 
 import pytest
@@ -113,7 +114,7 @@ class TestCreateChallenge:
         self, client, auth_and_user_headers, mock_repos, mock_challenge_data
     ):
         """Test successful creation of challenge."""
-        mock_repos["challenge"].create.return_value = make_challenge_model(mock_challenge_data)
+        mock_repos["challenge"].create_with_exception_dates.return_value = make_challenge_model(mock_challenge_data)
 
         create_data = {
             "exercise_type_id": 1,
@@ -202,6 +203,48 @@ class TestCreateChallenge:
 
         assert response.status_code == 422
 
+    def test_create_challenge_uses_atomic_combined_repo_call(
+        self, client, auth_and_user_headers, mock_repos, mock_challenge_data
+    ):
+        """Atomic-create regression: the service must hand the parent row and
+        one-off exception dates to ``create_with_exception_dates`` in a single
+        call (not split across two awaitables), so a failure on the bulk
+        insert rolls back the parent. We assert the call shape rather than
+        running the real ORM — the unit-level guarantee is that there is one
+        combined repository call, and the repository body itself uses
+        ``transaction.atomic``.
+        """
+        mock_repos["challenge"].create_with_exception_dates.return_value = (
+            make_challenge_model(mock_challenge_data)
+        )
+
+        create_data = {
+            "exercise_type_id": 1,
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "daily_target": 33,
+            "challenge_name": "Atomic Push-up Challenge",
+            "exception_weekdays": [6, 7],
+            "exception_dates": ["2024-01-15", "2024-01-22"],
+        }
+
+        response = client.post(
+            "/api/v1/challenges", json=create_data, headers=auth_and_user_headers
+        )
+
+        assert response.status_code == 201
+        mock_repos["challenge"].create_with_exception_dates.assert_awaited_once()
+        # Old non-atomic path must NOT have been used.
+        mock_repos["challenge"].create.assert_not_awaited()
+        mock_repos["challenge_exception_day"].replace_dates.assert_not_awaited()
+        # And the dates were threaded into the combined call positionally.
+        call_args = mock_repos["challenge"].create_with_exception_dates.call_args
+        passed_dates = call_args[0][1]
+        assert sorted(d.isoformat() for d in passed_dates) == [
+            "2024-01-15",
+            "2024-01-22",
+        ]
+
 
 class TestUpdateChallenge:
     """Tests for PATCH /api/v1/challenges/{challenge_id}."""
@@ -269,6 +312,67 @@ class TestUpdateChallenge:
 
         assert response.status_code == 401
 
+    def test_update_challenge_shrink_window_trims_exception_dates(
+        self, client, auth_and_user_headers, mock_repos, mock_challenge_data
+    ):
+        """Window-shrink regression: when a PATCH narrows ``end_date`` past an
+        existing one-off rest row, the stale row must be trimmed in the same
+        request via ``replace_dates``. Otherwise the row would survive (hidden
+        from effective-day math) and could re-activate if the window is later
+        expanded.
+        """
+        existing_challenge = make_challenge_model({
+            **mock_challenge_data,
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-30",
+        })
+        mock_repos["challenge"].get_by_id.return_value = existing_challenge
+        mock_repos["challenge"].update.return_value = make_challenge_model({
+            **mock_challenge_data,
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-15",
+        })
+        # Two existing rest days; only the Apr 5 one survives the new Apr 15 end.
+        mock_repos["challenge_exception_day"].list_for_challenge.return_value = [
+            SimpleNamespace(id=1, challenge_id=1, date=date(2026, 4, 5), reason=""),
+            SimpleNamespace(id=2, challenge_id=1, date=date(2026, 4, 25), reason=""),
+        ]
+
+        response = client.patch(
+            "/api/v1/challenges/1",
+            json={"end_date": "2026-04-15"},
+            headers=auth_and_user_headers,
+        )
+
+        assert response.status_code == 200
+        # Trim must call replace_dates with only the surviving date.
+        mock_repos["challenge_exception_day"].replace_dates.assert_awaited_once()
+        call_args = mock_repos["challenge_exception_day"].replace_dates.call_args
+        # replace_dates(challenge_id, surviving, user_id=...)
+        assert call_args[0][0] == 1
+        assert call_args[0][1] == [date(2026, 4, 5)]
+
+    def test_update_challenge_window_unchanged_does_not_touch_exceptions(
+        self, client, auth_and_user_headers, mock_repos, mock_challenge_data
+    ):
+        """Updates that don't touch the window must not trigger the trim
+        path — otherwise every daily_target tweak would do an unnecessary
+        round-trip on the exception-day table.
+        """
+        mock_repos["challenge"].get_by_id.return_value = make_challenge_model(mock_challenge_data)
+        mock_repos["challenge"].update.return_value = make_challenge_model({
+            **mock_challenge_data, "daily_target": 50,
+        })
+
+        response = client.patch(
+            "/api/v1/challenges/1",
+            json={"daily_target": 50},
+            headers=auth_and_user_headers,
+        )
+
+        assert response.status_code == 200
+        mock_repos["challenge_exception_day"].replace_dates.assert_not_awaited()
+
 
 class TestCreateChallengeFromPrompt:
     """Tests for POST /api/v1/challenges/create-from-prompt."""
@@ -294,7 +398,7 @@ class TestCreateChallengeFromPrompt:
         exercise_model = make_exercise_type_model(mock_exercise_type_data)
         mock_repos["exercise_type"].get_all.return_value = [exercise_model]
         mock_repos["exercise_type"].get_by_name.return_value = exercise_model
-        mock_repos["challenge"].create.return_value = make_challenge_model(mock_challenge_data)
+        mock_repos["challenge"].create_with_exception_dates.return_value = make_challenge_model(mock_challenge_data)
 
         with patch("src.api.services.parse_challenge_prompt", new_callable=AsyncMock) as mock_parse:
             mock_parse.return_value = self._llm_payload()
@@ -307,7 +411,7 @@ class TestCreateChallengeFromPrompt:
 
         assert response.status_code == 201
         # Verify derivation: 900 total / 30 days = 30/day
-        create_call_arg = mock_repos["challenge"].create.call_args[0][0]
+        create_call_arg = mock_repos["challenge"].create_with_exception_dates.call_args[0][0]
         assert create_call_arg["daily_target"] == 30
         assert create_call_arg["challenge_name"] == "30-Day Push-ups Challenge"
 
@@ -318,7 +422,7 @@ class TestCreateChallengeFromPrompt:
         exercise_model = make_exercise_type_model(mock_exercise_type_data)
         mock_repos["exercise_type"].get_all.return_value = [exercise_model]
         mock_repos["exercise_type"].get_by_name.return_value = exercise_model
-        mock_repos["challenge"].create.return_value = make_challenge_model(mock_challenge_data)
+        mock_repos["challenge"].create_with_exception_dates.return_value = make_challenge_model(mock_challenge_data)
 
         with patch("src.api.services.parse_challenge_prompt", new_callable=AsyncMock) as mock_parse:
             mock_parse.return_value = self._llm_payload(target_total=None, daily_target=50)
@@ -331,7 +435,7 @@ class TestCreateChallengeFromPrompt:
 
         assert response.status_code == 201
         # Verify daily_target is passed through as-is
-        create_call_arg = mock_repos["challenge"].create.call_args[0][0]
+        create_call_arg = mock_repos["challenge"].create_with_exception_dates.call_args[0][0]
         assert create_call_arg["daily_target"] == 50
 
     def test_create_from_prompt_exercise_type_not_found(
@@ -506,6 +610,87 @@ class TestCreateChallengeFromPrompt:
         assert response.status_code == 400
         assert "Maximum is 10000 per day" in response.json()["detail"]
 
+    def test_create_from_prompt_target_total_exceeds_cap_with_exceptions(
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
+    ):
+        """Load-bearing cap-relocation regression test.
+
+        The cap check used to live in ``_parse_and_validate_llm_response``,
+        which divided by the *calendar* duration. ``_build_challenge_data``
+        then divided by the *effective* duration, so a target_total that
+        passed the precheck could still produce a per-day target far above
+        ``MAX_DAILY_TARGET``. The fix moved the check to after the effective
+        division.
+
+        For this test to actually pin that fix, the fixture must be one
+        where the calendar daily is *under* the cap but the effective daily
+        is *over* it — otherwise even the old, broken precheck would have
+        rejected it and the test would not distinguish the two checkers.
+
+        Fixture math:
+          start_date = 2026-03-01 (Sunday)
+          duration   = 30 days   → window is Mar 1..Mar 30 inclusive
+          weekdays   = skip Mon..Sat → only Sundays count
+          Sundays in window: Mar 1, 8, 15, 22, 29 → 5 effective days
+          target_total = 100_000
+
+          calendar daily : 100_000 / 30 ≈ 3 333  ✓ (well under 10 000 cap;
+                                                    would have passed any
+                                                    plausible precheck)
+          effective daily: 100_000 /  5 = 20 000  ✗ (fails the cap that
+                                                    is now enforced inside
+                                                    _build_challenge_data)
+        """
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+
+        with patch("src.api.services.parse_challenge_prompt", new_callable=AsyncMock) as mock_parse:
+            mock_parse.return_value = self._llm_payload(
+                start_date="2026-03-01",  # Sunday
+                duration_days=30,
+                target_total=100_000,
+                daily_target=None,
+                exception_weekdays=[1, 2, 3, 4, 5, 6],  # only Sundays count
+                exception_dates=[],
+            )
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "pushups 100000 reps over 30 days, Sundays only"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 400
+        assert "Maximum is 10000 per day" in response.json()["detail"]
+
+    def test_create_from_prompt_exception_date_outside_window(
+        self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
+    ):
+        """LLM-extracted exception dates outside the challenge window must be
+        surfaced as a validation error rather than silently dropped."""
+        exercise_model = make_exercise_type_model(mock_exercise_type_data)
+        mock_repos["exercise_type"].get_all.return_value = [exercise_model]
+
+        with patch("src.api.services.parse_challenge_prompt", new_callable=AsyncMock) as mock_parse:
+            mock_parse.return_value = self._llm_payload(
+                start_date="2026-04-01",
+                duration_days=30,
+                target_total=None,
+                daily_target=20,
+                exception_dates=["2026-05-01"],  # outside Apr 1..30
+            )
+
+            response = client.post(
+                "/api/v1/challenges/create-from-prompt",
+                json={"text": "April pushups 20/day except May 1"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 400
+        detail = response.json()["detail"].lower()
+        assert "outside challenge window" in detail
+        assert "2026-05-01" in detail
+
     def test_create_from_prompt_invalid_llm_data(
         self, client, auth_and_user_headers, mock_repos, mock_exercise_type_data
     ):
@@ -611,7 +796,7 @@ class TestCreateChallengeFromPrompt:
         mock_repos["exercise_type"].get_all.return_value = [exercise_model]
         # get_by_name returns None — forces alias fallback path
         mock_repos["exercise_type"].get_by_name.return_value = None
-        mock_repos["challenge"].create.return_value = make_challenge_model(mock_challenge_data)
+        mock_repos["challenge"].create_with_exception_dates.return_value = make_challenge_model(mock_challenge_data)
 
         with patch("src.api.services.parse_challenge_prompt", new_callable=AsyncMock) as mock_parse:
             # LLM returns alias "push-up" instead of canonical "pushups"
