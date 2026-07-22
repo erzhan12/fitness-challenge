@@ -1,19 +1,25 @@
 """Direct rest-day branch tests for reminder/Habit Reward paths.
 
 Three functions in ``app.services.workout_service`` honor exception
-(rest) days via the same ``if is_today_exception: continue`` pattern,
-but none of the rest-day branch was exercised by a test before this
-file. A regression that flipped any of those ``continue``s would
-silently break Habit Reward gating and reminder UX.
+(rest) days via the same ``if is_today_exception: continue`` pattern.
+A regression that flipped any of those ``continue``s would silently
+break Habit Reward gating and reminder UX.
 
-Each test below pins both the rest-day branch (today is a rest day →
-no work happens) and a negative control (no rest day → work happens),
-so the test fails fast if either branch breaks. The autouse fixture in
-``tests/services/conftest.py`` patches ``challenge_exception_day_repo``
-on the workout_service module; tests override
-``list_dates_for_challenges`` per-call to mark today as a one-off rest
-day. This avoids the need to freeze ``datetime.now(TZ).date()`` —
-``check_daily_reminders`` reads it internally.
+For ``_check_all_challenges_complete``, ``continue`` still means a
+rest-day challenge never *blocks* Habit Reward, but a day on which
+*every* challenge rests returns ``False`` (not a vacuous ``True``) —
+there is no scheduled work to complete. Evening-reminder /
+daily-reminder functions keep the older "today is a rest day → no work
+happens" outcome.
+
+Each test below pins the rest-day branch and a negative control (no
+rest day → work happens), so the test fails fast if either branch
+breaks. The autouse fixture in ``tests/services/conftest.py`` patches
+``challenge_exception_day_repo`` on the workout_service module; tests
+override ``list_dates_for_challenges`` per-call to mark today as a
+one-off rest day. This avoids the need to freeze
+``datetime.now(TZ).date()`` — ``check_daily_reminders`` reads it
+internally.
 """
 
 from datetime import datetime, timedelta
@@ -63,11 +69,13 @@ def _make_rest_aware_challenge(
 
 
 class TestCheckAllChallengesCompleteRestDay:
-    """``_check_all_challenges_complete`` must skip rest-day challenges so
-    they cannot block Habit Reward."""
+    """``_check_all_challenges_complete``: a rest-day challenge never
+    *blocks* Habit Reward, but an all-rest day is not completable and
+    returns ``False``.
+    """
 
     @pytest.mark.asyncio
-    async def test_returns_true_when_today_is_rest_day(
+    async def test_returns_false_when_all_challenges_are_rest_days(
         self, _mock_challenge_exception_day_repo
     ):
         today_local = datetime.now(TZ).date()
@@ -76,23 +84,26 @@ class TestCheckAllChallengesCompleteRestDay:
             "start_date": today_local - timedelta(days=5),
             "end_date": today_local + timedelta(days=5),
             "daily_target": 50,
-            "exception_weekdays": "",
+            # Recurring weekday exclusion (issue #29 repro path via
+            # `_parse_weekdays_csv` / `expand_exception_dates`).
+            "exception_weekdays": str(today_local.isoweekday()),
         }
-        # Today is a one-off rest day for this challenge.
-        _mock_challenge_exception_day_repo.list_dates_for_challenges = AsyncMock(
-            return_value={1: {today_local}}
-        )
+        # Explicit dates stay at the autouse `{}` default — rest day comes
+        # from the recurring CSV only.
 
         with patch("app.services.workout_service.log_repo") as mock_log_repo:
+            # Banked ahead on a rest day: only `scheduled_seen` → False can
+            # discriminate; `{1: 0}` would also fail if the continue branch
+            # were lost (`0 < expected`).
             mock_log_repo.get_cumulative_counts_by_challenge_ids = AsyncMock(
-                return_value={1: 0}  # zero progress would normally fail
+                return_value={1: 1000}
             )
 
             result = await _check_all_challenges_complete([challenge_dict], today_local)
 
-        assert result is True, (
-            "Rest day must short-circuit to True regardless of cumulative progress; "
-            "if this fails, the `if is_today_exception: continue` branch is gone."
+        assert result is False, (
+            "An all-rest day has no scheduled work, so it is not a completable "
+            "day; vacuous True would incorrectly fire Habit Reward / Day Complete."
         )
 
     @pytest.mark.asyncio
@@ -101,8 +112,15 @@ class TestCheckAllChallengesCompleteRestDay:
     ):
         """Negative control: same fixture, no exception → must return False.
 
-        This proves the rest-day branch (not some unrelated short-circuit)
-        is what made the previous test return True.
+        Pins the ordinary behind-schedule path: with no rest day the
+        challenge is scheduled, so ``scheduled_seen`` is True and the
+        ``cumulative_total < expected`` check is what returns False.
+
+        Note this control does not by itself isolate the rest-day branch —
+        both it and the all-rest test return ``False``. What discriminates
+        is the banked ``{1: 1000}`` in the all-rest test above: that value
+        clears ``expected``, so only ``scheduled_seen`` staying False can
+        produce ``False`` there.
         """
         today_local = datetime.now(TZ).date()
         challenge_dict = {
@@ -121,6 +139,76 @@ class TestCheckAllChallengesCompleteRestDay:
             )
 
             result = await _check_all_challenges_complete([challenge_dict], today_local)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_one_challenge_rests_and_other_is_on_track(
+        self, _mock_challenge_exception_day_repo
+    ):
+        today_local = datetime.now(TZ).date()
+        rest_challenge = {
+            "id": 1,
+            "start_date": today_local - timedelta(days=5),
+            "end_date": today_local + timedelta(days=5),
+            "daily_target": 50,
+            "exception_weekdays": "",
+        }
+        scheduled_challenge = {
+            "id": 2,
+            "start_date": today_local - timedelta(days=5),
+            "end_date": today_local + timedelta(days=5),
+            "daily_target": 10,
+            "exception_weekdays": "",
+        }
+        _mock_challenge_exception_day_repo.list_dates_for_challenges = AsyncMock(
+            return_value={1: {today_local}}
+        )
+
+        with patch("app.services.workout_service.log_repo") as mock_log_repo:
+            # day_number=6 → expected = 10 * 6 = 60; 100 >= 60 → on track
+            mock_log_repo.get_cumulative_counts_by_challenge_ids = AsyncMock(
+                return_value={1: 0, 2: 100}
+            )
+
+            result = await _check_all_challenges_complete(
+                [rest_challenge, scheduled_challenge], today_local
+            )
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_one_challenge_rests_and_other_is_behind(
+        self, _mock_challenge_exception_day_repo
+    ):
+        today_local = datetime.now(TZ).date()
+        rest_challenge = {
+            "id": 1,
+            "start_date": today_local - timedelta(days=5),
+            "end_date": today_local + timedelta(days=5),
+            "daily_target": 50,
+            "exception_weekdays": "",
+        }
+        scheduled_challenge = {
+            "id": 2,
+            "start_date": today_local - timedelta(days=5),
+            "end_date": today_local + timedelta(days=5),
+            "daily_target": 10,
+            "exception_weekdays": "",
+        }
+        _mock_challenge_exception_day_repo.list_dates_for_challenges = AsyncMock(
+            return_value={1: {today_local}}
+        )
+
+        with patch("app.services.workout_service.log_repo") as mock_log_repo:
+            # day_number=6 → expected = 60; 0 < 60 → behind
+            mock_log_repo.get_cumulative_counts_by_challenge_ids = AsyncMock(
+                return_value={1: 0, 2: 0}
+            )
+
+            result = await _check_all_challenges_complete(
+                [rest_challenge, scheduled_challenge], today_local
+            )
 
         assert result is False
 

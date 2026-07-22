@@ -227,9 +227,12 @@ async def _check_all_challenges_complete(
     """Check if all active challenges are on track with cumulative progress.
 
     Exception (rest) days are honored: a challenge whose ``today_local`` is a
-    rest day cannot block Habit Reward — its expected progress is computed
-    against the previous scheduled day, and if today is itself a rest day the
-    challenge is treated as complete regardless of today's logs.
+    rest day never blocks Habit Reward (Feature 0018). Its expected progress is
+    computed against the previous scheduled day and the challenge is skipped.
+
+    A day on which *every* active challenge is a rest day is not completable:
+    this function returns ``False`` so Habit Reward and ``Day Complete`` do not
+    fire when there was no scheduled work (Feature 0019 / issue #29).
 
     Args:
         challenges_data: List of active challenge dicts. Each dict must contain
@@ -238,7 +241,9 @@ async def _check_all_challenges_complete(
         today_local: Current date in local timezone
 
     Returns:
-        True if all active challenges are on track or ahead, False if any are behind
+        True if at least one challenge had scheduled work today and all such
+        challenges are on track or ahead; False if any scheduled challenge is
+        behind, or if no challenge had scheduled work today.
     """
     if not challenges_data:
         return False
@@ -254,6 +259,7 @@ async def _check_all_challenges_complete(
         user_id=user_id,
     )
 
+    scheduled_seen = False
     for challenge in challenges_data:
         challenge_id = challenge["id"]
         start_date = ensure_date(challenge["start_date"])
@@ -271,6 +277,7 @@ async def _check_all_challenges_complete(
         if is_today_exception:
             continue
 
+        scheduled_seen = True
         cumulative_total = cumulative_counts.get(challenge_id, 0)
         expected = calculate_expected_progress(
             daily_target, day_number, max(1, effective_total_days)
@@ -278,7 +285,7 @@ async def _check_all_challenges_complete(
         if cumulative_total < expected:
             return False
 
-    return True
+    return scheduled_seen
 
 
 def _format_habit_reward_message(response: HabitCompletionResponse) -> str:

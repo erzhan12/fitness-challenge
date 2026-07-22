@@ -749,6 +749,7 @@ The application displays visual indicators for challenge and daily completion st
 **Daily Completion (All Challenges):**
 - Shows `✅ Day Complete!` on first line when ALL active challenges are on track or ahead
 - Does NOT show if any challenge is behind schedule
+- Does NOT show when every active challenge is on an exception/rest day today (no scheduled work — Feature 0019)
 - Each challenge must have caught up to expected cumulative progress
 
 ### Implementation Details
@@ -1090,6 +1091,8 @@ The feature is disabled for a user if either `habit_reward_api_key` or `habit_re
 2. Both call `notify_habit_reward_if_complete(date, user_id)` which internally:
    - Fetches active challenges for the user
    - Checks if all are on track (`_check_all_challenges_complete()`)
+     - A challenge whose today is an exception/rest day never blocks Habit Reward (Feature 0018)
+     - If **every** active challenge is on an exception/rest day today, the day is not completable: `_check_all_challenges_complete` returns `False`, so no Habit Reward and no `✅ Day Complete!`, even when reps were banked ahead (Feature 0019 / issue #29)
    - If not all complete, returns True (not an error, just not ready)
 3. If all complete:
    - Atomically claims the date (prevents concurrent requests from double-sending)
