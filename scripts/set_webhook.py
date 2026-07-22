@@ -22,6 +22,18 @@ sys.path.insert(0, str(project_root))
 from app.config import settings
 
 
+def redact(text: str) -> str:
+    """Replace the bot token with a placeholder so it never reaches logs.
+
+    The token appears inline in every Telegram API URL, so printing a raw
+    URL leaks full bot credentials into terminal scrollback, CI logs and
+    pasted debug output. Anyone holding the token controls the bot.
+    """
+    token = settings.TELEGRAM_BOT_TOKEN
+    if not token:
+        return text
+    return text.replace(token, "<BOT_TOKEN>")
+
 
 def get_webhook_info():
     """Get current webhook information from Telegram.
@@ -33,8 +45,8 @@ def get_webhook_info():
     api_url = f"https://api.telegram.org/bot{token}/getWebhookInfo"
 
     print("[DEBUG] Getting webhook info...")
-    print(f"[DEBUG] API URL: {api_url}")
-    print(f"[DEBUG] Token (first 10 chars): {token[:10]}...")
+    print(f"[DEBUG] API URL: {redact(api_url)}")
+    print(f"[DEBUG] Token loaded: yes (length: {len(token)})")
 
     try:
         print("[DEBUG] Sending GET request...")
@@ -119,7 +131,7 @@ def set_webhook(drop_pending_updates=False):
     token = settings.TELEGRAM_BOT_TOKEN
     webhook_url = settings.TELEGRAM_WEBHOOK_URL
 
-    print(f"[DEBUG] Token loaded: {token[:10]}... (length: {len(token)})")
+    print(f"[DEBUG] Token loaded: yes (length: {len(token)})")
     print(f"[DEBUG] Webhook URL from config: {webhook_url}")
 
     # Validate configuration
@@ -154,7 +166,7 @@ def set_webhook(drop_pending_updates=False):
         print("[DEBUG] ✅ URL path validation passed")
 
     api_url = f"https://api.telegram.org/bot{token}/setWebhook"
-    print(f"[DEBUG] API URL: {api_url}")
+    print(f"[DEBUG] API URL: {redact(api_url)}")
 
     data = {
         "url": webhook_url,
@@ -189,7 +201,7 @@ def set_webhook(drop_pending_updates=False):
 
     try:
         print("[DEBUG] Sending POST request to Telegram API...")
-        print(f"[DEBUG] Request URL: {api_url}")
+        print(f"[DEBUG] Request URL: {redact(api_url)}")
         print(f"[DEBUG] Request data: {data}")
 
         response = httpx.post(api_url, data=data, timeout=10)
@@ -248,8 +260,8 @@ def delete_webhook(drop_pending_updates=False):
     token = settings.TELEGRAM_BOT_TOKEN
     api_url = f"https://api.telegram.org/bot{token}/deleteWebhook"
 
-    print(f"[DEBUG] Token loaded: {token[:10]}... (length: {len(token)})")
-    print(f"[DEBUG] API URL: {api_url}")
+    print(f"[DEBUG] Token loaded: yes (length: {len(token)})")
+    print(f"[DEBUG] API URL: {redact(api_url)}")
 
     data = {}
     if drop_pending_updates:
@@ -268,7 +280,7 @@ def delete_webhook(drop_pending_updates=False):
 
     try:
         print("[DEBUG] Sending POST request to Telegram API...")
-        print(f"[DEBUG] Request URL: {api_url}")
+        print(f"[DEBUG] Request URL: {redact(api_url)}")
         print(f"[DEBUG] Request data: {data}")
 
         response = httpx.post(api_url, data=data, timeout=10)
