@@ -41,3 +41,6 @@ secrets.txt
 *.sqlite3
 *.db
 data/db.sqlite3
+
+# Git worktrees (local isolation)
+.worktrees/

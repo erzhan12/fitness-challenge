@@ -234,6 +234,7 @@ Create manual step by step commands to check logs
 ## Long-Term Features (High Impact, High Effort)
 
 ### Web Dashboard
+- [x] Django admin UI is available at `/admin` (served via FastAPI; static at `/admin/static`)
 - [ ] Choose frontend framework (React/Vue or Jinja2 templates)
 - [ ] Design authentication strategy (Telegram login widget, JWT)
 - [ ] Create frontend project structure
