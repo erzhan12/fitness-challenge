@@ -23,16 +23,12 @@ from src.api.services import (
     get_ordered_challenges,
 )
 from src.api.security import verify_api_key, get_current_user
+from src.api.constants import NO_ACTIVE_CHALLENGES_MSG
 from src.core.models import AppUser
 from src.core.repositories import exercise_type_repo
 
 router = APIRouter(prefix="/workouts", tags=["Workouts"])
 TZ = ZoneInfo(settings.TZ)
-
-NO_ACTIVE_CHALLENGES_MSG = (
-    "No active challenges right now. Create one with /challenge "
-    "or extend an existing challenge's dates."
-)
 
 
 @router.post(
@@ -129,42 +125,36 @@ async def parse_workout(
     if parse_error:
         result = ParseResult(entries=[], is_valid=False, error_reason=parse_error)
     elif counts is not None:
-        # Valid multi-number input
-        if not challenges_data:
-             result = ParseResult(
-                 entries=[],
-                 is_valid=False,
-                 error_reason="No active challenges found to match these numbers."
-             )
+        # Valid multi-number input. challenges_data is guaranteed non-empty here
+        # (the endpoint returns early above when there are no in-window challenges).
+        ordered = get_ordered_challenges(challenges_data)
+        entries = []
+        for i, count in enumerate(counts):
+            if i >= len(ordered):
+                break
+
+            challenge = ordered[i]
+            # Find exercise type matching challenge
+            etype = next((et for et in exercise_types if et.id == challenge["exercise_type_id"]), None)
+
+            if etype:
+                duration_seconds = count * 60 if etype.unit.lower() in {"minute", "minutes"} else None
+                entries.append(ExerciseEntry(
+                    exercise_type_name=etype.name,
+                    count=count,
+                    duration_seconds=duration_seconds,
+                    notes=None,
+                    confidence=1.0
+                ))
+
+        if not entries:
+            result = ParseResult(
+                entries=[],
+                is_valid=False,
+                error_reason="Could not map numbers to active exercises."
+            )
         else:
-             ordered = get_ordered_challenges(challenges_data)
-             entries = []
-             for i, count in enumerate(counts):
-                 if i >= len(ordered):
-                     break
-
-                 challenge = ordered[i]
-                 # Find exercise type matching challenge
-                 etype = next((et for et in exercise_types if et.id == challenge["exercise_type_id"]), None)
-
-                 if etype:
-                     duration_seconds = count * 60 if etype.unit.lower() in {"minute", "minutes"} else None
-                     entries.append(ExerciseEntry(
-                         exercise_type_name=etype.name,
-                         count=count,
-                         duration_seconds=duration_seconds,
-                         notes=None,
-                         confidence=1.0
-                     ))
-
-             if not entries:
-                  result = ParseResult(
-                      entries=[],
-                      is_valid=False,
-                      error_reason="Could not map numbers to active exercises."
-                  )
-             else:
-                  result = ParseResult(entries=entries, is_valid=True)
+            result = ParseResult(entries=entries, is_valid=True)
 
     # Parse the message (Fallback)
     if not result:

@@ -3,12 +3,8 @@
 from unittest.mock import patch
 
 from app.models import ExerciseEntry, ParseResult
+from src.api.constants import NO_ACTIVE_CHALLENGES_MSG
 from tests.api.conftest import make_challenge_model, make_exercise_type_model
-
-NO_ACTIVE_CHALLENGES_MSG = (
-    "No active challenges right now. Create one with /challenge "
-    "or extend an existing challenge's dates."
-)
 
 
 class TestParseWorkout:

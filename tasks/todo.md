@@ -25,3 +25,8 @@ Track current and upcoming work items here.
   - Security hardening: input validation, approval checks, no error detail leakage
   - Reusable httpx client for connection pooling
   - `@botname` suffix stripping for all Telegram commands
+
+## Follow-ups
+
+### Real-DB test for `ExerciseChallengeRepository.deactivate_expired` (from PR #32 review)
+The current repo test (`tests/core/test_repositories.py`) verifies query construction via ORM spies (Option B): it asserts the `filter(is_active=True, end_date__lt=…)` predicate (strict `<` boundary), the `update(is_active=False, is_default=False)` dual-field clear, and `user_id` scoping. It does not exercise real SQL. A stronger belt-and-suspenders test would add `pytest-django` + a `@pytest.mark.django_db` sqlite-in-memory test that creates rows and asserts actual model-state transitions. Deferred because it introduces the first DB-backed test in the suite (new dev dep + pytest django settings + FK fixtures) — worth its own PR rather than destabilizing the 0020 change set.

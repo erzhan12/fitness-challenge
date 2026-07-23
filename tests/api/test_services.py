@@ -7,7 +7,6 @@ import pytest
 
 from src.api import services as api_services
 from src.api.services import TZ
-from tests.api.conftest import make_challenge_model
 
 
 @pytest.mark.asyncio
@@ -41,73 +40,22 @@ async def test_deactivate_expired_challenges_explicit_target_date(mock_repos):
 
 
 @pytest.mark.asyncio
-async def test_list_current_active_challenges_sweeps_before_read(mock_repos):
-    order: list[str] = []
+async def test_list_current_active_challenges_does_not_sweep_on_read(mock_repos):
+    """The hot read path must NOT run the deactivation sweep (perf).
 
-    async def _track_deactivate(*args, **kwargs):
-        order.append("deactivate")
-        return 0
-
-    async def _track_get(*args, **kwargs):
-        order.append("get_current_active")
-        return []
-
-    mock_repos["challenge"].deactivate_expired = AsyncMock(side_effect=_track_deactivate)
-    mock_repos["challenge"].get_current_active = AsyncMock(side_effect=_track_get)
+    ``get_current_active`` already excludes expired challenges by date window,
+    so clearing ``is_active`` is left to the evening reminder sweep instead of
+    a DB write on every workout parse/log.
+    """
+    mock_repos["challenge"].get_current_active = AsyncMock(return_value=[])
 
     with patch(
         "src.api.services.deactivate_expired_challenges",
         new_callable=AsyncMock,
-        side_effect=_track_deactivate,
     ) as mock_sweep:
         result = await api_services.list_current_active_challenges(
             target_date=date(2026, 7, 23), user_id=9
         )
 
     assert result == []
-    assert order == ["deactivate", "get_current_active"]
-    # Must not thread the display/target_date into the sweep.
-    mock_sweep.assert_awaited_once_with(user_id=9)
-
-
-@pytest.mark.asyncio
-async def test_list_current_active_challenges_sweep_failure_is_swallowed(mock_repos):
-    challenge_model = make_challenge_model(
-        {
-            "id": 1,
-            "exercise_type_id": 1,
-            "start_date": "2026-07-01",
-            "end_date": "2026-07-31",
-            "daily_target": 33,
-            "challenge_name": "Pushups",
-            "is_active": True,
-            "is_default": False,
-        }
-    )
-    mock_repos["challenge"].get_current_active = AsyncMock(
-        return_value=[challenge_model]
-    )
-
-    with patch(
-        "src.api.services.deactivate_expired_challenges",
-        new_callable=AsyncMock,
-        side_effect=RuntimeError("db down"),
-    ):
-        result = await api_services.list_current_active_challenges(user_id=1)
-
-    assert len(result) == 1
-    assert result[0]["id"] == 1
-
-
-@pytest.mark.asyncio
-async def test_list_current_active_challenges_forwards_user_id_to_sweep(mock_repos):
-    mock_repos["challenge"].get_current_active = AsyncMock(return_value=[])
-
-    with patch(
-        "src.api.services.deactivate_expired_challenges",
-        new_callable=AsyncMock,
-        return_value=0,
-    ) as mock_sweep:
-        await api_services.list_current_active_challenges(user_id=55)
-
-    mock_sweep.assert_awaited_once_with(user_id=55)
+    mock_sweep.assert_not_awaited()

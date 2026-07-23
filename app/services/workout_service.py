@@ -61,6 +61,7 @@ from src.api.services import (
     set_exception_weekdays,
     ExerciseTypeNotFoundError,
 )
+from src.api.constants import NO_ACTIVE_CHALLENGES_MSG
 from app.services.challenge_flow import (
     start_flow,
     start_exception_flow,
@@ -1133,11 +1134,7 @@ async def process_incoming_message(
         )
 
         if not challenges_data:
-            await send_telegram_message(
-                chat_id,
-                "No active challenges right now. Create one with /challenge "
-                "or extend an existing challenge's dates.",
-            )
+            await send_telegram_message(chat_id, NO_ACTIVE_CHALLENGES_MSG)
             return
 
         # Determine relevant exercise type IDs
@@ -1174,45 +1171,39 @@ async def process_incoming_message(
             # Explicit error from fast parser (e.g. decimals)
             parsed_result = ParseResult(entries=[], is_valid=False, error_reason=parse_error)
         elif counts is not None:
-            # Valid multi-number input
-            if not challenges_data:
+            # Valid multi-number input. challenges_data is guaranteed non-empty
+            # here (the handler returns early above when there are none).
+            ordered_challenges = get_ordered_challenges(challenges_data)
+            entries = []
+
+            for i, count in enumerate(counts):
+                if i >= len(ordered_challenges):
+                    break
+
+                challenge = ordered_challenges[i]
+                # Find exercise type
+                etype = next((et for et in exercise_types if et.id == challenge["exercise_type_id"]), None)
+
+                if etype:
+                    duration_seconds = count * 60 if etype.unit.lower() in {"minute", "minutes"} else None
+                    entries.append(ExerciseEntry(
+                        exercise_type_name=etype.name,
+                        count=count,
+                        duration_seconds=duration_seconds,
+                        notes=None,
+                        confidence=1.0
+                    ))
+                    # Explicitly map this entry index to this challenge
+                    entry_challenge_map[len(entries) - 1] = challenge
+
+            if not entries:
                 parsed_result = ParseResult(
                     entries=[],
                     is_valid=False,
-                    error_reason="No active challenges found to match these numbers."
+                    error_reason="Could not map numbers to active exercises."
                 )
             else:
-                ordered_challenges = get_ordered_challenges(challenges_data)
-                entries = []
-
-                for i, count in enumerate(counts):
-                    if i >= len(ordered_challenges):
-                        break
-
-                    challenge = ordered_challenges[i]
-                    # Find exercise type
-                    etype = next((et for et in exercise_types if et.id == challenge["exercise_type_id"]), None)
-
-                    if etype:
-                        duration_seconds = count * 60 if etype.unit.lower() in {"minute", "minutes"} else None
-                        entries.append(ExerciseEntry(
-                            exercise_type_name=etype.name,
-                            count=count,
-                            duration_seconds=duration_seconds,
-                            notes=None,
-                            confidence=1.0
-                        ))
-                        # Explicitly map this entry index to this challenge
-                        entry_challenge_map[len(entries) - 1] = challenge
-
-                if not entries:
-                    parsed_result = ParseResult(
-                        entries=[],
-                        is_valid=False,
-                        error_reason="Could not map numbers to active exercises."
-                    )
-                else:
-                    parsed_result = ParseResult(entries=entries, is_valid=True)
+                parsed_result = ParseResult(entries=entries, is_valid=True)
 
         if not parsed_result:
             parsed_result = parse_workout_message(text, exercise_types, default_exercise_name)
@@ -1578,7 +1569,12 @@ async def send_evening_reminder(reminder_hour: int):
     try:
         await deactivate_expired_challenges()
     except Exception:
-        logger.exception("Failed to deactivate expired challenges during reminder sweep")
+        # Best-effort hygiene; an expected, handled failure — warn (with trace)
+        # rather than log at ERROR, since it never impacts reminder delivery.
+        logger.warning(
+            "Failed to deactivate expired challenges during reminder sweep",
+            exc_info=True,
+        )
 
     # Get settings
     app_settings = await app_settings_repo.get_singleton()

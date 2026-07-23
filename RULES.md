@@ -577,14 +577,14 @@ When the in-window set is empty, workout parse/log flows must **not** fall back 
 
 > No active challenges right now. Create one with /challenge or extend an existing challenge's dates.
 
-Expired challenges (`end_date < today`) are lazily deactivated (`is_active=False`, `is_default` cleared) via:
-- a best-effort sweep inside `list_current_active_challenges` (per-user, fail-open)
-- a best-effort sweep in `send_evening_reminder` (all users, fail-open, runs even when reminders are disabled)
+Expired challenges (`end_date < today`) have their `is_active`/`is_default` flags cleared by a single best-effort sweep in `send_evening_reminder` (all users, fail-open, runs even when reminders are disabled).
+
+**Do NOT sweep on the read path.** `list_current_active_challenges` must not call `deactivate_expired_challenges` — `get_current_active` already excludes expired rows by the date window, so clearing the stored flag is admin-only hygiene and a per-read DB write would add latency to the hot workout parse/log path for no functional gain.
 
 Date-window filtering remains the source of truth for what is shown; auto-clear is admin/data hygiene.
 
 **Pitfall to Avoid:**
-Never thread `list_current_active_challenges`'s display/`target_date` into `deactivate_expired_challenges` — production sweeps use real today only. Only unit tests pass an explicit cutoff date.
+Never thread a display/`target_date` into `deactivate_expired_challenges` — the production sweep uses real today only. Only unit tests pass an explicit cutoff date.
 
 ---
 

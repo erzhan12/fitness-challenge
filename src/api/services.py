@@ -281,15 +281,16 @@ async def list_current_active_challenges(
     target_date: Optional[date] = None,
     user_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """List active challenges valid for the target date (default: today)."""
-    # Best-effort hygiene: clear expired is_active flags. Fail open — never
-    # block the date-window read (source of truth for Telegram/REST).
-    # Do NOT pass target_date into the sweep (display date ≠ deactivation cutoff).
-    try:
-        await deactivate_expired_challenges(user_id=user_id)
-    except Exception:
-        logger.exception("Failed to deactivate expired challenges")
+    """List active challenges valid for the target date (default: today).
 
+    Note: expired-challenge hygiene is NOT run here. ``get_current_active``
+    already filters by the date window (``start_date <= today <= end_date``),
+    so expired rows are excluded from reads regardless of a stale
+    ``is_active`` flag. Clearing the flag is admin-only hygiene handled by the
+    evening reminder sweep (``send_evening_reminder``) — running a DB write on
+    every workout parse/log would add latency to the hot read path for no
+    functional benefit.
+    """
     current_date = target_date or datetime.now(TZ).date()
     challenges = await challenge_repo.get_current_active(
         current_date,

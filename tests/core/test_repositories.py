@@ -26,10 +26,13 @@ async def test_deactivate_expired_filters_active_before_reference_date():
         mock_objects.filter.return_value = mock_qs
         count = await repo.deactivate_expired(date(2026, 7, 23))
 
+    # end_date__lt (strict <) guarantees a challenge whose end_date equals the
+    # reference date is NOT deactivated — the boundary the query must honor.
     mock_objects.filter.assert_called_once_with(
         is_active=True,
         end_date__lt=date(2026, 7, 23),
     )
+    # Both flags cleared in a single bulk update.
     mock_qs.update.assert_called_once_with(is_active=False, is_default=False)
     assert count == 2
 
