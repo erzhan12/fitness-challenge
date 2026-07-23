@@ -322,6 +322,7 @@ def mock_repos(app_user_model):
     challenge_repo.get_by_id = AsyncMock(return_value=None)
     challenge_repo.get_active_for_type = AsyncMock(return_value=None)
     challenge_repo.get_current_active = AsyncMock(return_value=[])
+    challenge_repo.deactivate_expired = AsyncMock(return_value=0)
     challenge_repo.create = AsyncMock(return_value=None)
     challenge_repo.create_with_exception_dates = AsyncMock(return_value=None)
     challenge_repo.update = AsyncMock(return_value=None)
@@ -356,6 +357,7 @@ def mock_repos(app_user_model):
     app_user_repo.get_or_create_by_telegram_user_id = AsyncMock(return_value=(app_user_model, False))
 
     with patch("src.api.services.exercise_type_repo", exercise_type_repo), \
+         patch("src.api.routers.workouts.exercise_type_repo", exercise_type_repo), \
          patch("src.api.services.challenge_repo", challenge_repo), \
          patch("src.api.services.challenge_exception_day_repo", challenge_exception_day_repo), \
          patch("src.api.services.log_repo", log_repo), \

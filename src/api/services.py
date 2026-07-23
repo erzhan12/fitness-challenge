@@ -261,11 +261,35 @@ async def list_challenges(
     return result
 
 
+async def deactivate_expired_challenges(
+    target_date: Optional[date] = None,
+    user_id: Optional[int] = None,
+) -> int:
+    """Deactivate challenges whose end_date is before the cutoff date.
+
+    ``target_date`` *is* the cutoff: rows with ``end_date < reference_date``
+    are cleared. Production call sites pass no date (uses real today in TZ).
+    Only unit tests should pass an explicit ``target_date``.
+    """
+    reference_date = target_date or datetime.now(TZ).date()
+    return await challenge_repo.deactivate_expired(
+        reference_date, user_id=user_id
+    )
+
+
 async def list_current_active_challenges(
     target_date: Optional[date] = None,
     user_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """List active challenges valid for the target date (default: today)."""
+    # Best-effort hygiene: clear expired is_active flags. Fail open — never
+    # block the date-window read (source of truth for Telegram/REST).
+    # Do NOT pass target_date into the sweep (display date ≠ deactivation cutoff).
+    try:
+        await deactivate_expired_challenges(user_id=user_id)
+    except Exception:
+        logger.exception("Failed to deactivate expired challenges")
+
     current_date = target_date or datetime.now(TZ).date()
     challenges = await challenge_repo.get_current_active(
         current_date,

@@ -449,6 +449,23 @@ class ExerciseChallengeRepository:
         return list(queryset.order_by("id"))
 
     @sync_to_async
+    def deactivate_expired(
+        self, reference_date: date, user_id: Optional[int] = None
+    ) -> int:
+        """Bulk-clear is_active (and is_default) for challenges past end_date.
+
+        Selects rows with ``is_active=True`` and ``end_date < reference_date``.
+        Optionally scoped to ``user_id``. Returns the number of rows updated.
+        """
+        queryset = ExerciseChallenge.objects.filter(
+            is_active=True,
+            end_date__lt=reference_date,
+        )
+        if user_id is not None:
+            queryset = queryset.filter(user_id=user_id)
+        return queryset.update(is_active=False, is_default=False)
+
+    @sync_to_async
     def create(self, data: dict) -> ExerciseChallenge:
         """Create new challenge."""
         return ExerciseChallenge.objects.create(**data)

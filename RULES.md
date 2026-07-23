@@ -567,6 +567,27 @@ Always pass `default_exercise_name` to `parse_workout_message()` - don't rely on
 
 ---
 
+## Active Challenges (Date Window) & Empty-Window Policy
+
+**"Active for Telegram / parse"** means in the date window:
+`is_active=True` AND `start_date ≤ today ≤ end_date`
+(`ExerciseChallengeRepository.get_current_active` / `list_current_active_challenges`).
+
+When the in-window set is empty, workout parse/log flows must **not** fall back to all exercise types or invent `Day 1/30 · 990` cards. Both Telegram (`process_incoming_message`) and REST (`POST /workouts/parse`) return the same copy and skip parsing/logging:
+
+> No active challenges right now. Create one with /challenge or extend an existing challenge's dates.
+
+Expired challenges (`end_date < today`) are lazily deactivated (`is_active=False`, `is_default` cleared) via:
+- a best-effort sweep inside `list_current_active_challenges` (per-user, fail-open)
+- a best-effort sweep in `send_evening_reminder` (all users, fail-open, runs even when reminders are disabled)
+
+Date-window filtering remains the source of truth for what is shown; auto-clear is admin/data hygiene.
+
+**Pitfall to Avoid:**
+Never thread `list_current_active_challenges`'s display/`target_date` into `deactivate_expired_challenges` — production sweeps use real today only. Only unit tests pass an explicit cutoff date.
+
+---
+
 ## Multi-Number Challenge Selection
 
 When a user sends a numbers-only message with multiple numbers (e.g., "50 30"), the system deterministically maps each number to an active challenge.

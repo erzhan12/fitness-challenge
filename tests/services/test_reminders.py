@@ -16,6 +16,17 @@ from app.services.workout_service import send_evening_reminder, compute_evening_
 class TestSendEveningReminder:
     """Tests for send_evening_reminder function."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_deactivate_expired(self):
+        """Hygiene sweep must not hit real challenge_repo in reminder tests."""
+        with patch(
+            "app.services.workout_service.deactivate_expired_challenges",
+            new_callable=AsyncMock,
+            return_value=0,
+        ) as mock_deactivate:
+            self.mock_deactivate_expired = mock_deactivate
+            yield mock_deactivate
+
     @pytest.mark.asyncio
     async def test_send_reminder_disabled(self):
         """When is_reminder_active=False, no Telegram message should be sent."""
@@ -37,6 +48,29 @@ class TestSendEveningReminder:
                 mock_send.assert_not_called()
                 # Should not mark as sent
                 mock_repo.try_mark_hour_sent.assert_not_called()
+                # Hygiene sweep still runs before the disabled early-return
+                self.mock_deactivate_expired.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_send_reminder_deactivate_failure_is_swallowed(self):
+        """Hygiene sweep errors must not abort the reminder path."""
+        mock_settings = SimpleNamespace(
+            is_reminder_active=False,
+            telegram_chat_id=123456789,
+        )
+        self.mock_deactivate_expired.side_effect = RuntimeError("db down")
+
+        with patch("app.services.workout_service.app_settings_repo") as mock_repo:
+            mock_repo.get_singleton = AsyncMock(return_value=mock_settings)
+
+            with patch(
+                "app.services.workout_service.send_telegram_message",
+                new_callable=AsyncMock,
+            ) as mock_send:
+                await send_evening_reminder(21)
+
+                mock_send.assert_not_called()
+                mock_repo.get_singleton.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_send_reminder_no_chat_id(self):

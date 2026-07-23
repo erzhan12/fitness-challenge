@@ -198,9 +198,9 @@ test_shared_logic() {
     print_info "Expected Telegram to show same status: $STATUS"
 }
 
-# Test 3: Parser fallback when no challenges
+# Test 3: No-active-challenges policy (no all-types fallback)
 test_parser_fallback() {
-    print_header "Test Suite 3: Parser Fallback (No Active Challenges)"
+    print_header "Test Suite 3: No Active Challenges (No Parser Fallback)"
     
     # Save current challenge states
     print_info "Saving current challenge states..."
@@ -230,7 +230,7 @@ test_parser_fallback() {
         print_fail "Still have $ACTIVE_COUNT active challenges"
     fi
     
-    # Test parser with no active challenges
+    # Test parser with no active challenges — must reject, not fall back
     print_test "Testing parser with no active challenges"
     ((TESTS_RUN++))
     
@@ -241,17 +241,18 @@ test_parser_fallback() {
     
     IS_VALID=$(echo "$PARSE_RESULT" | jq -r '.is_valid')
     ENTRIES_COUNT=$(echo "$PARSE_RESULT" | jq '.entries | length')
+    ERROR_REASON=$(echo "$PARSE_RESULT" | jq -r '.error_reason // empty')
     
     print_info "Parse result - Valid: $IS_VALID, Entries: $ENTRIES_COUNT"
     
-    if [ "$IS_VALID" == "true" ] && [ "$ENTRIES_COUNT" -gt 0 ]; then
-        print_pass "Parser works without active challenges (fallback successful)"
+    if [ "$IS_VALID" == "false" ] && [ "$ENTRIES_COUNT" -eq 0 ] && echo "$ERROR_REASON" | grep -q "No active challenges"; then
+        print_pass "Parser rejects empty in-window set (no all-types fallback)"
     else
-        print_fail "Parser failed with no active challenges (fallback not working)"
+        print_fail "Parser should return is_valid=false with no-active-challenges error"
     fi
     
-    # Test with different input
-    print_test "Testing parser with single exercise"
+    # Test with different input — same policy
+    print_test "Testing parser with single exercise and no challenges"
     ((TESTS_RUN++))
     
     PARSE_RESULT2=$(curl -s -X POST "$BASE_URL/api/v1/workouts/parse" \
@@ -260,11 +261,12 @@ test_parser_fallback() {
         -d '{"text": "50 pushups"}')
     
     IS_VALID2=$(echo "$PARSE_RESULT2" | jq -r '.is_valid')
+    ERROR_REASON2=$(echo "$PARSE_RESULT2" | jq -r '.error_reason // empty')
     
-    if [ "$IS_VALID2" == "true" ]; then
-        print_pass "Parser handles single exercise without challenges"
+    if [ "$IS_VALID2" == "false" ] && echo "$ERROR_REASON2" | grep -q "No active challenges"; then
+        print_pass "Parser rejects single exercise without in-window challenges"
     else
-        print_fail "Parser failed on single exercise without challenges"
+        print_fail "Parser should reject single exercise without in-window challenges"
     fi
     
     # Reactivate challenges
@@ -301,13 +303,14 @@ test_code_fixes() {
         print_fail "Telegram service doesn't import shared helper"
     fi
     
-    print_test "Checking for parser fallback logic"
+    print_test "Checking for no-active-challenges early exit in parse_workout"
     ((TESTS_RUN++))
     
-    if grep -q "if not api_exercise_types:" src/api/routers/workouts.py; then
-        print_pass "Parser fallback logic is present"
+    if grep -q "No active challenges right now" src/api/routers/workouts.py \
+        && ! grep -q "if not api_exercise_types:" src/api/routers/workouts.py; then
+        print_pass "Parser early-exits on empty challenges (no all-types fallback)"
     else
-        print_fail "Parser fallback logic NOT found"
+        print_fail "Expected no-challenges early exit and no all-types fallback"
     fi
 }
 

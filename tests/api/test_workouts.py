@@ -5,16 +5,41 @@ from unittest.mock import patch
 from app.models import ExerciseEntry, ParseResult
 from tests.api.conftest import make_challenge_model, make_exercise_type_model
 
+NO_ACTIVE_CHALLENGES_MSG = (
+    "No active challenges right now. Create one with /challenge "
+    "or extend an existing challenge's dates."
+)
+
 
 class TestParseWorkout:
     """Tests for POST /api/v1/workouts/parse."""
 
+    def test_parse_workout_no_active_challenges(
+        self, client, auth_and_user_headers, mock_repos
+    ):
+        mock_repos["challenge"].get_current_active.return_value = []
+
+        with patch(
+            "src.api.routers.workouts.parse_workout_message",
+        ) as mock_parse:
+            response = client.post(
+                "/api/v1/workouts/parse",
+                json={"text": "25 pushups"},
+                headers=auth_and_user_headers,
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["is_valid"] is False
+        assert data["entries"] == []
+        assert data["error_reason"] == NO_ACTIVE_CHALLENGES_MSG
+        mock_parse.assert_not_called()
+
     def test_parse_workout_success(
         self, client, auth_and_user_headers, mock_repos, exercise_type_model, challenge_model
     ):
-        mock_repos["exercise_type"].get_all.return_value = [exercise_type_model]
-        mock_repos["challenge"].get_all.return_value = [challenge_model]
         mock_repos["challenge"].get_current_active.return_value = [challenge_model]
+        mock_repos["exercise_type"].get_by_ids.return_value = [exercise_type_model]
 
         mock_result = ParseResult(
             entries=[
@@ -56,13 +81,36 @@ class TestParseWorkout:
         exercise_type_model,
         exercise_type_model_2,
     ):
-        # Force fallback from challenge-only -> all active types.
-        mock_repos["challenge"].get_all.return_value = []
-        mock_repos["exercise_type"].get_all.return_value = [
+        challenge_1 = make_challenge_model(
+            {
+                "id": 1,
+                "exercise_type_id": 1,
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-31",
+                "daily_target": 33,
+                "challenge_name": "Pushups",
+                "is_active": True,
+            }
+        )
+        challenge_2 = make_challenge_model(
+            {
+                "id": 2,
+                "exercise_type_id": 2,
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-31",
+                "daily_target": 30,
+                "challenge_name": "Squats",
+                "is_active": True,
+            }
+        )
+        mock_repos["challenge"].get_current_active.return_value = [
+            challenge_1,
+            challenge_2,
+        ]
+        mock_repos["exercise_type"].get_by_ids.return_value = [
             exercise_type_model,
             exercise_type_model_2,
         ]
-        mock_repos["challenge"].get_current_active.return_value = []
 
         mock_result = ParseResult(
             entries=[
@@ -99,10 +147,11 @@ class TestParseWorkout:
         data = response.json()
         assert len(data["entries"]) == 2
 
-    def test_parse_workout_invalid_message(self, client, auth_and_user_headers, mock_repos):
-        mock_repos["exercise_type"].get_all.return_value = []
-        mock_repos["challenge"].get_all.return_value = []
-        mock_repos["challenge"].get_current_active.return_value = []
+    def test_parse_workout_invalid_message(
+        self, client, auth_and_user_headers, mock_repos, exercise_type_model, challenge_model
+    ):
+        mock_repos["challenge"].get_current_active.return_value = [challenge_model]
+        mock_repos["exercise_type"].get_by_ids.return_value = [exercise_type_model]
 
         mock_result = ParseResult(
             entries=[],
@@ -142,10 +191,11 @@ class TestParseWorkout:
         response = client.post("/api/v1/workouts/parse", json={}, headers=auth_and_user_headers)
         assert response.status_code == 422
 
-    def test_parse_workout_empty_text(self, client, auth_and_user_headers, mock_repos):
-        mock_repos["exercise_type"].get_all.return_value = []
-        mock_repos["challenge"].get_all.return_value = []
-        mock_repos["challenge"].get_current_active.return_value = []
+    def test_parse_workout_empty_text(
+        self, client, auth_and_user_headers, mock_repos, exercise_type_model, challenge_model
+    ):
+        mock_repos["challenge"].get_current_active.return_value = [challenge_model]
+        mock_repos["exercise_type"].get_by_ids.return_value = [exercise_type_model]
 
         mock_result = ParseResult(
             entries=[],
@@ -176,9 +226,20 @@ class TestParseWorkout:
             "display_name": "Plank",
             "unit": "minutes",
         }
-        mock_repos["challenge"].get_all.return_value = []
-        mock_repos["exercise_type"].get_all.return_value = [make_exercise_type_model(plank_type)]
-        mock_repos["challenge"].get_current_active.return_value = []
+        plank_model = make_exercise_type_model(plank_type)
+        challenge = make_challenge_model(
+            {
+                "id": 3,
+                "exercise_type_id": 3,
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-31",
+                "daily_target": 2,
+                "challenge_name": "Plank",
+                "is_active": True,
+            }
+        )
+        mock_repos["challenge"].get_current_active.return_value = [challenge]
+        mock_repos["exercise_type"].get_by_ids.return_value = [plank_model]
 
         mock_result = ParseResult(
             entries=[
@@ -209,11 +270,10 @@ class TestParseWorkout:
         assert data["entries"][0]["duration_seconds"] == 120
 
     def test_parse_workout_response_format(
-        self, client, auth_and_user_headers, mock_repos, exercise_type_model
+        self, client, auth_and_user_headers, mock_repos, exercise_type_model, challenge_model
     ):
-        mock_repos["exercise_type"].get_all.return_value = [exercise_type_model]
-        mock_repos["challenge"].get_all.return_value = []
-        mock_repos["challenge"].get_current_active.return_value = []
+        mock_repos["challenge"].get_current_active.return_value = [challenge_model]
+        mock_repos["exercise_type"].get_by_ids.return_value = [exercise_type_model]
 
         mock_result = ParseResult(
             entries=[
@@ -286,12 +346,14 @@ class TestParseWorkout:
             }
         )
 
-        mock_repos["exercise_type"].get_all.return_value = [
+        mock_repos["challenge"].get_current_active.return_value = [
+            challenge_1,
+            challenge_2,
+        ]
+        mock_repos["exercise_type"].get_by_ids.return_value = [
             exercise_type_model,
             exercise_type_model_2,
         ]
-        mock_repos["challenge"].get_all.return_value = [challenge_1, challenge_2]
-        mock_repos["challenge"].get_current_active.return_value = [challenge_1, challenge_2]
 
         with patch("src.api.routers.workouts.parse_workout_message") as mock_parse_llm:
             response = client.post(
@@ -310,4 +372,3 @@ class TestParseWorkout:
         assert data["entries"][1]["count"] == 30
 
         mock_parse_llm.assert_not_called()
-

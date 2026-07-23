@@ -51,6 +51,7 @@ from src.api.services import (
     compute_exercise_stats,
     list_current_active_challenges,
     get_ordered_challenges,
+    deactivate_expired_challenges,
     validate_and_prepare_challenge,
     create_challenge,
     list_exception_days,
@@ -1131,36 +1132,33 @@ async def process_incoming_message(
             user_id=user.id,
         )
 
+        if not challenges_data:
+            await send_telegram_message(
+                chat_id,
+                "No active challenges right now. Create one with /challenge "
+                "or extend an existing challenge's dates.",
+            )
+            return
+
         # Determine relevant exercise type IDs
         challenge_type_ids = list({c["exercise_type_id"] for c in challenges_data})
 
-        if not challenge_type_ids:
-            # If no challenges found, maybe fallback to all or empty.
-            # Based on user request to "only see challenge exercises", we return empty/limited list.
-            # But to avoid breaking the bot completely for new users, let's fallback to ALL if NONE are found?
-            # User said: "I don't want to see Plank... because my challenge only..."
-            # This implies if they have challenges, restrict to them.
-            # If they have ZERO challenges, maybe showing nothing is correct, or fallback.
-            # Let's fallback to get_exercise_types() (all active) if NO challenges exist at all.
-            exercise_types = await get_exercise_types(user.id)
-            challenge_map = {}
-        else:
-            types_models = await exercise_type_repo.get_by_ids(
-                challenge_type_ids,
-                user_id=user.id,
-            )
-            types_models = [t for t in types_models if t.is_active]
-            types_models.sort(key=lambda x: x.id)
-            exercise_types = [_to_app_exercise_type(t) for t in types_models]
+        types_models = await exercise_type_repo.get_by_ids(
+            challenge_type_ids,
+            user_id=user.id,
+        )
+        types_models = [t for t in types_models if t.is_active]
+        types_models.sort(key=lambda x: x.id)
+        exercise_types = [_to_app_exercise_type(t) for t in types_models]
 
-            # Build map: type_id -> best challenge
-            # Sort challenges by end_date desc so we pick the latest/future one if duplicates
-            challenges_data.sort(key=lambda x: x["end_date"], reverse=True)
-            challenge_map = {}
-            for c in challenges_data:
-                tid = c["exercise_type_id"]
-                if tid not in challenge_map:
-                    challenge_map[tid] = c
+        # Build map: type_id -> best challenge
+        # Sort challenges by end_date desc so we pick the latest/future one if duplicates
+        challenges_data.sort(key=lambda x: x["end_date"], reverse=True)
+        challenge_map = {}
+        for c in challenges_data:
+            tid = c["exercise_type_id"]
+            if tid not in challenge_map:
+                challenge_map[tid] = c
 
         # Determine default exercise based on active challenges
         default_exercise_name = determine_default_exercise(challenges_data, exercise_types)
@@ -1574,6 +1572,13 @@ async def send_evening_reminder(reminder_hour: int):
         reminder_hour: Hour to send reminder (must be in REMINDER_HOURS)
     """
     _ensure_orm()
+
+    # Best-effort data hygiene: clear expired is_active flags for all users.
+    # Runs even when reminders are disabled. Fail open — never block reminders.
+    try:
+        await deactivate_expired_challenges()
+    except Exception:
+        logger.exception("Failed to deactivate expired challenges during reminder sweep")
 
     # Get settings
     app_settings = await app_settings_repo.get_singleton()
