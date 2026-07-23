@@ -1398,6 +1398,7 @@ async def get_settings(user_id: int) -> SettingsOut:
     settings_model = await user_settings_repo.get_or_create(user_id)
     return SettingsOut(
         is_reminder_active=settings_model.is_reminder_active,
+        is_workout_motivation_active=settings_model.is_workout_motivation_active,
         telegram_chat_id=settings_model.telegram_chat_id,
     )
 
@@ -1414,6 +1415,10 @@ async def update_settings(update: SettingsUpdate, user_id: int) -> SettingsOut:
     update_data = {}
     if update.is_reminder_active is not None:
         update_data["is_reminder_active"] = update.is_reminder_active
+    if update.is_workout_motivation_active is not None:
+        update_data["is_workout_motivation_active"] = (
+            update.is_workout_motivation_active
+        )
 
     settings_model = await user_settings_repo.get_or_create(user_id)
 
@@ -1424,5 +1429,6 @@ async def update_settings(update: SettingsUpdate, user_id: int) -> SettingsOut:
 
     return SettingsOut(
         is_reminder_active=settings_model.is_reminder_active,
+        is_workout_motivation_active=settings_model.is_workout_motivation_active,
         telegram_chat_id=settings_model.telegram_chat_id,
     )

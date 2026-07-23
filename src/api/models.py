@@ -621,6 +621,13 @@ class SettingsOut(BaseModel):
     is_reminder_active: bool = Field(
         ..., description="Whether evening reminders are enabled"
     )
+    is_workout_motivation_active: bool = Field(
+        ...,
+        description=(
+            "Whether the LLM motivational line is appended to workout-log "
+            "replies (does not affect evening reminders)"
+        ),
+    )
     telegram_chat_id: Optional[int] = Field(
         None, description="Telegram chat ID for sending reminders"
     )
@@ -631,6 +638,13 @@ class SettingsUpdate(BaseModel):
 
     is_reminder_active: Optional[bool] = Field(
         None, description="Whether to enable or disable evening reminders"
+    )
+    is_workout_motivation_active: Optional[bool] = Field(
+        None,
+        description=(
+            "Whether to enable or disable the workout-log reply motivational "
+            "line (does not affect evening reminders)"
+        ),
     )
 
 
@@ -691,6 +705,13 @@ class UserSettingsOut(BaseModel):
     is_reminder_active: bool = Field(
         ..., description="Whether evening reminders are enabled"
     )
+    is_workout_motivation_active: bool = Field(
+        ...,
+        description=(
+            "Whether the LLM motivational line is appended to workout-log "
+            "replies (does not affect evening reminders)"
+        ),
+    )
     habit_reward_api_key: str = Field(
         "", description="API key for Habit Reward integration"
     )
@@ -704,6 +725,13 @@ class UserSettingsUpdate(BaseModel):
 
     is_reminder_active: Optional[bool] = Field(
         None, description="Whether to enable or disable evening reminders"
+    )
+    is_workout_motivation_active: Optional[bool] = Field(
+        None,
+        description=(
+            "Whether to enable or disable the workout-log reply motivational "
+            "line (does not affect evening reminders)"
+        ),
     )
     telegram_chat_id: Optional[int] = Field(
         None, description="Telegram chat ID"

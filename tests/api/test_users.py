@@ -95,6 +95,7 @@ def test_get_current_user_profile(client, user_context_headers):
         user_id=1,
         telegram_chat_id=987654321,
         is_reminder_active=True,
+        is_workout_motivation_active=True,
     )
 
     with patch(
@@ -113,6 +114,50 @@ def test_get_current_user_profile(client, user_context_headers):
         payload = response.json()
         assert payload["user"]["telegram_user_id"] == mock_user.telegram_user_id
         assert payload["settings"]["telegram_chat_id"] == 987654321
+        assert payload["settings"]["is_workout_motivation_active"] is True
+
+
+def test_update_current_user_settings_disable_workout_motivation(client, user_context_headers):
+    """PATCH /me/settings must carry is_workout_motivation_active to the repo.
+
+    Guards the documented per-user toggle surface: without this, forgetting the
+    field on UserSettingsUpdate would be silently uncaught since
+    model_dump(exclude_unset=True) drops absent fields.
+    """
+    mock_user = _make_approved_user()
+    updated_settings = SimpleNamespace(
+        user_id=1,
+        telegram_chat_id=987654321,
+        is_reminder_active=True,
+        is_workout_motivation_active=False,
+    )
+
+    with patch(
+        "src.api.security.app_user_repo.get_by_telegram_user_id",
+        new_callable=AsyncMock,
+    ) as mock_get_user, patch(
+        "src.api.routers.users.user_settings_repo.get_or_create",
+        new_callable=AsyncMock,
+    ) as mock_get_or_create, patch(
+        "src.api.routers.users.user_settings_repo.update",
+        new_callable=AsyncMock,
+    ) as mock_update:
+        mock_get_user.return_value = mock_user
+        mock_get_or_create.return_value = updated_settings
+        mock_update.return_value = updated_settings
+
+        response = client.patch(
+            "/api/v1/users/me/settings",
+            json={"is_workout_motivation_active": False},
+            headers=user_context_headers,
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["is_workout_motivation_active"] is False
+        # The flag must reach the repository update payload.
+        update_arg = mock_update.call_args.args[1]
+        assert update_arg["is_workout_motivation_active"] is False
 
 
 def test_update_current_user_profile(client, user_context_headers):

@@ -62,14 +62,15 @@ class UserSettingsAdmin(admin.ModelAdmin):
         "user",
         "telegram_chat_id",
         "is_reminder_active",
+        "is_workout_motivation_active",
         "habit_reward_habit_id",
         "last_reminder_21_date",
         "last_reminder_22_date",
         "last_reminder_23_date",
     ]
-    list_filter = ["is_reminder_active"]
+    list_filter = ["is_reminder_active", "is_workout_motivation_active"]
     search_fields = ["user__telegram_user_id", "user__username", "user__first_name"]
-    list_editable = ["is_reminder_active"]
+    list_editable = ["is_reminder_active", "is_workout_motivation_active"]
     raw_id_fields = ["user"]
     readonly_fields = [
         "last_reminder_21_date",

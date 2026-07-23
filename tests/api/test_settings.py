@@ -27,6 +27,7 @@ class TestGetSettings:
         mock_settings = UserSettingsModel(
             user_id=1,
             is_reminder_active=True,
+            is_workout_motivation_active=True,
             telegram_chat_id=123456789,
         )
         mock_user = _make_mock_user()
@@ -41,6 +42,7 @@ class TestGetSettings:
             assert response.status_code == 200
             data = response.json()
             assert data["is_reminder_active"] is True
+            assert data["is_workout_motivation_active"] is True
             assert data["telegram_chat_id"] == 123456789
 
     def test_get_settings_no_chat_id(self, client, user_context_headers):
@@ -120,6 +122,37 @@ class TestUpdateSettings:
             assert response.status_code == 200
             data = response.json()
             assert data["is_reminder_active"] is False
+
+    def test_update_settings_disable_workout_motivation(self, client, auth_and_user_headers):
+        """Test disabling the workout-log motivational line."""
+        mock_settings = UserSettingsModel(
+            user_id=1,
+            is_reminder_active=True,
+            is_workout_motivation_active=False,
+            telegram_chat_id=123456789,
+        )
+        mock_user = _make_mock_user()
+
+        with patch("src.api.security.app_user_repo.get_by_telegram_user_id", new_callable=AsyncMock) as mock_get_user, \
+             patch("src.api.services.user_settings_repo.get_or_create", new_callable=AsyncMock) as mock_get_or_create, \
+             patch("src.api.services.user_settings_repo.update", new_callable=AsyncMock) as mock_update:
+            mock_get_user.return_value = mock_user
+            mock_get_or_create.return_value = mock_settings
+            mock_update.return_value = mock_settings
+
+            response = client.patch(
+                "/api/v1/settings",
+                json={"is_workout_motivation_active": False},
+                headers=auth_and_user_headers
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["is_workout_motivation_active"] is False
+            mock_update.assert_called_once()
+            # The flag must reach the repository update payload.
+            update_arg = mock_update.call_args.args[1]
+            assert update_arg["is_workout_motivation_active"] is False
 
     def test_update_settings_unauthorized(self, client, invalid_auth_headers, user_context_headers):
         """Test update without valid API key returns 403."""

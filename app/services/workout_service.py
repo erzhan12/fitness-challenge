@@ -759,7 +759,7 @@ async def process_incoming_message(
 
         # Update telegram_chat_id for all users (creates UserSettings if needed)
         # This ensures existing users get their chat_id refreshed on every message
-        await user_settings_repo.update_chat_id(user.id, chat_id)
+        user_settings = await user_settings_repo.update_chat_id(user.id, chat_id)
 
         if not user.is_approved:
             now = timezone.now()
@@ -1282,8 +1282,11 @@ async def process_incoming_message(
                 user_id=user.id,
             )
 
-            # Generate Witty Comment (using stats from helper)
-            if challenge:
+            # Generate Witty Comment (using stats from helper).
+            # Gated by the per-user is_workout_motivation_active setting: when
+            # disabled, skip the LLM call and its fallback entirely so no
+            # motivational line is appended. Evening reminders are unaffected.
+            if challenge and user_settings.is_workout_motivation_active:
                 comment = generate_motivational_response(
                     etype.display_name,
                     {

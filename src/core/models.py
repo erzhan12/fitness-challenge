@@ -56,6 +56,9 @@ class UserSettings(models.Model):
     )
     telegram_chat_id = models.BigIntegerField(null=True, blank=True)
     is_reminder_active = models.BooleanField(default=True)
+    # Toggles the LLM motivational line appended to workout-log Telegram
+    # replies. Does NOT affect evening reminder motivation.
+    is_workout_motivation_active = models.BooleanField(default=True)
 
     # Idempotency: track last date each reminder was sent (per-user)
     last_reminder_21_date = models.DateField(null=True, blank=True)

@@ -24,6 +24,8 @@ async def get_settings(
 
     Returns the current configuration including:
     - **is_reminder_active**: Whether evening reminders are enabled
+    - **is_workout_motivation_active**: Whether the LLM motivational line is
+      appended to workout-log replies (does not affect evening reminders)
     - **telegram_chat_id**: Telegram chat ID where reminders are sent (if configured)
 
     Requires X-Telegram-User-Id header.
@@ -51,6 +53,8 @@ async def update_settings(
 
     Currently supports updating:
     - **is_reminder_active**: Enable or disable evening reminders
+    - **is_workout_motivation_active**: Enable or disable the workout-log reply
+      motivational line (does not affect evening reminders)
 
     Requires API key authentication via Authorization header.
 
