@@ -26,17 +26,21 @@ async def verify_admin_key(key: str = Security(api_key_header)):
 async def trigger_daily_reminders(
     hour: Optional[int] = Query(
         None,
-        ge=21,
+        ge=0,
         le=23,
-        description="Evening reminder hour (21, 22, or 23). If omitted, uses legacy simple reminders.",
+        description=(
+            "Reminder hour (0–23). Default reminder hours are [13, 21, 22], "
+            "but any hour in range is accepted for manual dispatch."
+        ),
+        examples=[13, 21, 22, 23, 8],
     ),
     token: str = Depends(verify_admin_key),
 ):
     """
     Triggers reminders.
 
-    - **hour=None** (default): Legacy behavior - sends per-challenge "missing you" messages
-    - **hour=21/22/23**: Evening reminder flow - sends one combined message for all incomplete challenges
+    - **hour=None** (default): Legacy behavior - sends per-user "missing you" messages
+    - **hour=0–23**: Hour-specific reminder flow for users with that hour in `reminder_hours`
 
     Intended to be called by cron/n8n or for manual testing.
     """
