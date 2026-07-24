@@ -19,11 +19,17 @@ class TestSendEveningReminder:
     @pytest.fixture(autouse=True)
     def _mock_deactivate_expired(self):
         """Hygiene sweep must not hit real challenge_repo in reminder tests."""
+        default_user = SimpleNamespace(id=1)
         with patch(
             "app.services.workout_service.deactivate_expired_challenges",
             new_callable=AsyncMock,
             return_value=0,
-        ) as mock_deactivate:
+        ) as mock_deactivate, patch(
+            "app.services.workout_service.app_user_repo"
+        ) as mock_user_repo:
+            mock_user_repo.get_by_telegram_user_id = AsyncMock(
+                return_value=default_user
+            )
             self.mock_deactivate_expired = mock_deactivate
             yield mock_deactivate
 
@@ -261,12 +267,27 @@ class TestComputeEveningReminder:
     """
 
     @pytest.mark.asyncio
+    async def test_scopes_challenges_to_user_id(self):
+        """get_current_active is called with the provided user_id."""
+        today = date.today()
+        with patch("app.services.workout_service.challenge_repo") as mock_repo:
+            mock_repo.get_current_active = AsyncMock(return_value=[])
+
+            await compute_evening_reminder(today, 21, user_id=42)
+
+            mock_repo.get_current_active.assert_awaited_once_with(
+                today, user_id=42
+            )
+
+    @pytest.mark.asyncio
     async def test_no_active_challenges(self):
         """When there are no active challenges, returns (False, None, 0)."""
         with patch("app.services.workout_service.challenge_repo") as mock_repo:
             mock_repo.get_current_active = AsyncMock(return_value=[])
 
-            should_send, message, count = await compute_evening_reminder(date.today(), 21)
+            should_send, message, count = await compute_evening_reminder(
+                date.today(), 21, user_id=1
+            )
 
             assert should_send is False
             assert message is None
@@ -287,7 +308,9 @@ class TestComputeEveningReminder:
                     return_value={1: 500}
                 )
 
-                should_send, message, count = await compute_evening_reminder(date.today(), 21)
+                should_send, message, count = await compute_evening_reminder(
+                    date.today(), 21, user_id=1
+                )
 
                 assert should_send is False
                 assert message is None
@@ -311,7 +334,9 @@ class TestComputeEveningReminder:
                 with patch("app.services.workout_service.generate_reminder_motivation") as mock_llm:
                     mock_llm.return_value = "You can do it!"
 
-                    should_send, message, count = await compute_evening_reminder(date.today(), 21)
+                    should_send, message, count = await compute_evening_reminder(
+                        date.today(), 21, user_id=1
+                    )
 
                     assert should_send is True
                     assert count == 1
@@ -338,7 +363,9 @@ class TestComputeEveningReminder:
                 with patch("app.services.workout_service.generate_reminder_motivation") as mock_llm:
                     mock_llm.return_value = "Time for some yoga!"
 
-                    should_send, message, count = await compute_evening_reminder(date.today(), 21)
+                    should_send, message, count = await compute_evening_reminder(
+                        date.today(), 21, user_id=1
+                    )
 
                     assert should_send is True
                     assert count == 1
@@ -361,7 +388,9 @@ class TestComputeEveningReminder:
                     return_value={1: 100}
                 )
 
-                should_send, message, count = await compute_evening_reminder(date.today(), 21)
+                should_send, message, count = await compute_evening_reminder(
+                    date.today(), 21, user_id=1
+                )
 
                 assert should_send is False
                 assert message is None
@@ -394,7 +423,9 @@ class TestComputeEveningReminder:
 
                     mock_llm.side_effect = capture_context
 
-                    should_send, message, count = await compute_evening_reminder(date.today(), 21)
+                    should_send, message, count = await compute_evening_reminder(
+                        date.today(), 21, user_id=1
+                    )
 
                     assert should_send is True
                     assert count == 2
@@ -421,7 +452,7 @@ class TestComputeEveningReminder:
                     mock_llm.return_value = "Keep it up!"
 
                     should_send, message, count = await compute_evening_reminder(
-                        date.today(), 21
+                        date.today(), 21, user_id=1
                     )
 
                     assert should_send is True

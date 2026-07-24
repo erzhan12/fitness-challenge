@@ -1423,7 +1423,7 @@ async def check_daily_reminders(hour: Optional[int] = None):
 
 
 async def compute_evening_reminder(
-    today_local: date, reminder_hour: int
+    today_local: date, reminder_hour: int, user_id: int
 ) -> Tuple[bool, Optional[str], int]:
     """
     Compute evening reminder message for incomplete challenges.
@@ -1431,6 +1431,7 @@ async def compute_evening_reminder(
     Args:
         today_local: Current date in local timezone
         reminder_hour: Hour of reminder (must be in REMINDER_HOURS)
+        user_id: AppUser ID whose active challenges to evaluate
 
     Returns:
         Tuple of (should_send, message_html, incomplete_count)
@@ -1441,7 +1442,9 @@ async def compute_evening_reminder(
     _ensure_orm()
 
     # Get active challenges for today
-    challenges = await challenge_repo.get_current_active(today_local)
+    challenges = await challenge_repo.get_current_active(
+        today_local, user_id=user_id
+    )
     if not challenges:
         return False, None, 0
 
@@ -1599,6 +1602,14 @@ async def send_evening_reminder(reminder_hour: int):
     # Get today in local timezone
     today_local = datetime.now(TZ).date()
 
+    # Legacy singleton path: scope to default user until per-user cutover (Slice 5)
+    default_user = await app_user_repo.get_by_telegram_user_id(0)
+    if not default_user:
+        logger.warning(
+            "No legacy default user (telegram_user_id=0) for evening reminder"
+        )
+        return
+
     # Atomically claim this hour to avoid duplicate sends across workers
     claimed = await app_settings_repo.try_mark_hour_sent(today_local, reminder_hour)
     if not claimed:
@@ -1606,9 +1617,8 @@ async def send_evening_reminder(reminder_hour: int):
         return
 
     try:
-        # Compute reminder message
         should_send, message_html, incomplete_count = await compute_evening_reminder(
-            today_local, reminder_hour
+            today_local, reminder_hour, default_user.id
         )
 
         if not should_send:

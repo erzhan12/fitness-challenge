@@ -238,7 +238,7 @@ class TestComputeEveningReminderRestDay:
                 )
 
                 should_send, message, count = await compute_evening_reminder(
-                    today_local, 21
+                    today_local, 21, user_id=1
                 )
 
         assert should_send is False
@@ -274,7 +274,7 @@ class TestComputeEveningReminderRestDay:
                     mock_llm.return_value = "You can do it!"
 
                     should_send, message, count = await compute_evening_reminder(
-                        today_local, 21
+                        today_local, 21, user_id=1
                     )
 
         assert should_send is True
