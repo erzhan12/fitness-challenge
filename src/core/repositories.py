@@ -27,6 +27,8 @@ from .models import (
     ExerciseLog,
     UserStats,
     AppSettings,
+    default_reminder_hours,
+    default_empty_reminder_sent_dates,
 )
 from .validators import validate_telegram_chat_id
 
@@ -190,6 +192,25 @@ class UserSettingsRepository:
         if not 0 <= hour <= 23:
             raise ValueError(f"Invalid hour: {hour}. Must be 0-23.")
 
+    @staticmethod
+    def _base_active_reminder_queryset():
+        """ORM prefilter for reminder send/wake queries (hour membership applied separately)."""
+        return (
+            UserSettings.objects.select_related("user")
+            .filter(
+                is_reminder_active=True,
+                user__status=AppUser.Status.APPROVED,
+                telegram_chat_id__isnull=False,
+            )
+            .exclude(reminder_hours=[])
+        )
+
+    @staticmethod
+    def _filter_by_hour_membership(
+        settings_list: List[UserSettings], hour: int
+    ) -> List[UserSettings]:
+        return [s for s in settings_list if hour in (s.reminder_hours or [])]
+
     @sync_to_async
     def get_by_user_id(self, user_id: int) -> Optional[UserSettings]:
         """Get settings for user."""
@@ -201,9 +222,15 @@ class UserSettingsRepository:
     @sync_to_async
     def get_or_create(self, user_id: int, defaults: Optional[dict] = None) -> UserSettings:
         """Get or create settings for user."""
+        merged_defaults = {
+            "reminder_hours": default_reminder_hours(),
+            "last_reminder_sent_dates": default_empty_reminder_sent_dates(),
+        }
+        if defaults:
+            merged_defaults.update(defaults)
         settings, created = UserSettings.objects.get_or_create(
             user_id=user_id,
-            defaults=defaults or {}
+            defaults=merged_defaults,
         )
         return settings
 
@@ -306,15 +333,22 @@ class UserSettingsRepository:
     @sync_to_async
     def get_users_with_reminders_enabled(self) -> List[UserSettings]:
         """Get all user settings where reminders are enabled and user is approved."""
-        return list(
-            UserSettings.objects.select_related("user")
-            .filter(
-                is_reminder_active=True,
-                telegram_chat_id__isnull=False,
-                user__status=AppUser.Status.APPROVED
-            )
-            .order_by("user_id")
-        )
+        return list(self._base_active_reminder_queryset().order_by("user_id"))
+
+    @sync_to_async
+    def get_users_for_reminder_hour(self, hour: int) -> List[UserSettings]:
+        """Get approved active users whose reminder_hours include the given hour."""
+        self._validate_reminder_hour(hour)
+        candidates = list(self._base_active_reminder_queryset().order_by("user_id"))
+        return self._filter_by_hour_membership(candidates, hour)
+
+    @sync_to_async
+    def get_distinct_active_reminder_hours(self) -> List[int]:
+        """Union of reminder_hours across active approved users with non-empty schedules."""
+        hours: set[int] = set()
+        for settings in self._base_active_reminder_queryset():
+            hours.update(settings.reminder_hours or [])
+        return sorted(hours)
 
     @sync_to_async
     def try_claim_habit_reward_date(self, user_id: int, target_date: date) -> bool:
