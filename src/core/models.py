@@ -79,11 +79,6 @@ class UserSettings(models.Model):
         default=default_empty_reminder_sent_dates
     )
 
-    # Idempotency: track last date each reminder was sent (per-user)
-    last_reminder_21_date = models.DateField(null=True, blank=True)
-    last_reminder_22_date = models.DateField(null=True, blank=True)
-    last_reminder_23_date = models.DateField(null=True, blank=True)
-
     # Habit Reward Integration (per-user)
     habit_reward_api_key = models.CharField(max_length=255, blank=True, default="")
     habit_reward_habit_id = models.IntegerField(null=True, blank=True)
@@ -280,21 +275,15 @@ class UserStats(models.Model):
 class AppSettings(models.Model):
     """Application settings (singleton pattern for single-user app).
 
-    Stores reminder preferences and idempotency tracking for evening reminders.
-    Future-proofed for multi-user by keeping extensible schema.
+    Reminder scheduling/idempotency now lives on per-user ``UserSettings``
+    (Feature 0022) — this singleton only retains app-wide, non-per-user
+    controls.
     """
     is_registration_open = models.BooleanField(default=True)
-    is_reminder_active = models.BooleanField(default=True)
-    telegram_chat_id = models.BigIntegerField(null=True, blank=True)
-
-    # Idempotency: track last date each reminder was sent
-    last_reminder_21_date = models.DateField(null=True, blank=True)
-    last_reminder_22_date = models.DateField(null=True, blank=True)
-    last_reminder_23_date = models.DateField(null=True, blank=True)
 
     class Meta:
         db_table = "app_settings"
         verbose_name_plural = "App settings"
 
     def __str__(self):
-        return f"App Settings (reminders: {'ON' if self.is_reminder_active else 'OFF'})"
+        return f"App Settings (registration: {'OPEN' if self.is_registration_open else 'CLOSED'})"

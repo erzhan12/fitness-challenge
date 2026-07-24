@@ -64,20 +64,12 @@ class UserSettingsAdmin(admin.ModelAdmin):
         "is_reminder_active",
         "is_workout_motivation_active",
         "habit_reward_habit_id",
-        "last_reminder_21_date",
-        "last_reminder_22_date",
-        "last_reminder_23_date",
     ]
     list_filter = ["is_reminder_active", "is_workout_motivation_active"]
     search_fields = ["user__telegram_user_id", "user__username", "user__first_name"]
     list_editable = ["is_reminder_active", "is_workout_motivation_active"]
     raw_id_fields = ["user"]
-    readonly_fields = [
-        "last_reminder_21_date",
-        "last_reminder_22_date",
-        "last_reminder_23_date",
-        "last_habit_reward_sent_date",
-    ]
+    readonly_fields = ["last_habit_reward_sent_date"]
 
 
 @admin.register(ExerciseType)
@@ -211,18 +203,8 @@ class AppSettingsAdmin(admin.ModelAdmin):
     list_display = [
         "id",
         "is_registration_open",
-        "is_reminder_active",
-        "telegram_chat_id",
-        "last_reminder_21_date",
-        "last_reminder_22_date",
-        "last_reminder_23_date",
     ]
-    list_editable = ["is_registration_open", "is_reminder_active"]
-    readonly_fields = [
-        "last_reminder_21_date",
-        "last_reminder_22_date",
-        "last_reminder_23_date",
-    ]
+    list_editable = ["is_registration_open"]
 
     def has_add_permission(self, request):
         """Prevent creating multiple settings instances (singleton pattern)."""
