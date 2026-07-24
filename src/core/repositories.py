@@ -1,4 +1,5 @@
 from datetime import date
+import time
 from typing import List, Optional, Tuple
 from asgiref.sync import sync_to_async
 
@@ -13,6 +14,7 @@ if not django_settings.configured:
     setup_django()
 
 from django.db import connection
+from django.db.utils import OperationalError
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -34,6 +36,24 @@ try:
 except ImportError:
     # Fallback if app.constants not available (shouldn't happen in normal usage)
     REMINDER_HOURS = [21, 22, 23]
+
+
+_SQLITE_LOCK_RETRIES = 5
+_SQLITE_LOCK_BACKOFF_S = 0.01
+
+
+def _execute_sqlite_update_with_lock_retry(cursor, sql: str, params: list) -> None:
+    """Retry a single SQLite UPDATE on transient database-is-locked errors."""
+    for attempt in range(_SQLITE_LOCK_RETRIES):
+        try:
+            cursor.execute(sql, params)
+            return
+        except OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            if attempt == _SQLITE_LOCK_RETRIES - 1:
+                raise
+            time.sleep(_SQLITE_LOCK_BACKOFF_S * (attempt + 1))
 
 
 class AppUserRepository:
@@ -233,7 +253,8 @@ class UserSettingsRepository:
         json_path = self._hour_json_path(hour)
         today_str = target_date.isoformat()
         with connection.cursor() as cursor:
-            cursor.execute(
+            _execute_sqlite_update_with_lock_retry(
+                cursor,
                 """
                 UPDATE user_settings
                 SET last_reminder_sent_dates = json_set(
@@ -259,7 +280,8 @@ class UserSettingsRepository:
         json_path = self._hour_json_path(hour)
         today_str = target_date.isoformat()
         with connection.cursor() as cursor:
-            cursor.execute(
+            _execute_sqlite_update_with_lock_retry(
+                cursor,
                 """
                 UPDATE user_settings
                 SET last_reminder_sent_dates = json_remove(
