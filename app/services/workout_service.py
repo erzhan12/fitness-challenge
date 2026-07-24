@@ -1558,12 +1558,69 @@ async def compute_evening_reminder(
     return True, message_html, left_challenges_count
 
 
+async def _send_evening_reminder_for_user(
+    user_settings, today_local: date, reminder_hour: int
+) -> None:
+    """Claim, compute, and send the evening reminder for a single user.
+
+    Failures are contained here: any Telegram send failure or unexpected
+    exception clears this user's claim and returns, never propagating to
+    the caller's per-user loop.
+    """
+    user_id = user_settings.user_id
+    chat_id = user_settings.telegram_chat_id
+    if not chat_id:
+        return
+    if not user_settings.is_reminder_active:
+        return
+
+    claimed = await user_settings_repo.try_mark_hour_sent(
+        user_id, today_local, reminder_hour
+    )
+    if not claimed:
+        logger.info(
+            f"Reminder for user {user_id} at {reminder_hour}:00 already sent/claimed, skipping"
+        )
+        return
+
+    try:
+        should_send, message_html, incomplete_count = await compute_evening_reminder(
+            today_local, reminder_hour, user_id=user_id
+        )
+
+        if not should_send:
+            logger.info(
+                f"No incomplete challenges for user {user_id} at {reminder_hour}:00, no reminder sent"
+            )
+            return
+
+        logger.info(
+            f"Sending {reminder_hour}:00 reminder to user {user_id}: "
+            f"{incomplete_count} incomplete challenge(s)"
+        )
+        result = await send_telegram_message(chat_id, message_html, parse_mode="HTML")
+
+        if result is None:
+            await user_settings_repo.clear_hour_sent(user_id, today_local, reminder_hour)
+            logger.warning(
+                f"Telegram send failed for user {user_id} at {reminder_hour}:00 reminder, will retry next run"
+            )
+        else:
+            logger.info(f"Marked {reminder_hour}:00 reminder as sent for user {user_id}")
+    except Exception:
+        await user_settings_repo.clear_hour_sent(user_id, today_local, reminder_hour)
+        logger.exception(
+            f"Unexpected error during reminder computation/send for user {user_id}; claim cleared"
+        )
+
+
 async def send_evening_reminder(reminder_hour: int):
     """
-    Send evening reminder at specified hour.
+    Send evening reminder at specified hour, per user.
 
-    Checks if reminder is enabled, if already sent today, and if there are incomplete challenges.
-    Sends one combined message via Telegram if needed.
+    Checks each candidate user's claim state and incomplete challenges, and
+    sends a combined message via Telegram if needed. One user's failure
+    never blocks the remaining users for this hour.
 
     Args:
         reminder_hour: Hour to send reminder (must be in REMINDER_HOURS)
@@ -1582,71 +1639,11 @@ async def send_evening_reminder(reminder_hour: int):
             exc_info=True,
         )
 
-    # Get settings
-    app_settings = await app_settings_repo.get_singleton()
-
-    # Check if reminders are active
-    if not app_settings.is_reminder_active:
-        logger.info(f"Reminders disabled, skipping {reminder_hour}:00 reminder")
-        return
-
-    # Check if we have a chat_id
-    chat_id = app_settings.telegram_chat_id
-    if not chat_id:
-        # Fallback to env var if available
-        chat_id = settings.TARGET_CHAT_ID
-        if not chat_id:
-            logger.warning("No telegram_chat_id configured for reminders")
-            return
-
-    # Get today in local timezone
     today_local = datetime.now(TZ).date()
 
-    # Legacy singleton path: scope to default user until per-user cutover (Slice 5)
-    default_user = await app_user_repo.get_by_telegram_user_id(0)
-    if not default_user:
-        logger.warning(
-            "No legacy default user (telegram_user_id=0) for evening reminder"
-        )
-        return
-
-    # Atomically claim this hour to avoid duplicate sends across workers
-    claimed = await app_settings_repo.try_mark_hour_sent(today_local, reminder_hour)
-    if not claimed:
-        logger.info(f"Reminder for {reminder_hour}:00 already sent/claimed, skipping")
-        return
-
-    try:
-        should_send, message_html, incomplete_count = await compute_evening_reminder(
-            today_local, reminder_hour, default_user.id
-        )
-
-        if not should_send:
-            logger.info(
-                f"No incomplete challenges at {reminder_hour}:00, no reminder sent"
-            )
-            return
-
-        # Send reminder
-        logger.info(
-            f"Sending {reminder_hour}:00 reminder: {incomplete_count} incomplete challenge(s)"
-        )
-        result = await send_telegram_message(chat_id, message_html, parse_mode="HTML")
-
-        # If Telegram send failed, clear the claim to allow retry
-        if result is None:
-            await app_settings_repo.clear_hour_sent(today_local, reminder_hour)
-            logger.warning(
-                f"Telegram send failed for {reminder_hour}:00 reminder, will retry next run"
-            )
-        else:
-            logger.info(f"Marked {reminder_hour}:00 reminder as sent")
-    except Exception:
-        await app_settings_repo.clear_hour_sent(today_local, reminder_hour)
-        logger.exception(
-            "Unexpected error during reminder computation/send; claim cleared"
-        )
-        raise
+    candidates = await user_settings_repo.get_users_for_reminder_hour(reminder_hour)
+    for user_settings in candidates:
+        await _send_evening_reminder_for_user(user_settings, today_local, reminder_hour)
 
 
 # =============================================================================
