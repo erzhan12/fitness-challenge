@@ -30,3 +30,9 @@ Track current and upcoming work items here.
 
 ### Real-DB test for `ExerciseChallengeRepository.deactivate_expired` (from PR #32 review)
 The current repo test (`tests/core/test_repositories.py`) verifies query construction via ORM spies (Option B): it asserts the `filter(is_active=True, end_date__lt=…)` predicate (strict `<` boundary), the `update(is_active=False, is_default=False)` dual-field clear, and `user_id` scoping. It does not exercise real SQL. A stronger belt-and-suspenders test would add `pytest-django` + a `@pytest.mark.django_db` sqlite-in-memory test that creates rows and asserts actual model-state transitions. Deferred because it introduces the first DB-backed test in the suite (new dev dep + pytest django settings + FK fixtures) — worth its own PR rather than destabilizing the 0020 change set.
+
+### Extract shared `_base_patches` service-test fixture (from PR #33 review, P3)
+`tests/services/test_workout_motivation_setting.py` and `tests/services/test_workout_empty_challenges.py` both define near-identical `_base_patches()` scaffolds for patching `process_incoming_message` dependencies. Extract into `tests/services/conftest.py` as a shared fixture/factory so a patch-signature change updates one place. Deferred: touches multiple test modules and needs a fixture-shape decision; non-blocking (both files self-contained and green today).
+
+### Document user-facing API features in README (from PR #33 review, P3)
+README is deployment-focused; it has no "Features" section describing user-facing capabilities such as the workout-motivation toggle (`PATCH /api/v1/users/me/settings` → `is_workout_motivation_active`) or reminder settings. Add a concise features/API section for external integrators. Deferred as a docs-only follow-up.
