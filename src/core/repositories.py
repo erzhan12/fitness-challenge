@@ -12,6 +12,7 @@ if not django_settings.configured:
 
     setup_django()
 
+from django.db import connection
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -161,13 +162,13 @@ class UserSettingsRepository:
     """Repository for UserSettings operations (per-user settings)."""
 
     @staticmethod
-    def _get_reminder_field_name(hour: int) -> str:
-        """Get the field name for a reminder hour."""
-        if hour not in REMINDER_HOURS:
-            raise ValueError(
-                f"Invalid hour: {hour}. Must be one of {REMINDER_HOURS}."
-            )
-        return f"last_reminder_{hour}_date"
+    def _hour_json_path(hour: int) -> str:
+        return f"$.{hour}"
+
+    @staticmethod
+    def _validate_reminder_hour(hour: int) -> None:
+        if not 0 <= hour <= 23:
+            raise ValueError(f"Invalid hour: {hour}. Must be 0-23.")
 
     @sync_to_async
     def get_by_user_id(self, user_id: int) -> Optional[UserSettings]:
@@ -219,39 +220,66 @@ class UserSettingsRepository:
     def try_mark_hour_sent(self, user_id: int, target_date: date, hour: int) -> bool:
         """Atomically mark hour as sent if not already sent today for user.
 
+        Uses one conditional SQLite UPDATE with json_set/json_extract so only one
+        concurrent caller wins for the same user/hour/day.
+
         Returns:
             True if this call marked it (first to succeed).
             False if already marked.
         """
-        field_name = self._get_reminder_field_name(hour)
-
-        # Ensure settings exist
+        self._validate_reminder_hour(hour)
         UserSettings.objects.get_or_create(user_id=user_id)
 
-        # Atomic conditional update
-        updated = UserSettings.objects.filter(user_id=user_id).exclude(
-            **{field_name: target_date}
-        ).update(**{field_name: target_date})
-
-        return updated > 0
+        json_path = self._hour_json_path(hour)
+        today_str = target_date.isoformat()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE user_settings
+                SET last_reminder_sent_dates = json_set(
+                    COALESCE(last_reminder_sent_dates, '{}'),
+                    ?,
+                    ?
+                )
+                WHERE user_id = ?
+                AND (
+                    json_extract(COALESCE(last_reminder_sent_dates, '{}'), ?) IS NULL
+                    OR json_extract(COALESCE(last_reminder_sent_dates, '{}'), ?) != ?
+                )
+                """,
+                [json_path, today_str, user_id, json_path, json_path, today_str],
+            )
+            return cursor.rowcount > 0
 
     @sync_to_async
     def clear_hour_sent(self, user_id: int, target_date: date, hour: int) -> bool:
         """Clear the sent marker for the given hour on target_date for user."""
-        field_name = self._get_reminder_field_name(hour)
+        self._validate_reminder_hour(hour)
 
-        UserSettings.objects.get_or_create(user_id=user_id)
-        updated = UserSettings.objects.filter(
-            user_id=user_id, **{field_name: target_date}
-        ).update(**{field_name: None})
-        return updated > 0
+        json_path = self._hour_json_path(hour)
+        today_str = target_date.isoformat()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE user_settings
+                SET last_reminder_sent_dates = json_remove(
+                    COALESCE(last_reminder_sent_dates, '{}'),
+                    ?
+                )
+                WHERE user_id = ?
+                AND json_extract(COALESCE(last_reminder_sent_dates, '{}'), ?) = ?
+                """,
+                [json_path, user_id, json_path, today_str],
+            )
+            return cursor.rowcount > 0
 
     @sync_to_async
     def check_already_sent(self, user_id: int, target_date: date, hour: int) -> bool:
         """Check if reminder was already sent for the given hour on target_date for user."""
-        field_name = self._get_reminder_field_name(hour)
+        self._validate_reminder_hour(hour)
         settings, created = UserSettings.objects.get_or_create(user_id=user_id)
-        return getattr(settings, field_name) == target_date
+        sent_dates = settings.last_reminder_sent_dates or {}
+        return sent_dates.get(str(hour)) == target_date.isoformat()
 
     @sync_to_async
     def get_users_with_reminders_enabled(self) -> List[UserSettings]:
