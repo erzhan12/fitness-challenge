@@ -268,6 +268,44 @@ class TestSendEveningReminder:
                     mock_send.assert_called_once()
                     assert mock_send.call_args.args[0] == 222
 
+    @pytest.mark.asyncio
+    async def test_claim_failure_does_not_block_other_users(self):
+        """try_mark_hour_sent raising for one user must not abort the loop
+        or propagate out of send_evening_reminder (would 500 the admin job).
+        """
+        user_a = _make_user_settings(1, telegram_chat_id=111)
+        user_b = _make_user_settings(2, telegram_chat_id=222)
+
+        with patch("app.services.workout_service.user_settings_repo") as mock_repo:
+            mock_repo.get_users_for_reminder_hour = AsyncMock(
+                return_value=[user_a, user_b]
+            )
+
+            async def claim_side_effect(user_id, target_date, hour):
+                if user_id == 1:
+                    raise RuntimeError("claim boom")
+                return True
+
+            mock_repo.try_mark_hour_sent = AsyncMock(side_effect=claim_side_effect)
+            mock_repo.clear_hour_sent = AsyncMock()
+
+            with patch(
+                "app.services.workout_service.compute_evening_reminder",
+                new_callable=AsyncMock,
+                return_value=(True, "<b>Test message</b>", 1),
+            ):
+                with patch(
+                    "app.services.workout_service.send_telegram_message",
+                    new_callable=AsyncMock,
+                    return_value={"ok": True},
+                ) as mock_send:
+                    # Must not raise despite user 1's claim failing.
+                    await send_evening_reminder(21)
+
+                    # User 2 still got processed and messaged.
+                    mock_send.assert_called_once()
+                    assert mock_send.call_args.args[0] == 222
+
 
 def _make_challenge(
     challenge_id,

@@ -47,7 +47,7 @@ async def trigger_daily_reminders(
     await check_daily_reminders(hour=hour)
     return {
         "status": "triggered",
-        "mode": "evening" if hour else "legacy",
+        "mode": "evening" if hour is not None else "legacy",
         "hour": hour,
     }
 

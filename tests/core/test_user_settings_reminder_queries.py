@@ -23,6 +23,11 @@ def get_distinct_hours(repo):
     return async_to_sync(repo.get_distinct_active_reminder_hours)
 
 
+@pytest.fixture
+def get_enabled_users(repo):
+    return async_to_sync(repo.get_users_with_reminders_enabled)
+
+
 def _make_user_settings(
     *,
     telegram_user_id: int,
@@ -112,6 +117,24 @@ def test_get_distinct_active_reminder_hours_excludes_unapproved(get_distinct_hou
     _make_user_settings(telegram_user_id=990023052, reminder_hours=[13, 21])
 
     assert get_distinct_hours() == [13, 21]
+
+
+@pytest.mark.django_db
+def test_get_users_with_reminders_enabled_excludes_empty_hours(get_enabled_users):
+    """Real DB-backed check for the legacy (`hour=None`) path's opt-out query.
+
+    `check_daily_reminders(hour=None)` relies on `get_users_with_reminders_enabled`
+    to exclude `reminder_hours=[]` opt-outs. This must be verified against the
+    real ORM/SQL filter, not a mocked repo return value.
+    """
+    empty = _make_user_settings(telegram_user_id=990023071, reminder_hours=[])
+    enabled = _make_user_settings(telegram_user_id=990023072, reminder_hours=[13, 21])
+
+    result = get_enabled_users()
+
+    result_user_ids = {s.user_id for s in result}
+    assert enabled.user_id in result_user_ids
+    assert empty.user_id not in result_user_ids
 
 
 @pytest.mark.django_db

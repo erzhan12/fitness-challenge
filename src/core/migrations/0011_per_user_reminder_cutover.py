@@ -13,6 +13,14 @@ already does stop-old -> migrate -> start-new (see plan doc), so no
 additional maintenance drain is required today. If deploy ever becomes
 multi-replica / migrate-while-old-code-still-running, split the
 ``RemoveField`` operations below into a later ``0012`` instead.
+
+PRE-DEPLOY GATE: because deploy runs under ``set -eu`` (stop-old ->
+migrate -> start-new), a ``ReminderCutoverBlocked`` raised below fails the
+migration with no old container left to roll back to. Before deploying,
+verify prod does not have a non-null ``AppSettings.telegram_chat_id`` with
+no ``AppUser(telegram_user_id=0)`` — or apply one of the recovery paths in
+the exception message first. See RULES.md > Evening Reminders System >
+"Deploy — Migration 0011 pre-deploy gate".
 """
 
 from django.db import migrations

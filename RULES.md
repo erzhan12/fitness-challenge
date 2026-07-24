@@ -681,6 +681,13 @@ The application includes an automated evening reminder system that sends Telegra
 - `UserSettingsAdmin`: editable `reminder_hours`, `is_reminder_active`, `telegram_chat_id`; readonly `last_reminder_sent_dates`
 - `AppSettingsAdmin`: `is_registration_open` only
 
+**Deploy — Migration 0011 pre-deploy gate:**
+- `0011_per_user_reminder_cutover.py` drops the legacy `AppSettings` reminder columns. If prod has a non-null `AppSettings.telegram_chat_id` but no `AppUser(telegram_user_id=0)` row, `cutover_reminders()` raises `ReminderCutoverBlocked` and the migration fails — since deploy runs `set -eu` (stop old container → migrate → start new), this leaves the app down with no old container to roll back to.
+- **Before deploying this migration**, check prod for that combination and, if found, resolve it first via one of the two recovery paths documented in the migration's `ReminderCutoverBlocked` message:
+  1. Create the legacy `AppUser(telegram_user_id=0, ...)` with `UserSettings.telegram_chat_id` set to the global chat id, or
+  2. Map the global chat id onto an existing approved user's `UserSettings.telegram_chat_id` and null out `AppSettings.telegram_chat_id`.
+- Only after one of those is applied (or confirmed not needed) is it safe to deploy.
+
 ### Files
 - **Models:** `src/core/models.py` (UserSettings, AppSettings)
 - **Repositories:** `src/core/repositories.py` (UserSettingsRepository, AppSettingsRepository)

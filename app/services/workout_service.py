@@ -1566,9 +1566,11 @@ async def _send_evening_reminder_for_user(
 ) -> None:
     """Claim, compute, and send the evening reminder for a single user.
 
-    Failures are contained here: any Telegram send failure or unexpected
-    exception clears this user's claim and returns, never propagating to
-    the caller's per-user loop.
+    Failures during compute/send are contained here: any Telegram send
+    failure or unexpected exception clears this user's claim and returns.
+    A failure while claiming (before the try below) can still raise —
+    callers must wrap this call so one user's failure never aborts the
+    per-user loop (see `send_evening_reminder`).
     """
     user_id = user_settings.user_id
     chat_id = user_settings.telegram_chat_id
@@ -1646,7 +1648,17 @@ async def send_evening_reminder(reminder_hour: int):
 
     candidates = await user_settings_repo.get_users_for_reminder_hour(reminder_hour)
     for user_settings in candidates:
-        await _send_evening_reminder_for_user(user_settings, today_local, reminder_hour)
+        try:
+            await _send_evening_reminder_for_user(user_settings, today_local, reminder_hour)
+        except Exception:
+            # Guards against failures before the inner try (e.g. the claim
+            # call itself raising) so one user's error never aborts the
+            # loop or 500s the admin job.
+            logger.exception(
+                f"Unexpected error processing reminder for user "
+                f"{user_settings.user_id} at {reminder_hour}:00; "
+                "continuing with remaining users"
+            )
 
 
 # =============================================================================
