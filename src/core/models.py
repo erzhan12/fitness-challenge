@@ -1,6 +1,20 @@
 from django.db import models
 
-from .validators import normalize_exception_weekdays, validate_timezone_field
+from .validators import (
+    normalize_exception_weekdays,
+    normalize_reminder_hours,
+    validate_timezone_field,
+)
+
+
+def default_reminder_hours() -> list:
+    """Return a new default reminder schedule for UserSettings.reminder_hours."""
+    return [13, 21, 22]
+
+
+def default_empty_reminder_sent_dates() -> dict:
+    """Return a new empty idempotency map for UserSettings.last_reminder_sent_dates."""
+    return {}
 
 
 class AppUser(models.Model):
@@ -60,6 +74,11 @@ class UserSettings(models.Model):
     # replies. Does NOT affect evening reminder motivation.
     is_workout_motivation_active = models.BooleanField(default=True)
 
+    reminder_hours = models.JSONField(default=default_reminder_hours)
+    last_reminder_sent_dates = models.JSONField(
+        default=default_empty_reminder_sent_dates
+    )
+
     # Idempotency: track last date each reminder was sent (per-user)
     last_reminder_21_date = models.DateField(null=True, blank=True)
     last_reminder_22_date = models.DateField(null=True, blank=True)
@@ -73,6 +92,14 @@ class UserSettings(models.Model):
     class Meta:
         db_table = "user_settings"
         verbose_name_plural = "User settings"
+
+    def clean(self):
+        super().clean()
+        self.reminder_hours = normalize_reminder_hours(self.reminder_hours)
+
+    def save(self, *args, **kwargs):
+        self.reminder_hours = normalize_reminder_hours(self.reminder_hours)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"Settings for {self.user}"

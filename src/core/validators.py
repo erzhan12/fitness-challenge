@@ -192,6 +192,33 @@ def parse_exception_weekdays(value: str) -> set[int]:
     return {int(token) for token in value.split(",")}
 
 
+def normalize_reminder_hours(value) -> list[int]:
+    """Validate and normalize per-user reminder hours.
+
+    Accepts a list of unique ints in 0..23. Returns sorted ascending with
+    duplicates removed. Empty list is valid (opt-out). Raises ValidationError
+    on invalid input.
+    """
+    if value is None:
+        raise ValidationError("reminder_hours must be a list of integers 0-23")
+
+    if not isinstance(value, list):
+        raise ValidationError("reminder_hours must be a list of integers 0-23")
+
+    if not value:
+        return []
+
+    normalized: list[int] = []
+    for item in value:
+        if not isinstance(item, int) or isinstance(item, bool):
+            raise ValidationError("reminder_hours must be a list of integers 0-23")
+        if not (0 <= item <= 23):
+            raise ValidationError("reminder_hours must be a list of integers 0-23")
+        normalized.append(item)
+
+    return sorted(set(normalized))
+
+
 def validate_habit_id(habit_id: int) -> None:
     """Validate that habit_id is a valid positive integer.
 
