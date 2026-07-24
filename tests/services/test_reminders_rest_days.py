@@ -40,6 +40,14 @@ from app.services.workout_service import (  # noqa: E402
 )
 
 
+def _make_user_settings(user_id, telegram_chat_id=123456789, is_reminder_active=True):
+    return SimpleNamespace(
+        user_id=user_id,
+        telegram_chat_id=telegram_chat_id,
+        is_reminder_active=is_reminder_active,
+    )
+
+
 def _make_rest_aware_challenge(
     challenge_id: int,
     daily_target: int,
@@ -299,13 +307,12 @@ class TestCheckDailyRemindersLegacyRestDay:
             return_value={1: {today_local}}
         )
 
-        mock_settings = SimpleNamespace(
-            is_reminder_active=True,
-            telegram_chat_id=123456789,
-        )
+        user = _make_user_settings(1, telegram_chat_id=123456789)
 
-        with patch("app.services.workout_service.app_settings_repo") as mock_app_repo:
-            mock_app_repo.get_singleton = AsyncMock(return_value=mock_settings)
+        with patch("app.services.workout_service.user_settings_repo") as mock_us_repo:
+            mock_us_repo.get_users_with_reminders_enabled = AsyncMock(
+                return_value=[user]
+            )
 
             with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
                 mock_ch_repo.get_current_active = AsyncMock(return_value=[challenge])
@@ -334,13 +341,12 @@ class TestCheckDailyRemindersLegacyRestDay:
         )
         # No rest day — autouse fixture default {} is fine.
 
-        mock_settings = SimpleNamespace(
-            is_reminder_active=True,
-            telegram_chat_id=123456789,
-        )
+        user = _make_user_settings(1, telegram_chat_id=123456789)
 
-        with patch("app.services.workout_service.app_settings_repo") as mock_app_repo:
-            mock_app_repo.get_singleton = AsyncMock(return_value=mock_settings)
+        with patch("app.services.workout_service.user_settings_repo") as mock_us_repo:
+            mock_us_repo.get_users_with_reminders_enabled = AsyncMock(
+                return_value=[user]
+            )
 
             with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
                 mock_ch_repo.get_current_active = AsyncMock(return_value=[challenge])
@@ -357,3 +363,169 @@ class TestCheckDailyRemindersLegacyRestDay:
                         await check_daily_reminders(hour=None)
 
         mock_send.assert_called_once()
+        assert mock_send.call_args.args[0] == 123456789
+
+
+class TestCheckDailyRemindersLegacyPerUser:
+    """``check_daily_reminders(hour=None)`` iterates per-user settings."""
+
+    @pytest.mark.asyncio
+    async def test_legacy_iterates_per_user_with_own_chat_id(
+        self, _mock_challenge_exception_day_repo
+    ):
+        today_local = datetime.now(TZ).date()
+        challenge_a = _make_rest_aware_challenge(1, 50, today_local)
+        challenge_b = _make_rest_aware_challenge(2, 30, today_local)
+        user_a = _make_user_settings(1, telegram_chat_id=111)
+        user_b = _make_user_settings(2, telegram_chat_id=222)
+
+        with patch("app.services.workout_service.user_settings_repo") as mock_us_repo:
+            mock_us_repo.get_users_with_reminders_enabled = AsyncMock(
+                return_value=[user_a, user_b]
+            )
+
+            with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
+                async def active_for_user(today, user_id):
+                    if user_id == 1:
+                        return [challenge_a]
+                    if user_id == 2:
+                        return [challenge_b]
+                    return []
+
+                mock_ch_repo.get_current_active = AsyncMock(side_effect=active_for_user)
+
+                with patch("app.services.workout_service.log_repo") as mock_log_repo:
+                    mock_log_repo.get_today_counts_by_challenge_ids = AsyncMock(
+                        return_value={1: 0, 2: 0}
+                    )
+
+                    with patch(
+                        "app.services.workout_service.send_telegram_message",
+                        new_callable=AsyncMock,
+                    ) as mock_send:
+                        await check_daily_reminders(hour=None)
+
+        assert mock_send.await_count == 2
+        sent_chat_ids = {c.args[0] for c in mock_send.call_args_list}
+        assert sent_chat_ids == {111, 222}
+
+    @pytest.mark.asyncio
+    async def test_legacy_scopes_challenges_per_user_id(
+        self, _mock_challenge_exception_day_repo
+    ):
+        today_local = datetime.now(TZ).date()
+        user_a = _make_user_settings(1, telegram_chat_id=111)
+        user_b = _make_user_settings(2, telegram_chat_id=222)
+
+        with patch("app.services.workout_service.user_settings_repo") as mock_us_repo:
+            mock_us_repo.get_users_with_reminders_enabled = AsyncMock(
+                return_value=[user_a, user_b]
+            )
+
+            with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
+                mock_ch_repo.get_current_active = AsyncMock(return_value=[])
+
+                with patch(
+                    "app.services.workout_service.send_telegram_message",
+                    new_callable=AsyncMock,
+                ):
+                    await check_daily_reminders(hour=None)
+
+        assert mock_ch_repo.get_current_active.await_count == 2
+        user_ids = {
+            c.kwargs.get("user_id") or c.args[1]
+            for c in mock_ch_repo.get_current_active.call_args_list
+        }
+        assert user_ids == {1, 2}
+        for call in mock_ch_repo.get_current_active.call_args_list:
+            assert call.args[0] == today_local
+
+    @pytest.mark.asyncio
+    async def test_legacy_no_target_chat_id_fallback(
+        self, _mock_challenge_exception_day_repo
+    ):
+        user = _make_user_settings(1, telegram_chat_id=None)
+
+        with patch("app.services.workout_service.user_settings_repo") as mock_us_repo:
+            mock_us_repo.get_users_with_reminders_enabled = AsyncMock(
+                return_value=[user]
+            )
+
+            with patch("app.services.workout_service.settings") as mock_cfg:
+                mock_cfg.TARGET_CHAT_ID = 999999
+
+                with patch(
+                    "app.services.workout_service.send_telegram_message",
+                    new_callable=AsyncMock,
+                ) as mock_send:
+                    await check_daily_reminders(hour=None)
+
+        mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_legacy_skips_user_without_telegram_chat_id(
+        self, _mock_challenge_exception_day_repo
+    ):
+        user = _make_user_settings(1, telegram_chat_id=None)
+
+        with patch("app.services.workout_service.user_settings_repo") as mock_us_repo:
+            mock_us_repo.get_users_with_reminders_enabled = AsyncMock(
+                return_value=[user]
+            )
+
+            with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
+                mock_ch_repo.get_current_active = AsyncMock()
+
+                with patch(
+                    "app.services.workout_service.send_telegram_message",
+                    new_callable=AsyncMock,
+                ) as mock_send:
+                    await check_daily_reminders(hour=None)
+
+        mock_ch_repo.get_current_active.assert_not_called()
+        mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_legacy_skips_user_with_empty_reminder_hours(
+        self, _mock_challenge_exception_day_repo
+    ):
+        with patch("app.services.workout_service.user_settings_repo") as mock_us_repo:
+            mock_us_repo.get_users_with_reminders_enabled = AsyncMock(return_value=[])
+
+            with patch(
+                "app.services.workout_service.send_telegram_message",
+                new_callable=AsyncMock,
+            ) as mock_send:
+                await check_daily_reminders(hour=None)
+
+        mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_legacy_skips_inactive_user(
+        self, _mock_challenge_exception_day_repo
+    ):
+        with patch("app.services.workout_service.user_settings_repo") as mock_us_repo:
+            mock_us_repo.get_users_with_reminders_enabled = AsyncMock(return_value=[])
+
+            with patch(
+                "app.services.workout_service.send_telegram_message",
+                new_callable=AsyncMock,
+            ) as mock_send:
+                await check_daily_reminders(hour=None)
+
+        mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_legacy_skips_unapproved_user(
+        self, _mock_challenge_exception_day_repo
+    ):
+        with patch("app.services.workout_service.user_settings_repo") as mock_us_repo:
+            mock_us_repo.get_users_with_reminders_enabled = AsyncMock(return_value=[])
+
+            with patch(
+                "app.services.workout_service.send_telegram_message",
+                new_callable=AsyncMock,
+            ) as mock_send:
+                await check_daily_reminders(hour=None)
+
+        mock_send.assert_not_called()

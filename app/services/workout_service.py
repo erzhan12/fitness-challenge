@@ -1355,6 +1355,49 @@ async def process_incoming_message(
         await typing_task
 
 
+async def _send_legacy_missing_you_for_user(
+    user_settings, today_local: date
+) -> None:
+    """Send per-challenge "missing you" nudges for one user (legacy hour=None path)."""
+    chat_id = user_settings.telegram_chat_id
+    if not chat_id:
+        return
+
+    user_id = user_settings.user_id
+    challenges = await challenge_repo.get_current_active(
+        today_local, user_id=user_id
+    )
+    if not challenges:
+        return
+
+    challenge_ids = [ch.id for ch in challenges]
+    today_counts = await log_repo.get_today_counts_by_challenge_ids(
+        challenge_ids, today_local
+    )
+    exception_map = await challenge_exception_day_repo.list_dates_for_challenges(
+        challenge_ids
+    )
+
+    for ch in challenges:
+        weekdays = _parse_weekdays_csv(getattr(ch, "exception_weekdays", "") or "")
+        explicit_dates = exception_map.get(ch.id, set())
+        exception_set = expand_exception_dates(
+            ensure_date(ch.start_date),
+            ensure_date(ch.end_date),
+            weekdays,
+            explicit_dates,
+        )
+        if today_local in exception_set:
+            continue
+
+        today_count = today_counts.get(ch.id, 0)
+        if today_count <= 0:
+            ex_name = getattr(ch.exercise_type, "display_name", "exercise")
+            emoji = getattr(ch.exercise_type, "emoji", "🏋️")
+            msg = f"Hey, your {emoji} {ex_name} are missing you today! 🥺"
+            await send_telegram_message(chat_id, msg)
+
+
 async def check_daily_reminders(hour: Optional[int] = None):
     """
     Checks active challenges and sends reminders.
@@ -1374,52 +1417,12 @@ async def check_daily_reminders(hour: Optional[int] = None):
         await send_evening_reminder(hour)
         return
 
-    # Legacy behavior: simple reminder for challenges with no logs
+    # Legacy behavior: simple reminder per user for challenges with no logs
     today_local = datetime.now(TZ).date()
 
-    # Get chat_id from settings or env
-    app_settings = await app_settings_repo.get_singleton()
-    if not app_settings.is_reminder_active:
-        logger.info("Reminders disabled, skipping legacy reminders")
-        return
-
-    challenges = await challenge_repo.get_current_active(today_local)
-
-    target_chat_id = app_settings.telegram_chat_id
-    if not target_chat_id:
-        target_chat_id = settings.TARGET_CHAT_ID
-        if not target_chat_id:
-            logger.warning("No TARGET_CHAT_ID set for reminders.")
-            return
-
-    challenge_ids = [ch.id for ch in challenges]
-    today_counts = await log_repo.get_today_counts_by_challenge_ids(
-        challenge_ids, today_local
-    )
-    exception_map = await challenge_exception_day_repo.list_dates_for_challenges(
-        challenge_ids
-    )
-
-    for ch in challenges:
-        # Skip "missing you" reminders on rest days for this challenge.
-        weekdays = _parse_weekdays_csv(getattr(ch, "exception_weekdays", "") or "")
-        explicit_dates = exception_map.get(ch.id, set())
-        exception_set = expand_exception_dates(
-            ensure_date(ch.start_date),
-            ensure_date(ch.end_date),
-            weekdays,
-            explicit_dates,
-        )
-        if today_local in exception_set:
-            continue
-
-        # Check if logged today
-        today_count = today_counts.get(ch.id, 0)
-        if today_count <= 0:
-            ex_name = getattr(ch.exercise_type, "display_name", "exercise")
-            emoji = getattr(ch.exercise_type, "emoji", "🏋️")
-            msg = f"Hey, your {emoji} {ex_name} are missing you today! 🥺"
-            await send_telegram_message(target_chat_id, msg)
+    users = await user_settings_repo.get_users_with_reminders_enabled()
+    for user_settings in users:
+        await _send_legacy_missing_you_for_user(user_settings, today_local)
 
 
 async def compute_evening_reminder(
