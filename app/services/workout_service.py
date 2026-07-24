@@ -1404,10 +1404,10 @@ async def check_daily_reminders(hour: Optional[int] = None):
 
     This function serves dual purpose:
     1. Legacy behavior (hour=None): Send simple "missing you" messages for challenges with no logs
-    2. New behavior (hour in REMINDER_HOURS): Use evening reminder logic with combined message
+    2. New behavior (hour specified): Use evening reminder logic with combined message
 
     Args:
-        hour: Optional reminder hour (must be in REMINDER_HOURS). If provided, uses evening reminder logic.
+        hour: Optional reminder hour (0-23). If provided, uses evening reminder logic.
               If None, uses legacy simple reminder logic.
     """
     _ensure_orm()
@@ -1433,7 +1433,7 @@ async def compute_evening_reminder(
 
     Args:
         today_local: Current date in local timezone
-        reminder_hour: Hour of reminder (must be in REMINDER_HOURS)
+        reminder_hour: Hour of reminder (0-23)
         user_id: AppUser ID whose active challenges to evaluate
 
     Returns:
@@ -1626,7 +1626,7 @@ async def send_evening_reminder(reminder_hour: int):
     never blocks the remaining users for this hour.
 
     Args:
-        reminder_hour: Hour to send reminder (must be in REMINDER_HOURS)
+        reminder_hour: Hour to send reminder (0-23)
     """
     _ensure_orm()
 

@@ -62,6 +62,7 @@ class UserSettingsAdmin(admin.ModelAdmin):
         "user",
         "telegram_chat_id",
         "is_reminder_active",
+        "reminder_hours",
         "is_workout_motivation_active",
         "habit_reward_habit_id",
     ]
@@ -69,7 +70,7 @@ class UserSettingsAdmin(admin.ModelAdmin):
     search_fields = ["user__telegram_user_id", "user__username", "user__first_name"]
     list_editable = ["is_reminder_active", "is_workout_motivation_active"]
     raw_id_fields = ["user"]
-    readonly_fields = ["last_habit_reward_sent_date"]
+    readonly_fields = ["last_reminder_sent_dates", "last_habit_reward_sent_date"]
 
 
 @admin.register(ExerciseType)
