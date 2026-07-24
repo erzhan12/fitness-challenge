@@ -32,12 +32,10 @@ from .models import (
 )
 from .validators import validate_telegram_chat_id
 
-# Import reminder hours constant
-try:
-    from app.constants import REMINDER_HOURS
-except ImportError:
-    # Fallback if app.constants not available (shouldn't happen in normal usage)
-    REMINDER_HOURS = [21, 22, 23]
+# Legacy singleton AppSettings has fixed reminder-date columns only for these
+# hours (last_reminder_21_date / _22_date / _23_date); unrelated to per-user
+# DEFAULT_REMINDER_HOURS scheduling default.
+REMINDER_HOURS = [21, 22, 23]
 
 
 _SQLITE_LOCK_RETRIES = 5
