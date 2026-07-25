@@ -39,3 +39,9 @@ README is deployment-focused; it has no "Features" section describing user-facin
 
 ### Complete type hints on UserSettingsRepository reminder helpers (from PR #35 review, P2)
 `src/core/repositories.py` reminder query/idempotency methods should get full return-type annotations for consistency with the rest of the module. Deferred: cosmetic, non-blocking for Feature 0022 merge.
+
+### Boolean rejection unit test for reminder_hours (from PR #35 review, P2)
+Add `test_reminder_hours_rejects_boolean_values` and an inline comment on the `isinstance(item, bool)` guard in `normalize_reminder_hours`. Deferred: behavior already correct; polish only.
+
+### Optional json_each hour membership when user count grows (from PR #35 review, P1)
+Replace Python-side `hour in reminder_hours` with SQLite `json_each` once concurrent reminder users exceed ~100. Current ORM+Python path matches Feature 0022 plan for SQLite-at-current-scale.
