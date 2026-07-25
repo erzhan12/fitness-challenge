@@ -1,6 +1,20 @@
 from django.db import models
 
-from .validators import normalize_exception_weekdays, validate_timezone_field
+from .validators import (
+    normalize_exception_weekdays,
+    normalize_reminder_hours,
+    validate_timezone_field,
+)
+
+
+def default_reminder_hours() -> list:
+    """Return a new default reminder schedule for UserSettings.reminder_hours."""
+    return [13, 21, 22]
+
+
+def default_empty_reminder_sent_dates() -> dict:
+    """Return a new empty idempotency map for UserSettings.last_reminder_sent_dates."""
+    return {}
 
 
 class AppUser(models.Model):
@@ -60,10 +74,12 @@ class UserSettings(models.Model):
     # replies. Does NOT affect evening reminder motivation.
     is_workout_motivation_active = models.BooleanField(default=True)
 
-    # Idempotency: track last date each reminder was sent (per-user)
-    last_reminder_21_date = models.DateField(null=True, blank=True)
-    last_reminder_22_date = models.DateField(null=True, blank=True)
-    last_reminder_23_date = models.DateField(null=True, blank=True)
+    # List of ints 0–23; default [13, 21, 22]. Empty [] = opt-out (no sends).
+    reminder_hours = models.JSONField(default=default_reminder_hours)
+    # Idempotency map: {"13": "2026-07-24", "21": "2026-07-24"} (hour → ISO date).
+    last_reminder_sent_dates = models.JSONField(
+        default=default_empty_reminder_sent_dates
+    )
 
     # Habit Reward Integration (per-user)
     habit_reward_api_key = models.CharField(max_length=255, blank=True, default="")
@@ -73,6 +89,20 @@ class UserSettings(models.Model):
     class Meta:
         db_table = "user_settings"
         verbose_name_plural = "User settings"
+        indexes = [
+            models.Index(
+                fields=["is_reminder_active", "telegram_chat_id"],
+                name="user_settings_reminder_q_idx",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        self.reminder_hours = normalize_reminder_hours(self.reminder_hours)
+
+    def save(self, *args, **kwargs):
+        self.reminder_hours = normalize_reminder_hours(self.reminder_hours)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"Settings for {self.user}"
@@ -253,21 +283,15 @@ class UserStats(models.Model):
 class AppSettings(models.Model):
     """Application settings (singleton pattern for single-user app).
 
-    Stores reminder preferences and idempotency tracking for evening reminders.
-    Future-proofed for multi-user by keeping extensible schema.
+    Reminder scheduling/idempotency now lives on per-user ``UserSettings``
+    (Feature 0022) — this singleton only retains app-wide, non-per-user
+    controls.
     """
     is_registration_open = models.BooleanField(default=True)
-    is_reminder_active = models.BooleanField(default=True)
-    telegram_chat_id = models.BigIntegerField(null=True, blank=True)
-
-    # Idempotency: track last date each reminder was sent
-    last_reminder_21_date = models.DateField(null=True, blank=True)
-    last_reminder_22_date = models.DateField(null=True, blank=True)
-    last_reminder_23_date = models.DateField(null=True, blank=True)
 
     class Meta:
         db_table = "app_settings"
         verbose_name_plural = "App settings"
 
     def __str__(self):
-        return f"App Settings (reminders: {'ON' if self.is_reminder_active else 'OFF'})"
+        return f"App Settings (registration: {'OPEN' if self.is_registration_open else 'CLOSED'})"

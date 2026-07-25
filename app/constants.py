@@ -1,7 +1,9 @@
 """Application-wide constants."""
 
-# Reminder hours (9pm, 10pm, 11pm in 24-hour format)
-REMINDER_HOURS = [21, 22, 23]
+# Default/fallback reminder hours. Per-user reminder_hours (any hour 0-23) is
+# the source of truth for scheduling; this is only used by the scheduler for
+# sleep timing when no active user schedules exist yet.
+DEFAULT_REMINDER_HOURS = [13, 21, 22]
 
 # Upper-bound limits for LLM-created challenges
 MAX_DURATION_DAYS = 365

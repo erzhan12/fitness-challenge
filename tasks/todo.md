@@ -36,3 +36,12 @@ The current repo test (`tests/core/test_repositories.py`) verifies query constru
 
 ### Document user-facing API features in README (from PR #33 review, P3)
 README is deployment-focused; it has no "Features" section describing user-facing capabilities such as the workout-motivation toggle (`PATCH /api/v1/users/me/settings` → `is_workout_motivation_active`) or reminder settings. Add a concise features/API section for external integrators. Deferred as a docs-only follow-up.
+
+### Complete type hints on UserSettingsRepository reminder helpers (from PR #35 review, P2)
+`src/core/repositories.py` reminder query/idempotency methods should get full return-type annotations for consistency with the rest of the module. Deferred: cosmetic, non-blocking for Feature 0022 merge.
+
+### Boolean rejection unit test for reminder_hours (from PR #35 review, P2)
+Add `test_reminder_hours_rejects_boolean_values` and an inline comment on the `isinstance(item, bool)` guard in `normalize_reminder_hours`. Deferred: behavior already correct; polish only.
+
+### Optional json_each hour membership when user count grows (from PR #35 review, P1)
+Replace Python-side `hour in reminder_hours` with SQLite `json_each` once concurrent reminder users exceed ~100. Current ORM+Python path matches Feature 0022 plan for SQLite-at-current-scale.

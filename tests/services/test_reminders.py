@@ -2,7 +2,7 @@
 
 from datetime import date, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 
@@ -13,8 +13,16 @@ setup_django()
 from app.services.workout_service import send_evening_reminder, compute_evening_reminder
 
 
+def _make_user_settings(user_id, telegram_chat_id=123456789, is_reminder_active=True):
+    return SimpleNamespace(
+        user_id=user_id,
+        telegram_chat_id=telegram_chat_id,
+        is_reminder_active=is_reminder_active,
+    )
+
+
 class TestSendEveningReminder:
-    """Tests for send_evening_reminder function."""
+    """Tests for send_evening_reminder function (per-user loop)."""
 
     @pytest.fixture(autouse=True)
     def _mock_deactivate_expired(self):
@@ -29,14 +37,12 @@ class TestSendEveningReminder:
 
     @pytest.mark.asyncio
     async def test_send_reminder_disabled(self):
-        """When is_reminder_active=False, no Telegram message should be sent."""
-        mock_settings = SimpleNamespace(
-            is_reminder_active=False,
-            telegram_chat_id=123456789,
-        )
+        """User with is_reminder_active=False → no send, no claim."""
+        user = _make_user_settings(1, is_reminder_active=False)
 
-        with patch("app.services.workout_service.app_settings_repo") as mock_repo:
-            mock_repo.get_singleton = AsyncMock(return_value=mock_settings)
+        with patch("app.services.workout_service.user_settings_repo") as mock_repo:
+            mock_repo.get_users_for_reminder_hour = AsyncMock(return_value=[user])
+            mock_repo.try_mark_hour_sent = AsyncMock()
 
             with patch(
                 "app.services.workout_service.send_telegram_message",
@@ -44,44 +50,45 @@ class TestSendEveningReminder:
             ) as mock_send:
                 await send_evening_reminder(21)
 
-                # Should not send any message
                 mock_send.assert_not_called()
-                # Should not mark as sent
                 mock_repo.try_mark_hour_sent.assert_not_called()
-                # Hygiene sweep still runs before the disabled early-return
+                # Hygiene sweep still runs first
                 self.mock_deactivate_expired.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_send_reminder_deactivate_failure_is_swallowed(self):
-        """Hygiene sweep errors must not abort the reminder path."""
-        mock_settings = SimpleNamespace(
-            is_reminder_active=False,
-            telegram_chat_id=123456789,
-        )
+        """Hygiene sweep errors must not abort the per-user reminder loop."""
         self.mock_deactivate_expired.side_effect = RuntimeError("db down")
+        user = _make_user_settings(1)
 
-        with patch("app.services.workout_service.app_settings_repo") as mock_repo:
-            mock_repo.get_singleton = AsyncMock(return_value=mock_settings)
+        with patch("app.services.workout_service.user_settings_repo") as mock_repo:
+            mock_repo.get_users_for_reminder_hour = AsyncMock(return_value=[user])
+            mock_repo.try_mark_hour_sent = AsyncMock(return_value=True)
+            mock_repo.clear_hour_sent = AsyncMock()
 
             with patch(
-                "app.services.workout_service.send_telegram_message",
+                "app.services.workout_service.compute_evening_reminder",
                 new_callable=AsyncMock,
-            ) as mock_send:
-                await send_evening_reminder(21)
+                return_value=(False, None, 0),
+            ):
+                with patch(
+                    "app.services.workout_service.send_telegram_message",
+                    new_callable=AsyncMock,
+                ) as mock_send:
+                    await send_evening_reminder(21)
 
-                mock_send.assert_not_called()
-                mock_repo.get_singleton.assert_awaited()
+                    # Reminder path still proceeds despite hygiene failure
+                    mock_repo.get_users_for_reminder_hour.assert_awaited_once()
+                    mock_send.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_reminder_no_chat_id(self):
-        """When no chat_id is configured, no message should be sent."""
-        mock_settings = SimpleNamespace(
-            is_reminder_active=True,
-            telegram_chat_id=None,
-        )
+        """No telegram_chat_id and no TARGET_CHAT_ID fallback → no send, no claim."""
+        user = _make_user_settings(1, telegram_chat_id=None)
 
-        with patch("app.services.workout_service.app_settings_repo") as mock_repo:
-            mock_repo.get_singleton = AsyncMock(return_value=mock_settings)
+        with patch("app.services.workout_service.user_settings_repo") as mock_repo:
+            mock_repo.get_users_for_reminder_hour = AsyncMock(return_value=[user])
+            mock_repo.try_mark_hour_sent = AsyncMock()
 
             with patch("app.services.workout_service.settings") as mock_cfg:
                 mock_cfg.TARGET_CHAT_ID = None  # No fallback either
@@ -92,21 +99,18 @@ class TestSendEveningReminder:
                 ) as mock_send:
                     await send_evening_reminder(21)
 
-                    # Should not send any message
                     mock_send.assert_not_called()
                     mock_repo.try_mark_hour_sent.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_reminder_idempotency_already_sent(self):
-        """When already sent today, should skip without re-sending."""
-        mock_settings = SimpleNamespace(
-            is_reminder_active=True,
-            telegram_chat_id=123456789,
-        )
+        """try_mark_hour_sent returns False (already sent) → skip user."""
+        user = _make_user_settings(1)
 
-        with patch("app.services.workout_service.app_settings_repo") as mock_repo:
-            mock_repo.get_singleton = AsyncMock(return_value=mock_settings)
-            mock_repo.try_mark_hour_sent = AsyncMock(return_value=False)  # Already sent
+        with patch("app.services.workout_service.user_settings_repo") as mock_repo:
+            mock_repo.get_users_for_reminder_hour = AsyncMock(return_value=[user])
+            mock_repo.try_mark_hour_sent = AsyncMock(return_value=False)
+            mock_repo.clear_hour_sent = AsyncMock()
 
             with patch(
                 "app.services.workout_service.send_telegram_message",
@@ -114,53 +118,16 @@ class TestSendEveningReminder:
             ) as mock_send:
                 await send_evening_reminder(21)
 
-                # Should not send any message (already sent)
                 mock_send.assert_not_called()
-                # Should not mark again
                 mock_repo.clear_hour_sent.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_send_reminder_all_complete(self):
-        """When all challenges are complete, should mark as sent but not send message."""
-        mock_settings = SimpleNamespace(
-            is_reminder_active=True,
-            telegram_chat_id=123456789,
-        )
-
-        with patch("app.services.workout_service.app_settings_repo") as mock_repo:
-            mock_repo.get_singleton = AsyncMock(return_value=mock_settings)
-            mock_repo.try_mark_hour_sent = AsyncMock(return_value=True)
-            mock_repo.clear_hour_sent = AsyncMock()
-
-            with patch(
-                "app.services.workout_service.compute_evening_reminder",
-                new_callable=AsyncMock,
-            ) as mock_compute:
-                # All complete - nothing to send
-                mock_compute.return_value = (False, None, 0)
-
-                with patch(
-                    "app.services.workout_service.send_telegram_message",
-                    new_callable=AsyncMock,
-                ) as mock_send:
-                    await send_evening_reminder(21)
-
-                    # Should not send message (nothing incomplete)
-                    mock_send.assert_not_called()
-                    # Claim should be retained
-                    mock_repo.try_mark_hour_sent.assert_called_once()
-                    mock_repo.clear_hour_sent.assert_not_called()
-
-    @pytest.mark.asyncio
     async def test_send_reminder_incomplete_challenges(self):
-        """When there are incomplete challenges, should send combined message."""
-        mock_settings = SimpleNamespace(
-            is_reminder_active=True,
-            telegram_chat_id=123456789,
-        )
+        """Per-user send with that user's telegram_chat_id."""
+        user = _make_user_settings(1, telegram_chat_id=123456789)
 
-        with patch("app.services.workout_service.app_settings_repo") as mock_repo:
-            mock_repo.get_singleton = AsyncMock(return_value=mock_settings)
+        with patch("app.services.workout_service.user_settings_repo") as mock_repo:
+            mock_repo.get_users_for_reminder_hour = AsyncMock(return_value=[user])
             mock_repo.try_mark_hour_sent = AsyncMock(return_value=True)
             mock_repo.clear_hour_sent = AsyncMock()
 
@@ -168,37 +135,36 @@ class TestSendEveningReminder:
                 "app.services.workout_service.compute_evening_reminder",
                 new_callable=AsyncMock,
             ) as mock_compute:
-                # 2 incomplete challenges
                 mock_compute.return_value = (True, "<b>Test message</b>", 2)
 
                 with patch(
                     "app.services.workout_service.send_telegram_message",
                     new_callable=AsyncMock,
                 ) as mock_send:
-                    mock_send.return_value = {"ok": True}  # Success
+                    mock_send.return_value = {"ok": True}
 
                     await send_evening_reminder(21)
 
-                    # Should send the message
                     mock_send.assert_called_once()
                     call_args = mock_send.call_args
                     assert call_args[0][0] == 123456789  # chat_id
-                    assert "<b>Test message</b>" in call_args[0][1]  # message
+                    assert "<b>Test message</b>" in call_args[0][1]
+                    mock_compute.assert_awaited_once()
+                    assert mock_compute.call_args.kwargs.get("user_id") == 1 or (
+                        len(mock_compute.call_args.args) >= 3
+                        and mock_compute.call_args.args[2] == 1
+                    )
 
-                    # Claim should remain
                     mock_repo.try_mark_hour_sent.assert_called_once()
                     mock_repo.clear_hour_sent.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_send_reminder_telegram_failure_not_marked(self):
-        """When Telegram send fails, should NOT mark as sent (allows retry)."""
-        mock_settings = SimpleNamespace(
-            is_reminder_active=True,
-            telegram_chat_id=123456789,
-        )
+    async def test_send_reminder_telegram_failure_clears_claim(self):
+        """Telegram send returning None clears that user's claim."""
+        user = _make_user_settings(1)
 
-        with patch("app.services.workout_service.app_settings_repo") as mock_repo:
-            mock_repo.get_singleton = AsyncMock(return_value=mock_settings)
+        with patch("app.services.workout_service.user_settings_repo") as mock_repo:
+            mock_repo.get_users_for_reminder_hour = AsyncMock(return_value=[user])
             mock_repo.try_mark_hour_sent = AsyncMock(return_value=True)
             mock_repo.clear_hour_sent = AsyncMock()
 
@@ -212,14 +178,133 @@ class TestSendEveningReminder:
                     "app.services.workout_service.send_telegram_message",
                     new_callable=AsyncMock,
                 ) as mock_send:
-                    mock_send.return_value = None  # Failure - returns None
+                    mock_send.return_value = None  # Failure
 
                     await send_evening_reminder(21)
 
-                    # Should have attempted to send
                     mock_send.assert_called_once()
-                    # Should clear claim to allow retry
-                    mock_repo.clear_hour_sent.assert_called_once()
+                    mock_repo.clear_hour_sent.assert_called_once_with(1, ANY, 21)
+
+    @pytest.mark.asyncio
+    async def test_user_without_hour_not_messaged(self):
+        """User not returned by get_users_for_reminder_hour → no send."""
+        with patch("app.services.workout_service.user_settings_repo") as mock_repo:
+            mock_repo.get_users_for_reminder_hour = AsyncMock(return_value=[])
+            mock_repo.try_mark_hour_sent = AsyncMock()
+
+            with patch(
+                "app.services.workout_service.send_telegram_message",
+                new_callable=AsyncMock,
+            ) as mock_send:
+                await send_evening_reminder(21)
+
+                mock_send.assert_not_called()
+                mock_repo.try_mark_hour_sent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_multiple_users_each_get_own_message(self):
+        """Two incomplete users → two send_telegram_message calls with distinct chat ids."""
+        user_a = _make_user_settings(1, telegram_chat_id=111)
+        user_b = _make_user_settings(2, telegram_chat_id=222)
+
+        with patch("app.services.workout_service.user_settings_repo") as mock_repo:
+            mock_repo.get_users_for_reminder_hour = AsyncMock(
+                return_value=[user_a, user_b]
+            )
+            mock_repo.try_mark_hour_sent = AsyncMock(return_value=True)
+            mock_repo.clear_hour_sent = AsyncMock()
+
+            with patch(
+                "app.services.workout_service.compute_evening_reminder",
+                new_callable=AsyncMock,
+                return_value=(True, "<b>Test message</b>", 1),
+            ):
+                with patch(
+                    "app.services.workout_service.send_telegram_message",
+                    new_callable=AsyncMock,
+                    return_value={"ok": True},
+                ) as mock_send:
+                    await send_evening_reminder(21)
+
+                    assert mock_send.await_count == 2
+                    sent_chat_ids = {c.args[0] for c in mock_send.call_args_list}
+                    assert sent_chat_ids == {111, 222}
+                    mock_repo.clear_hour_sent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_one_user_failure_does_not_block_other_users(self):
+        """First user's compute/send raises; second user still gets processed."""
+        user_a = _make_user_settings(1, telegram_chat_id=111)
+        user_b = _make_user_settings(2, telegram_chat_id=222)
+
+        with patch("app.services.workout_service.user_settings_repo") as mock_repo:
+            mock_repo.get_users_for_reminder_hour = AsyncMock(
+                return_value=[user_a, user_b]
+            )
+            mock_repo.try_mark_hour_sent = AsyncMock(return_value=True)
+            mock_repo.clear_hour_sent = AsyncMock()
+
+            async def compute_side_effect(today_local, hour, user_id):
+                if user_id == 1:
+                    raise RuntimeError("boom")
+                return (True, "<b>Test message</b>", 1)
+
+            with patch(
+                "app.services.workout_service.compute_evening_reminder",
+                new_callable=AsyncMock,
+                side_effect=compute_side_effect,
+            ):
+                with patch(
+                    "app.services.workout_service.send_telegram_message",
+                    new_callable=AsyncMock,
+                    return_value={"ok": True},
+                ) as mock_send:
+                    # Must not propagate the first user's exception.
+                    await send_evening_reminder(21)
+
+                    # User 1's claim was cleared after the failure.
+                    mock_repo.clear_hour_sent.assert_any_call(1, ANY, 21)
+                    # User 2 still got a message sent.
+                    mock_send.assert_called_once()
+                    assert mock_send.call_args.args[0] == 222
+
+    @pytest.mark.asyncio
+    async def test_claim_failure_does_not_block_other_users(self):
+        """try_mark_hour_sent raising for one user must not abort the loop
+        or propagate out of send_evening_reminder (would 500 the admin job).
+        """
+        user_a = _make_user_settings(1, telegram_chat_id=111)
+        user_b = _make_user_settings(2, telegram_chat_id=222)
+
+        with patch("app.services.workout_service.user_settings_repo") as mock_repo:
+            mock_repo.get_users_for_reminder_hour = AsyncMock(
+                return_value=[user_a, user_b]
+            )
+
+            async def claim_side_effect(user_id, target_date, hour):
+                if user_id == 1:
+                    raise RuntimeError("claim boom")
+                return True
+
+            mock_repo.try_mark_hour_sent = AsyncMock(side_effect=claim_side_effect)
+            mock_repo.clear_hour_sent = AsyncMock()
+
+            with patch(
+                "app.services.workout_service.compute_evening_reminder",
+                new_callable=AsyncMock,
+                return_value=(True, "<b>Test message</b>", 1),
+            ):
+                with patch(
+                    "app.services.workout_service.send_telegram_message",
+                    new_callable=AsyncMock,
+                    return_value={"ok": True},
+                ) as mock_send:
+                    # Must not raise despite user 1's claim failing.
+                    await send_evening_reminder(21)
+
+                    # User 2 still got processed and messaged.
+                    mock_send.assert_called_once()
+                    assert mock_send.call_args.args[0] == 222
 
 
 def _make_challenge(
@@ -261,12 +346,27 @@ class TestComputeEveningReminder:
     """
 
     @pytest.mark.asyncio
+    async def test_scopes_challenges_to_user_id(self):
+        """get_current_active is called with the provided user_id."""
+        today = date.today()
+        with patch("app.services.workout_service.challenge_repo") as mock_repo:
+            mock_repo.get_current_active = AsyncMock(return_value=[])
+
+            await compute_evening_reminder(today, 21, user_id=42)
+
+            mock_repo.get_current_active.assert_awaited_once_with(
+                today, user_id=42
+            )
+
+    @pytest.mark.asyncio
     async def test_no_active_challenges(self):
         """When there are no active challenges, returns (False, None, 0)."""
         with patch("app.services.workout_service.challenge_repo") as mock_repo:
             mock_repo.get_current_active = AsyncMock(return_value=[])
 
-            should_send, message, count = await compute_evening_reminder(date.today(), 21)
+            should_send, message, count = await compute_evening_reminder(
+                date.today(), 21, user_id=1
+            )
 
             assert should_send is False
             assert message is None
@@ -287,7 +387,9 @@ class TestComputeEveningReminder:
                     return_value={1: 500}
                 )
 
-                should_send, message, count = await compute_evening_reminder(date.today(), 21)
+                should_send, message, count = await compute_evening_reminder(
+                    date.today(), 21, user_id=1
+                )
 
                 assert should_send is False
                 assert message is None
@@ -311,7 +413,9 @@ class TestComputeEveningReminder:
                 with patch("app.services.workout_service.generate_reminder_motivation") as mock_llm:
                     mock_llm.return_value = "You can do it!"
 
-                    should_send, message, count = await compute_evening_reminder(date.today(), 21)
+                    should_send, message, count = await compute_evening_reminder(
+                        date.today(), 21, user_id=1
+                    )
 
                     assert should_send is True
                     assert count == 1
@@ -338,7 +442,9 @@ class TestComputeEveningReminder:
                 with patch("app.services.workout_service.generate_reminder_motivation") as mock_llm:
                     mock_llm.return_value = "Time for some yoga!"
 
-                    should_send, message, count = await compute_evening_reminder(date.today(), 21)
+                    should_send, message, count = await compute_evening_reminder(
+                        date.today(), 21, user_id=1
+                    )
 
                     assert should_send is True
                     assert count == 1
@@ -361,7 +467,9 @@ class TestComputeEveningReminder:
                     return_value={1: 100}
                 )
 
-                should_send, message, count = await compute_evening_reminder(date.today(), 21)
+                should_send, message, count = await compute_evening_reminder(
+                    date.today(), 21, user_id=1
+                )
 
                 assert should_send is False
                 assert message is None
@@ -394,7 +502,9 @@ class TestComputeEveningReminder:
 
                     mock_llm.side_effect = capture_context
 
-                    should_send, message, count = await compute_evening_reminder(date.today(), 21)
+                    should_send, message, count = await compute_evening_reminder(
+                        date.today(), 21, user_id=1
+                    )
 
                     assert should_send is True
                     assert count == 2
@@ -421,7 +531,7 @@ class TestComputeEveningReminder:
                     mock_llm.return_value = "Keep it up!"
 
                     should_send, message, count = await compute_evening_reminder(
-                        date.today(), 21
+                        date.today(), 21, user_id=1
                     )
 
                     assert should_send is True

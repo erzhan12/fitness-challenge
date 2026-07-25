@@ -619,17 +619,20 @@ Do not rely on `challenge_map` (keyed by exercise type) when processing these en
 
 ## Evening Reminders System
 
-The application includes an automated evening reminder system that sends Telegram notifications at 9pm, 10pm, and 11pm for incomplete challenges.
+The application includes an automated evening reminder system that sends Telegram notifications at each user's configured reminder hours for incomplete challenges. Default schedule is 1pm, 9pm, and 10pm (`DEFAULT_REMINDER_HOURS = [13, 21, 22]` in `app/constants.py`).
 
 ### Components
 
 **Data Layer:**
-- `AppSettings` model (`src/core/models.py`) - Singleton table storing:
+- `UserSettings` model (`src/core/models.py`) — per-user reminder configuration:
   - `is_reminder_active`: Boolean toggle for reminders
-  - `telegram_chat_id`: Auto-captured from Telegram messages
-  - `last_reminder_21_date`, `last_reminder_22_date`, `last_reminder_23_date`: Idempotency tracking
-- `AppSettingsRepository` (`src/core/repositories.py`) - Async repository with methods:
-  - `get_singleton()`, `set_is_reminder_active()`, `update_chat_id()`, `mark_hour_sent()`, `check_already_sent()`
+  - `telegram_chat_id`: Auto-captured from Telegram messages (required for send; no `TARGET_CHAT_ID` fallback)
+  - `reminder_hours`: JSON list of ints `0–23` (default `[13, 21, 22]`; admin-editable; `[]` = opt-out)
+  - `last_reminder_sent_dates`: JSON map `{"21": "2026-07-25", ...}` for per-hour idempotency
+- `UserSettingsRepository` (`src/core/repositories.py`) — async repository with methods:
+  - `get_users_for_reminder_hour()`, `get_distinct_active_reminder_hours()`, `try_mark_hour_sent()`, `clear_hour_sent()`
+- `AppSettings` model — singleton retaining only `is_registration_open` (reminder fields removed in migration 0011)
+- `AppSettingsRepository` — `get_singleton()`, `update()` for app-wide non-reminder settings only
 
 **Reminder Logic (Cumulative Catch-Up):**
 - `compute_evening_reminder()` (`app/services/workout_service.py`) - Determines incomplete challenges using **cumulative progress**:
@@ -641,10 +644,11 @@ The application includes an automated evening reminder system that sends Telegra
   - Per-challenge: only behind challenges appear in the reminder
   - Returns combined HTML message with motivational text
 - **Behavioral change (2026-02-06):** Previously reminders checked `today_total < daily_target` (daily activity). Now they check cumulative progress vs expected pace. This means a user who did a lot today but is still behind overall will still get a reminder, and a user who did nothing today but is ahead overall will NOT get a reminder.
-- `send_evening_reminder()` (`app/services/workout_service.py`) - Sends reminders:
-  - Checks `is_reminder_active` flag
-  - Implements idempotency to avoid duplicate sends
-  - Sends one combined message per hour listing all incomplete challenges
+- `send_evening_reminder()` (`app/services/workout_service.py`) - Sends reminders per user:
+  - Iterates users with `is_reminder_active`, approved status, `telegram_chat_id`, and hour in `reminder_hours`
+  - Atomic claim via `try_mark_hour_sent()` before send; clears claim on failure
+  - Sends one combined message per user per hour listing incomplete challenges
+  - No `TARGET_CHAT_ID` fallback when `telegram_chat_id` is missing
 - `generate_reminder_motivation()` (`app/services/openai_service.py`) - LLM-generated motivation:
   - Short (1-2 sentences), encouraging tone
   - Context-aware based on hour and remaining work
@@ -652,9 +656,9 @@ The application includes an automated evening reminder system that sends Telegra
 
 **Scheduler:**
 - `start_reminder_scheduler()` (`app/services/reminder_scheduler.py`) - Background task:
-  - Calculates next reminder time (21:00/22:00/23:00 in `settings.TZ`)
-  - Sleeps until target time
-  - Triggers reminder via `send_evening_reminder()`
+  - Wakes on union of enabled users' `reminder_hours` (any hour `0–23`)
+  - Falls back to `DEFAULT_REMINDER_HOURS` for sleep timing only when no active schedules exist
+  - Sleeps until target time, then triggers `send_evening_reminder(hour)`
   - Handles errors gracefully with retry logic
 - Started automatically in `app/main.py` startup event
 
@@ -671,20 +675,31 @@ The application includes an automated evening reminder system that sends Telegra
 **Legacy Compatibility:**
 - `check_daily_reminders()` updated to support optional `hour` parameter:
   - `hour=None`: Legacy simple reminder (sends per-challenge messages)
-  - `hour=21/22/23`: New evening reminder with combined message
+  - `hour=<int>`: Evening reminder with combined message for that hour
+
+**Django Admin:**
+- `UserSettingsAdmin`: editable `reminder_hours`, `is_reminder_active`, `telegram_chat_id`; readonly `last_reminder_sent_dates`
+- `AppSettingsAdmin`: `is_registration_open` only
+
+**Deploy — Migration 0011 pre-deploy gate:**
+- `0011_per_user_reminder_cutover.py` drops the legacy `AppSettings` reminder columns. If prod has a non-null `AppSettings.telegram_chat_id` but no `AppUser(telegram_user_id=0)` row, `cutover_reminders()` raises `ReminderCutoverBlocked` and the migration fails — since deploy runs `set -eu` (stop old container → migrate → start new), this leaves the app down with no old container to roll back to.
+- **Before deploying this migration**, check prod for that combination and, if found, resolve it first via one of the two recovery paths documented in the migration's `ReminderCutoverBlocked` message:
+  1. Create the legacy `AppUser(telegram_user_id=0, ...)` with `UserSettings.telegram_chat_id` set to the global chat id, or
+  2. Map the global chat id onto an existing approved user's `UserSettings.telegram_chat_id` and null out `AppSettings.telegram_chat_id`.
+- Only after one of those is applied (or confirmed not needed) is it safe to deploy.
 
 ### Files
-- **Models:** `src/core/models.py` (AppSettings)
-- **Repositories:** `src/core/repositories.py` (AppSettingsRepository)
+- **Models:** `src/core/models.py` (UserSettings, AppSettings)
+- **Repositories:** `src/core/repositories.py` (UserSettingsRepository, AppSettingsRepository)
 - **Reminder Logic:** `app/services/workout_service.py` (compute_evening_reminder, send_evening_reminder)
 - **Scheduler:** `app/services/reminder_scheduler.py`
 - **LLM Integration:** `app/services/openai_service.py` (generate_reminder_motivation)
 - **API:** `src/api/routers/settings.py`, `src/api/services.py`, `src/api/models.py`
 - **Telegram:** `app/routers/telegram.py` (auto-capture chat_id)
 - **Tests:** `tests/api/test_settings.py`
-- **Migration:** `src/core/migrations/0002_add_app_settings.py`
+- **Migrations:** `0010_per_user_reminder_hours.py`, `0011_per_user_reminder_cutover.py`
 
-**Last Updated:** Changed evening reminders to use cumulative catch-up logic instead of daily target (2026-02-06)
+**Last Updated:** Per-user reminder hours and JSON idempotency (Feature 0022, 2026-07-25)
 
 ---
 
@@ -878,8 +893,9 @@ The application is being migrated from single-user to multi-user support. This s
 
 #### UserSettings (`src/core/models.py`)
 - One-to-One relationship with `AppUser`
-- Fields: `user_id` (FK), `telegram_chat_id`, `is_reminder_active`, `last_reminder_21_date/22_date/23_date`
-- Per-user idempotency tracking for evening reminders (replaces singleton AppSettings logic)
+- Fields: `user_id` (FK), `telegram_chat_id`, `is_reminder_active`, `reminder_hours` (default `[13, 21, 22]`), `last_reminder_sent_dates` (JSON idempotency map), `is_workout_motivation_active`, habit-reward fields
+- `reminder_hours`: admin-editable list of ints `0–23`; empty list disables sends for that user
+- `last_reminder_sent_dates`: keys are hour strings (`"21"`), values are ISO dates; replaces per-hour date columns
 
 #### Updated Models
 - `ExerciseType`: Added `user_id` FK (nullable for migration); unique constraint changed to `(user, name)`
@@ -964,7 +980,7 @@ async def get_profile(current_user: AppUser = Depends(get_current_user)):
 
 3. **X-Telegram-User-Id header:** Uses explicit header for user context (not JWT/tokens yet) to align with Telegram bot integration. Can be extended to JWT later.
 
-4. **Per-user idempotency:** `UserSettingsRepository` replaces the singleton `AppSettingsRepository` pattern for reminder idempotency, storing `last_reminder_*_date` per user.
+4. **Per-user idempotency:** `UserSettingsRepository` replaces the singleton `AppSettingsRepository` pattern for reminder operations, using `last_reminder_sent_dates` JSON and `try_mark_hour_sent()` conditional SQLite updates.
 
 5. **Approval flow:** Users start in `pending` status and must be manually approved by admin. This prevents unauthorized access during beta.
 

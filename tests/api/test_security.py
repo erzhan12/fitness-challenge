@@ -1,5 +1,7 @@
 """Tests for API security and authentication."""
 
+from unittest.mock import AsyncMock, patch
+
 from tests.api.conftest import make_challenge_model, make_exercise_type_model, make_log_model, make_user_stats_model
 
 
@@ -241,3 +243,57 @@ class TestAdminJobsAuth:
             headers={"Authorization": "Bearer invalid-key"},
         )
         assert response.status_code == 403
+
+    def test_daily_reminder_accepts_hour_13(self, client, auth_headers):
+        """POST /jobs/daily-reminder?hour=13 accepts default reminder hour."""
+        with patch(
+            "app.routers.admin.check_daily_reminders",
+            new_callable=AsyncMock,
+        ) as mock_check:
+            response = client.post(
+                "/jobs/daily-reminder?hour=13",
+                headers=auth_headers,
+            )
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "triggered",
+            "mode": "evening",
+            "hour": 13,
+        }
+        mock_check.assert_awaited_once_with(hour=13)
+
+    def test_daily_reminder_accepts_hour_23(self, client, auth_headers):
+        """POST /jobs/daily-reminder?hour=23 accepts late evening hour."""
+        with patch(
+            "app.routers.admin.check_daily_reminders",
+            new_callable=AsyncMock,
+        ) as mock_check:
+            response = client.post(
+                "/jobs/daily-reminder?hour=23",
+                headers=auth_headers,
+            )
+        assert response.status_code == 200
+        assert response.json()["hour"] == 23
+        mock_check.assert_awaited_once_with(hour=23)
+
+    def test_daily_reminder_accepts_hour_8(self, client, auth_headers):
+        """POST /jobs/daily-reminder?hour=8 accepts custom morning hour."""
+        with patch(
+            "app.routers.admin.check_daily_reminders",
+            new_callable=AsyncMock,
+        ) as mock_check:
+            response = client.post(
+                "/jobs/daily-reminder?hour=8",
+                headers=auth_headers,
+            )
+        assert response.status_code == 200
+        assert response.json()["hour"] == 8
+        mock_check.assert_awaited_once_with(hour=8)
+
+    def test_daily_reminder_rejects_hour_24(self, client, auth_headers):
+        """POST /jobs/daily-reminder?hour=24 returns 422."""
+        response = client.post(
+            "/jobs/daily-reminder?hour=24",
+            headers=auth_headers,
+        )
+        assert response.status_code == 422

@@ -1,4 +1,5 @@
 from datetime import date
+import time
 from typing import List, Optional, Tuple
 from asgiref.sync import sync_to_async
 
@@ -12,6 +13,8 @@ if not django_settings.configured:
 
     setup_django()
 
+from django.db import connection
+from django.db.utils import OperationalError
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -24,15 +27,30 @@ from .models import (
     ExerciseLog,
     UserStats,
     AppSettings,
+    default_reminder_hours,
+    default_empty_reminder_sent_dates,
 )
 from .validators import validate_telegram_chat_id
 
-# Import reminder hours constant
-try:
-    from app.constants import REMINDER_HOURS
-except ImportError:
-    # Fallback if app.constants not available (shouldn't happen in normal usage)
-    REMINDER_HOURS = [21, 22, 23]
+# Shared-cache :memory: SQLite (pytest) can raise transient table locks under
+# concurrent claims; production on-disk SQLite rarely hits this. Linear backoff
+# (10–50 ms) over 5 attempts absorbs those races without changing claim SQL.
+_SQLITE_LOCK_RETRIES = 5
+_SQLITE_LOCK_BACKOFF_S = 0.01
+
+
+def _execute_sqlite_update_with_lock_retry(cursor, sql: str, params: list) -> None:
+    """Retry a single SQLite UPDATE on transient database-is-locked errors."""
+    for attempt in range(_SQLITE_LOCK_RETRIES):
+        try:
+            cursor.execute(sql, params)
+            return
+        except OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            if attempt == _SQLITE_LOCK_RETRIES - 1:
+                raise
+            time.sleep(_SQLITE_LOCK_BACKOFF_S * (attempt + 1))
 
 
 class AppUserRepository:
@@ -161,13 +179,32 @@ class UserSettingsRepository:
     """Repository for UserSettings operations (per-user settings)."""
 
     @staticmethod
-    def _get_reminder_field_name(hour: int) -> str:
-        """Get the field name for a reminder hour."""
-        if hour not in REMINDER_HOURS:
-            raise ValueError(
-                f"Invalid hour: {hour}. Must be one of {REMINDER_HOURS}."
+    def _hour_json_path(hour: int) -> str:
+        return f"$.{hour}"
+
+    @staticmethod
+    def _validate_reminder_hour(hour: int) -> None:
+        if not 0 <= hour <= 23:
+            raise ValueError(f"Invalid hour: {hour}. Must be 0-23.")
+
+    @staticmethod
+    def _base_active_reminder_queryset():
+        """ORM prefilter for reminder send/wake queries (hour membership applied separately)."""
+        return (
+            UserSettings.objects.select_related("user")
+            .filter(
+                is_reminder_active=True,
+                user__status=AppUser.Status.APPROVED,
+                telegram_chat_id__isnull=False,
             )
-        return f"last_reminder_{hour}_date"
+            .exclude(reminder_hours=[])
+        )
+
+    @staticmethod
+    def _filter_by_hour_membership(
+        settings_list: List[UserSettings], hour: int
+    ) -> List[UserSettings]:
+        return [s for s in settings_list if hour in (s.reminder_hours or [])]
 
     @sync_to_async
     def get_by_user_id(self, user_id: int) -> Optional[UserSettings]:
@@ -180,9 +217,15 @@ class UserSettingsRepository:
     @sync_to_async
     def get_or_create(self, user_id: int, defaults: Optional[dict] = None) -> UserSettings:
         """Get or create settings for user."""
+        merged_defaults = {
+            "reminder_hours": default_reminder_hours(),
+            "last_reminder_sent_dates": default_empty_reminder_sent_dates(),
+        }
+        if defaults:
+            merged_defaults.update(defaults)
         settings, created = UserSettings.objects.get_or_create(
             user_id=user_id,
-            defaults=defaults or {}
+            defaults=merged_defaults,
         )
         return settings
 
@@ -219,52 +262,88 @@ class UserSettingsRepository:
     def try_mark_hour_sent(self, user_id: int, target_date: date, hour: int) -> bool:
         """Atomically mark hour as sent if not already sent today for user.
 
+        Uses one conditional SQLite UPDATE with json_set/json_extract so only one
+        concurrent caller wins for the same user/hour/day.
+
         Returns:
             True if this call marked it (first to succeed).
             False if already marked.
         """
-        field_name = self._get_reminder_field_name(hour)
-
-        # Ensure settings exist
+        self._validate_reminder_hour(hour)
         UserSettings.objects.get_or_create(user_id=user_id)
 
-        # Atomic conditional update
-        updated = UserSettings.objects.filter(user_id=user_id).exclude(
-            **{field_name: target_date}
-        ).update(**{field_name: target_date})
-
-        return updated > 0
+        json_path = self._hour_json_path(hour)
+        today_str = target_date.isoformat()
+        with connection.cursor() as cursor:
+            _execute_sqlite_update_with_lock_retry(
+                cursor,
+                """
+                UPDATE user_settings
+                SET last_reminder_sent_dates = json_set(
+                    COALESCE(last_reminder_sent_dates, '{}'),
+                    ?,
+                    ?
+                )
+                WHERE user_id = ?
+                AND (
+                    json_extract(COALESCE(last_reminder_sent_dates, '{}'), ?) IS NULL
+                    OR json_extract(COALESCE(last_reminder_sent_dates, '{}'), ?) != ?
+                )
+                """,
+                [json_path, today_str, user_id, json_path, json_path, today_str],
+            )
+            return cursor.rowcount > 0
 
     @sync_to_async
     def clear_hour_sent(self, user_id: int, target_date: date, hour: int) -> bool:
         """Clear the sent marker for the given hour on target_date for user."""
-        field_name = self._get_reminder_field_name(hour)
+        self._validate_reminder_hour(hour)
 
-        UserSettings.objects.get_or_create(user_id=user_id)
-        updated = UserSettings.objects.filter(
-            user_id=user_id, **{field_name: target_date}
-        ).update(**{field_name: None})
-        return updated > 0
+        json_path = self._hour_json_path(hour)
+        today_str = target_date.isoformat()
+        with connection.cursor() as cursor:
+            _execute_sqlite_update_with_lock_retry(
+                cursor,
+                """
+                UPDATE user_settings
+                SET last_reminder_sent_dates = json_remove(
+                    COALESCE(last_reminder_sent_dates, '{}'),
+                    ?
+                )
+                WHERE user_id = ?
+                AND json_extract(COALESCE(last_reminder_sent_dates, '{}'), ?) = ?
+                """,
+                [json_path, user_id, json_path, today_str],
+            )
+            return cursor.rowcount > 0
 
     @sync_to_async
     def check_already_sent(self, user_id: int, target_date: date, hour: int) -> bool:
         """Check if reminder was already sent for the given hour on target_date for user."""
-        field_name = self._get_reminder_field_name(hour)
+        self._validate_reminder_hour(hour)
         settings, created = UserSettings.objects.get_or_create(user_id=user_id)
-        return getattr(settings, field_name) == target_date
+        sent_dates = settings.last_reminder_sent_dates or {}
+        return sent_dates.get(str(hour)) == target_date.isoformat()
 
     @sync_to_async
     def get_users_with_reminders_enabled(self) -> List[UserSettings]:
         """Get all user settings where reminders are enabled and user is approved."""
-        return list(
-            UserSettings.objects.select_related("user")
-            .filter(
-                is_reminder_active=True,
-                telegram_chat_id__isnull=False,
-                user__status=AppUser.Status.APPROVED
-            )
-            .order_by("user_id")
-        )
+        return list(self._base_active_reminder_queryset().order_by("user_id"))
+
+    @sync_to_async
+    def get_users_for_reminder_hour(self, hour: int) -> List[UserSettings]:
+        """Get approved active users whose reminder_hours include the given hour."""
+        self._validate_reminder_hour(hour)
+        candidates = list(self._base_active_reminder_queryset().order_by("user_id"))
+        return self._filter_by_hour_membership(candidates, hour)
+
+    @sync_to_async
+    def get_distinct_active_reminder_hours(self) -> List[int]:
+        """Union of reminder_hours across active approved users with non-empty schedules."""
+        hours: set[int] = set()
+        for settings in self._base_active_reminder_queryset():
+            hours.update(settings.reminder_hours or [])
+        return sorted(hours)
 
     @sync_to_async
     def try_claim_habit_reward_date(self, user_id: int, target_date: date) -> bool:
@@ -914,130 +993,18 @@ class UserStatsRepository:
 
 
 class AppSettingsRepository:
-    """Repository for AppSettings operations (singleton pattern)."""
+    """Repository for AppSettings operations (singleton pattern).
 
-    @staticmethod
-    def _get_reminder_field_name(hour: int) -> str:
-        """Get the field name for a reminder hour.
-        
-        Args:
-            hour: The reminder hour (must be in REMINDER_HOURS)
-            
-        Returns:
-            Field name like "last_reminder_21_date"
-            
-        Raises:
-            ValueError: If hour is not in REMINDER_HOURS
-        """
-        if hour not in REMINDER_HOURS:
-            raise ValueError(
-                f"Invalid hour: {hour}. Must be one of {REMINDER_HOURS}."
-            )
-        return f"last_reminder_{hour}_date"
+    Reminder scheduling/idempotency moved to per-user ``UserSettings``
+    (Feature 0022, migration 0011) — this singleton now only backs
+    app-wide, non-per-user controls (e.g. ``is_registration_open``).
+    """
 
     @sync_to_async
     def get_singleton(self) -> AppSettings:
         """Get or create the singleton AppSettings instance."""
         settings, created = AppSettings.objects.get_or_create(id=1)
         return settings
-
-    @sync_to_async
-    def set_is_reminder_active(self, is_active: bool) -> AppSettings:
-        """Set the is_reminder_active flag."""
-        settings, created = AppSettings.objects.get_or_create(id=1)
-        settings.is_reminder_active = is_active
-        settings.save(update_fields=["is_reminder_active"])
-        return settings
-
-    @sync_to_async
-    def update_chat_id(self, chat_id: int) -> AppSettings:
-        """Update the telegram_chat_id."""
-        validate_telegram_chat_id(chat_id)
-        settings, created = AppSettings.objects.get_or_create(id=1)
-        settings.telegram_chat_id = chat_id
-        settings.save(update_fields=["telegram_chat_id"])
-        return settings
-
-    @sync_to_async
-    def mark_hour_sent(self, target_date: date, hour: int) -> AppSettings:
-        """Mark that a reminder was sent for the given hour on target_date.
-
-        Args:
-            target_date: The date the reminder was sent
-            hour: The hour (must be in REMINDER_HOURS)
-
-        Returns:
-            Updated settings instance
-        """
-        field_name = self._get_reminder_field_name(hour)
-        settings, created = AppSettings.objects.get_or_create(id=1)
-        setattr(settings, field_name, target_date)
-        settings.save(update_fields=[field_name])
-        return settings
-
-    @sync_to_async
-    def check_already_sent(self, target_date: date, hour: int) -> bool:
-        """Check if reminder was already sent for the given hour on target_date.
-
-        Args:
-            target_date: The date to check
-            hour: The hour (must be in REMINDER_HOURS)
-
-        Returns:
-            True if already sent, False otherwise
-        """
-        field_name = self._get_reminder_field_name(hour)
-        settings, created = AppSettings.objects.get_or_create(id=1)
-        return getattr(settings, field_name) == target_date
-
-    @sync_to_async
-    def try_mark_hour_sent(self, target_date: date, hour: int) -> bool:
-        """Atomically mark hour as sent if not already sent today.
-
-        This is race-condition safe: uses a conditional update that only
-        succeeds if the field doesn't already match the target date.
-
-        Args:
-            target_date: The date to mark as sent
-            hour: The hour (must be in REMINDER_HOURS)
-
-        Returns:
-            True if this call marked it (first to succeed).
-            False if already marked (another worker got there first).
-        """
-        field_name = self._get_reminder_field_name(hour)
-
-        # Ensure the singleton exists
-        AppSettings.objects.get_or_create(id=1)
-
-        # Atomic conditional update: only update if field != target_date
-        # This excludes rows where the field already equals target_date
-        updated = AppSettings.objects.filter(id=1).exclude(
-            **{field_name: target_date}
-        ).update(**{field_name: target_date})
-
-        return updated > 0  # True if we were first to mark it
-
-    @sync_to_async
-    def clear_hour_sent(self, target_date: date, hour: int) -> bool:
-        """Clear the sent marker for the given hour on target_date.
-
-        This is used to roll back a pre-claim if the send fails.
-
-        Args:
-            target_date: The date to clear
-            hour: The hour (must be in REMINDER_HOURS)
-
-        Returns:
-            True if a row was updated, False otherwise.
-        """
-        field_name = self._get_reminder_field_name(hour)
-
-        AppSettings.objects.get_or_create(id=1)
-        updated = AppSettings.objects.filter(id=1, **{field_name: target_date}).update(
-            **{field_name: None}
-        )
-        return updated > 0
 
     @sync_to_async
     def update(self, data: dict) -> AppSettings:
