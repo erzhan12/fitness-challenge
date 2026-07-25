@@ -36,3 +36,6 @@ The current repo test (`tests/core/test_repositories.py`) verifies query constru
 
 ### Document user-facing API features in README (from PR #33 review, P3)
 README is deployment-focused; it has no "Features" section describing user-facing capabilities such as the workout-motivation toggle (`PATCH /api/v1/users/me/settings` → `is_workout_motivation_active`) or reminder settings. Add a concise features/API section for external integrators. Deferred as a docs-only follow-up.
+
+### Complete type hints on UserSettingsRepository reminder helpers (from PR #35 review, P2)
+`src/core/repositories.py` reminder query/idempotency methods should get full return-type annotations for consistency with the rest of the module. Deferred: cosmetic, non-blocking for Feature 0022 merge.

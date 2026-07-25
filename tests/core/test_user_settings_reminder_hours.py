@@ -39,3 +39,10 @@ def test_reminder_hours_normalized_sorted_unique(user_settings):
     user_settings.save()
     user_settings.refresh_from_db()
     assert user_settings.reminder_hours == [13, 21, 22]
+
+
+@pytest.mark.django_db
+def test_reminder_hours_rejects_list_longer_than_24(user_settings):
+    user_settings.reminder_hours = list(range(25))  # 0..24 — 25 items
+    with pytest.raises(ValidationError):
+        user_settings.save()

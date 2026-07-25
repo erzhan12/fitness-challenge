@@ -32,6 +32,9 @@ from .models import (
 )
 from .validators import validate_telegram_chat_id
 
+# Shared-cache :memory: SQLite (pytest) can raise transient table locks under
+# concurrent claims; production on-disk SQLite rarely hits this. Linear backoff
+# (10–50 ms) over 5 attempts absorbs those races without changing claim SQL.
 _SQLITE_LOCK_RETRIES = 5
 _SQLITE_LOCK_BACKOFF_S = 0.01
 

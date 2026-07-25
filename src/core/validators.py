@@ -199,11 +199,18 @@ def normalize_reminder_hours(value) -> list[int]:
     duplicates removed. Empty list is valid (opt-out). Raises ValidationError
     on invalid input.
     """
+    _err = {"reminder_hours": "Must be a list of integers 0-23"}
+
     if value is None:
-        raise ValidationError("reminder_hours must be a list of integers 0-23")
+        raise ValidationError(_err)
 
     if not isinstance(value, list):
-        raise ValidationError("reminder_hours must be a list of integers 0-23")
+        raise ValidationError(_err)
+
+    if len(value) > 24:
+        raise ValidationError(
+            {"reminder_hours": "reminder_hours cannot contain more than 24 items"}
+        )
 
     if not value:
         return []
@@ -211,9 +218,9 @@ def normalize_reminder_hours(value) -> list[int]:
     normalized: list[int] = []
     for item in value:
         if not isinstance(item, int) or isinstance(item, bool):
-            raise ValidationError("reminder_hours must be a list of integers 0-23")
+            raise ValidationError(_err)
         if not (0 <= item <= 23):
-            raise ValidationError("reminder_hours must be a list of integers 0-23")
+            raise ValidationError(_err)
         normalized.append(item)
 
     return sorted(set(normalized))

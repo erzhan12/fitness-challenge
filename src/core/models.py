@@ -74,7 +74,9 @@ class UserSettings(models.Model):
     # replies. Does NOT affect evening reminder motivation.
     is_workout_motivation_active = models.BooleanField(default=True)
 
+    # List of ints 0–23; default [13, 21, 22]. Empty [] = opt-out (no sends).
     reminder_hours = models.JSONField(default=default_reminder_hours)
+    # Idempotency map: {"13": "2026-07-24", "21": "2026-07-24"} (hour → ISO date).
     last_reminder_sent_dates = models.JSONField(
         default=default_empty_reminder_sent_dates
     )
@@ -87,6 +89,12 @@ class UserSettings(models.Model):
     class Meta:
         db_table = "user_settings"
         verbose_name_plural = "User settings"
+        indexes = [
+            models.Index(
+                fields=["is_reminder_active", "telegram_chat_id"],
+                name="user_settings_reminder_q_idx",
+            ),
+        ]
 
     def clean(self):
         super().clean()

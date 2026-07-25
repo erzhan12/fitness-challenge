@@ -236,3 +236,47 @@ async def test_due_retargeted_hour_sent_exactly_once():
     mock_send.assert_called_once_with(14)
     # The clock must have actually reached (not skipped past unnoticed) 14:00.
     assert clock["now"] >= datetime(2026, 1, 13, 14, 0, tzinfo=scheduler.TZ)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_skips_stale_locked_target_across_midnight():
+    """Locked target yesterday 21:00; clock jumps to today 08:00.
+
+    Must not call send_evening_reminder (would claim today's slot), must log
+    a warning, and must recompute a fresh target for today.
+    """
+    yesterday_21 = datetime(2026, 1, 12, 21, 0, tzinfo=scheduler.TZ)
+    today_08 = datetime(2026, 1, 13, 8, 0, tzinfo=scheduler.TZ)
+    today_13 = datetime(2026, 1, 13, 13, 0, tzinfo=scheduler.TZ)
+
+    get_next_calls = {"n": 0}
+
+    async def get_next_side_effect():
+        get_next_calls["n"] += 1
+        if get_next_calls["n"] == 1:
+            return yesterday_21, 21
+        if get_next_calls["n"] == 2:
+            return today_13, 13
+        raise StopScheduler
+
+    with patch("app.services.reminder_scheduler.datetime", _fixed_datetime(today_08)):
+        with patch(
+            "app.services.reminder_scheduler.get_next_reminder_time",
+            side_effect=get_next_side_effect,
+        ):
+            with patch(
+                "app.services.reminder_scheduler.asyncio.sleep",
+                new=AsyncMock(return_value=None),
+            ):
+                with patch(
+                    "app.services.reminder_scheduler.send_evening_reminder",
+                    new=AsyncMock(),
+                ) as mock_send:
+                    with patch("app.services.reminder_scheduler.logger") as mock_logger:
+                        with pytest.raises(StopScheduler):
+                            await scheduler.start_reminder_scheduler()
+
+                        mock_send.assert_not_called()
+                        assert mock_logger.warning.call_count >= 1
+                        assert "Stale locked target" in mock_logger.warning.call_args[0][0]
+                        assert get_next_calls["n"] == 3

@@ -98,6 +98,20 @@ async def start_reminder_scheduler():
 
             now = datetime.now(TZ)
 
+            # Stale locked target (clock jump / long suspend): prior calendar
+            # day. send_evening_reminder always uses send-time today_local, so
+            # firing here would claim today's slot for yesterday's hour.
+            if current_target_time.date() < now.date():
+                logger.warning(
+                    f"Stale locked target detected: target was "
+                    f"{current_target_time.strftime('%Y-%m-%d %H:%M:%S %Z')}, "
+                    f"now is {now.strftime('%Y-%m-%d %H:%M:%S %Z')}. "
+                    f"Discarding stale lock and recomputing."
+                )
+                current_target_time = None
+                current_hour = None
+                continue
+
             if now >= current_target_time:
                 logger.info(f"Triggering {current_hour}:00 reminder")
                 try:
