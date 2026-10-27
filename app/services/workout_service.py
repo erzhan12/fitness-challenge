@@ -16,6 +16,7 @@ from app.services.openai_service import (
     parse_exception_prompt,
     generate_motivational_response,
     generate_reminder_motivation,
+    reminder_part_of_day,
     LLMUnavailableError,
 )
 from app.services.deterministic_parser import get_numbers_from_message
@@ -1541,7 +1542,7 @@ async def compute_evening_reminder(
     # Build HTML message
     header_time = f"{reminder_hour}:00"
     message_lines = [
-        f"<b>🔔 Evening Reminder ({header_time})</b>",
+        f"<b>🔔 {reminder_part_of_day(reminder_hour)} Reminder ({header_time})</b>",
         "",
     ]
 
