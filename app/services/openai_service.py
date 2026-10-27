@@ -403,16 +403,28 @@ def generate_motivational_response(exercise_name: str, stats: Dict[str, Any]) ->
         return "Keep crushing it! 💪"
 
 
+def reminder_part_of_day(hour: int) -> str:
+    """Return the part-of-day label for a reminder hour (0-23).
+
+    <12 -> "Morning", 12-17 -> "Afternoon", >=18 -> "Evening".
+    """
+    if hour < 12:
+        return "Morning"
+    if hour < 18:
+        return "Afternoon"
+    return "Evening"
+
+
 def generate_reminder_motivation(context: Dict[str, Any]) -> str:
     """
-    Generates a short motivational message for evening reminders.
+    Generates a short motivational message for scheduled reminders.
 
     Args:
         context: Dictionary containing:
             - left_challenges_count: Number of incomplete challenges
             - remaining_summary: Human-readable remaining work (e.g., "50 reps, 15 minutes")
             - challenge_summaries: List of formatted challenge status strings
-            - reminder_hour: Hour of reminder (21/22/23)
+            - reminder_hour: Hour of reminder (0-23)
 
     Returns:
         Short motivational message (1-2 sentences)
@@ -459,11 +471,18 @@ def generate_reminder_motivation(context: Dict[str, Any]) -> str:
             exc_info=True,
         )
         # Fallback message
-        hour = context.get("reminder_hour", 21)
+        hour = context.get("reminder_hour")
         count = context.get("left_challenges_count", 0)
         if hour == 23:
             return "Last call! You've still got time to finish today's challenges! 💪"
         elif hour == 22:
             return f"Hey, {count} challenge{'s' if count > 1 else ''} still waiting for you! Let's go! 🔥"
-        else:
-            return f"Evening reminder: You have {count} challenge{'s' if count > 1 else ''} to complete today! 🏋️"
+        label = (
+            f"{reminder_part_of_day(hour)} reminder"
+            if isinstance(hour, int)
+            else "Reminder"
+        )
+        return (
+            f"{label}: You have {count} challenge{'s' if count > 1 else ''} "
+            "to complete today! 🏋️"
+        )

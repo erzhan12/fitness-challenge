@@ -529,3 +529,37 @@ class TestCheckDailyRemindersLegacyPerUser:
                 await check_daily_reminders(hour=None)
 
         mock_send.assert_not_called()
+
+
+class TestReminderHeaderByHour:
+    """The reminder header reflects the part of day of ``reminder_hour``."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "hour,expected",
+        [(9, "Morning"), (13, "Afternoon"), (21, "Evening")],
+    )
+    async def test_header_uses_part_of_day(
+        self, _mock_challenge_exception_day_repo, hour, expected
+    ):
+        today_local = datetime.now(TZ).date()
+        challenge = _make_rest_aware_challenge(
+            challenge_id=1, daily_target=50, today_local=today_local
+        )
+
+        with patch("app.services.workout_service.challenge_repo") as mock_ch_repo:
+            mock_ch_repo.get_current_active = AsyncMock(return_value=[challenge])
+            with patch("app.services.workout_service.log_repo") as mock_log_repo:
+                mock_log_repo.get_cumulative_counts_by_challenge_ids = AsyncMock(
+                    return_value={1: 0}
+                )
+                with patch(
+                    "app.services.workout_service.generate_reminder_motivation",
+                    return_value="Go!",
+                ):
+                    should_send, message, _ = await compute_evening_reminder(
+                        today_local, hour, user_id=1
+                    )
+
+        assert should_send is True
+        assert message.startswith(f"<b>🔔 {expected} Reminder ({hour}:00)</b>")
